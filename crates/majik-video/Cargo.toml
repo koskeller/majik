@@ -1,0 +1,19 @@
+[package]
+name = "majik-video"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Headless video playback state machine for Majik"
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+tracing.workspace = true
+majik-core = { path = "../majik-core" }
+majik-audio = { path = "../majik-audio" }
+
+[dev-dependencies]
+tempfile = "3"

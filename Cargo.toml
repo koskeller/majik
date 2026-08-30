@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = ["crates/majik-core", "crates/majik-app", "crates/majik-video", "crates/majik-providers", "crates/majik-generation", "crates/majik-platform", "crates/majik-audio", "crates/majik-dragout", "crates/majik-storage"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "GPL-3.0-or-later"
+authors = ["Kos Keller"]
+repository = "https://github.com/koskeller/majik"
+homepage = "https://github.com/koskeller/majik"
+# The toolchain the release workflow pins; CI otherwise runs stable.
+rust-version = "1.98"
+# Majik ships as an application, not as libraries. Nothing here belongs on crates.io, and a stray
+# `cargo publish` in a workspace is easy to fire by accident.
+publish = false
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+fast_image_resize = { version = "5", features = ["image"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+sha2 = "0.10"
+directories = "6"
+infer = "0.19"
+thiserror = "2"
+bytes = "1"
+# In-process video: pure-Rust MP4 demux/mux plus the vendored-source H.264 codec (no system ffmpeg).
+re_mp4 = "0.5"
+mp4 = "0.14"
+openh264 = { version = "0.9", features = ["source"] }
+openh264-sys2 = { version = "0.9", default-features = false, features = ["source"] }
+# Deliberately not pinned by rev, unlike gpui-component below. gpui-component depends on Zed's `main`
+# unpinned, and a rev here is a *different* source to cargo even at the same commit: the graph ends up
+# with two `gpui` crates and the app stops compiling on the type mismatch. Cargo.lock is what pins the
+# commit, so a fresh clone is reproducible; `cargo update` is what moves it, and it has to move both.
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui_platform = { git = "https://github.com/zed-industries/zed" }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "97e4f402ea3f5a8a303f1988e0669ab7e55784e5" }
+# Same rev as gpui-component; its `motion::transition` gives state-driven value fades with reduce-motion built in.
+gpui-base = { git = "https://github.com/longbridge/gpui-component", rev = "97e4f402ea3f5a8a303f1988e0669ab7e55784e5" }
+
+[profile.dev]
+opt-level = 1
+[profile.dev.package."*"]
+opt-level = 3

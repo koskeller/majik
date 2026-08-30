@@ -1,0 +1,33 @@
+[package]
+name = "majik-core"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Majik's domain model: the SQLite-backed library, assets, images and video"
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+image.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+infer.workspace = true
+hex = "0.4"
+thiserror.workspace = true
+bytes.workspace = true
+re_mp4.workspace = true
+mp4.workspace = true
+openh264.workspace = true
+openh264-sys2.workspace = true
+rusqlite = { version = "0.32", features = ["bundled"] }
+majik-storage = { path = "../majik-storage" }
+
+[dev-dependencies]
+tempfile = "3"

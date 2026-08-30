@@ -1,0 +1,20 @@
+[package]
+name = "majik-audio"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Audio probing and playback for the majik desktop app"
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+rodio = { version = "0.22", default-features = false, features = ["playback", "mp3", "wav", "flac", "mp4", "vorbis"] }
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "wav", "pcm", "flac", "aac", "isomp4", "ogg", "vorbis"] }
+
+[dev-dependencies]
+hound = "3.5"

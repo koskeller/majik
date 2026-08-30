@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# CI-only. Refuses to release unless the tag being built names the version in Cargo.toml, so a tag
+# and the version baked into the binary can never disagree.
+#
+# Deliberately does NOT export MAJIK_CHANNEL: this runs in a job whose siblings run `cargo test`, and
+# `config::tests::channel_defaults_to_dev` fails under a stable stamp. Only the bundle scripts stamp.
+set -euo pipefail
+# shellcheck source=script/lib/release.sh
+source "$(dirname "$0")/lib/release.sh"
+
+if [[ -z "${GITHUB_ACTIONS:-}" ]]; then
+    echo "This script only makes sense in GitHub Actions." >&2
+    exit 1
+fi
+if [[ -z "${GITHUB_REF_NAME:-}" ]]; then
+    echo "GITHUB_REF_NAME is not set." >&2
+    exit 1
+fi
+
+version="$(crate_version)"
+expected_tag="v${version}"
+
+if [[ "$GITHUB_REF_NAME" != "$expected_tag" ]]; then
+    echo "::error::tag ${GITHUB_REF_NAME} does not match the version in Cargo.toml (expected ${expected_tag})."
+    echo "         Bump with script/bump-version, which tags for you."
+    exit 1
+fi
+
+echo "Releasing ${version} on the ${RELEASE_CHANNEL} channel as ${GITHUB_REF_NAME}."
+{
+    echo "RELEASE_VERSION=${version}"
+    echo "RELEASE_CHANNEL=${RELEASE_CHANNEL}"
+} >> "$GITHUB_ENV"
+echo "version=${version}" >> "${GITHUB_OUTPUT:-/dev/null}"

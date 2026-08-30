@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# Build, sign, notarize and package Majik.app as a DMG.
+#
+#   script/bundle-mac [target-triple]      # defaults to the host's architecture
+#
+# Signing and notarization are all-or-nothing and optional: with the secrets set (as in CI) the DMG
+# comes out notarized and stapled; without them the app is ad-hoc signed, the script says so loudly,
+# and everything else is identical. That is deliberate — the script CI runs is the script you run.
+set -euo pipefail
+# shellcheck source=script/lib/release.sh
+source "$(dirname "$0")/lib/release.sh"
+cd "$(repo_root)"
+
+host_triple="$(rustc --version --verbose | sed -n 's/^host: //p')"
+target="${1:-$host_triple}"
+case "$target" in
+    aarch64-apple-darwin) arch_suffix="aarch64" ;;
+    x86_64-apple-darwin) arch_suffix="x86_64" ;;
+    *)
+        echo "Unsupported target ${target}; expected aarch64-apple-darwin or x86_64-apple-darwin." >&2
+        exit 1
+        ;;
+esac
+
+version="$(crate_version)"
+app="target/${target}/release/Majik.app"
+binary="target/${target}/release/majik"
+dmg_dir="target/${target}/release/dmg"
+dmg="target/${target}/release/Majik-${arch_suffix}.dmg"
+
+echo "Building Majik ${version} (${RELEASE_CHANNEL}) for ${target}"
+
+# Everything below this line is a stable-channel build.
+stamp_channel
+rustup target add "$target" > /dev/null
+cargo build --locked --release -p majik-app --target "$target"
+
+# Prove the stamp landed before the binary goes anywhere near a bundle. Without this a packaging
+# path that lost `stamp_channel` would ship an app called Majik that writes to the dev folder.
+require_channel_marker "$binary" "$RELEASE_CHANNEL"
+
+rm -rf "$app"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+sed "s/__VERSION__/${version}/g" packaging/Info.plist > "$app/Contents/Info.plist"
+plutil -lint "$app/Contents/Info.plist" > /dev/null
+cp "$binary" "$app/Contents/MacOS/majik"
+cp packaging/Majik.icns "$app/Contents/Resources/Majik.icns"
+# GPL-3 asks that the licence travel with every binary we hand out.
+cp LICENSE NOTICE "$app/Contents/Resources/"
+
+can_code_sign=false
+if have_macos_signing; then
+    can_code_sign=true
+    echo "Setting up a temporary keychain for code signing"
+    keychain="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/majik-signing.keychain-db"
+    keychain_password="$(openssl rand -base64 24)"
+    certificate="$(mktemp)"
+    previous_keychains="$(security list-keychains -d user | tr -d '"')"
+
+    cleanup() {
+        rm -f "$certificate" "${notarization_key:-}"
+        # shellcheck disable=SC2086 # the keychain list is intentionally word-split
+        security list-keychains -d user -s $previous_keychains > /dev/null 2>&1 || true
+        security delete-keychain "$keychain" > /dev/null 2>&1 || true
+    }
+    trap cleanup EXIT
+
+    security create-keychain -p "$keychain_password" "$keychain"
+    security set-keychain-settings -lut 900 "$keychain"
+    security unlock-keychain -p "$keychain_password" "$keychain"
+    # Prepend rather than replace: dropping the login keychain from the search list breaks anything
+    # else on the machine that needs it, which matters when this runs on a laptop.
+    # shellcheck disable=SC2086
+    security list-keychains -d user -s "$keychain" $previous_keychains
+    echo "$MACOS_CERTIFICATE" | base64 --decode > "$certificate"
+    security import "$certificate" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+    security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
+else
+    echo "====== WARNING ======"
+    echo "MACOS_CERTIFICATE / MACOS_CERTIFICATE_PASSWORD / APPLE_SIGNING_IDENTITY are not all set."
+    echo "This bundle will be ad-hoc signed and NOT notarized: Gatekeeper will refuse it on any"
+    echo "machine that did not build it. Fine for local use, never for a release."
+    echo "====== WARNING ======"
+fi
+
+if [[ "$can_code_sign" = true ]]; then
+    echo "Signing the app with the hardened runtime"
+    # No `--deep`: it is deprecated, and the bundle holds exactly one Mach-O (everything the app
+    # needs — openh264, SQLite, rustls — is statically linked).
+    codesign --force --timestamp --options runtime \
+        --entitlements packaging/majik.entitlements \
+        --sign "$APPLE_SIGNING_IDENTITY" "$app" --verbose
+    codesign --verify --deep --strict --verbose=2 "$app"
+else
+    codesign --force --deep --sign - "$app" 2> /dev/null || true
+fi
+
+echo "Creating ${dmg}"
+rm -rf "$dmg_dir" "$dmg"
+mkdir -p "$dmg_dir"
+cp -R "$app" "$dmg_dir/"
+ln -s /Applications "$dmg_dir/Applications"
+hdiutil create -volname "Majik ${version}" -srcfolder "$dmg_dir" -ov -format UDZO "$dmg" > /dev/null
+# The symlink confuses anything that walks the target directory afterwards, including this repo's
+# own file watching when Majik has the repo open.
+rm -f "$dmg_dir/Applications"
+hdiutil verify "$dmg" > /dev/null
+
+if [[ "$can_code_sign" = true ]]; then
+    codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$dmg" --verbose
+fi
+
+if [[ "$can_code_sign" = true ]] && have_macos_notarization; then
+    echo "Notarizing ${dmg} — this takes a few minutes"
+    notarization_key="$(mktemp)"
+    echo "$APPLE_NOTARIZATION_KEY" | base64 --decode > "$notarization_key"
+    xcrun notarytool submit --wait \
+        --key "$notarization_key" \
+        --key-id "$APPLE_NOTARIZATION_KEY_ID" \
+        --issuer "$APPLE_NOTARIZATION_ISSUER_ID" \
+        "$dmg"
+    xcrun stapler staple "$dmg"
+    spctl --assess -vvv --type open --context context:primary-signature "$dmg"
+else
+    echo "Skipping notarization (no APPLE_NOTARIZATION_* secrets)."
+fi
+
+echo
+echo "Built ${dmg} (Majik ${version}, ${RELEASE_CHANNEL}, ${arch_suffix})"

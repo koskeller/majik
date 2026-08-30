@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Regenerate every packaged icon from one master PNG. macOS-only (it uses sips/iconutil), run by
+# hand — the outputs are committed so the Linux and Windows CI jobs need no macOS tooling.
+#
+#   script/generate-icons
+set -euo pipefail
+# shellcheck source=script/lib/release.sh
+source "$(dirname "$0")/lib/release.sh"
+cd "$(repo_root)"
+
+master="packaging/icon-master.png"
+[[ -f "$master" ]] || { echo "Missing ${master}." >&2; exit 1; }
+
+echo "macOS: packaging/Majik.icns"
+iconset="$(mktemp -d)/Majik.iconset"
+mkdir -p "$iconset"
+for size in 16 32 128 256 512; do
+    sips -z $size $size "$master" --out "$iconset/icon_${size}x${size}.png" > /dev/null
+    sips -z $((size * 2)) $((size * 2)) "$master" --out "$iconset/icon_${size}x${size}@2x.png" > /dev/null
+done
+iconutil --convert icns "$iconset" --output packaging/Majik.icns
+
+echo "Linux: packaging/linux-icons/{512,256,128}.png"
+mkdir -p packaging/linux-icons
+for size in 512 256 128; do
+    sips -z $size $size "$master" --out "packaging/linux-icons/${size}.png" > /dev/null
+done
+
+echo "Windows: packaging/majik.ico"
+# An ICO is a small header followed by whole PNG files, so it can be assembled without ImageMagick.
+# Inno Setup reads PNG-compressed entries fine at these sizes.
+ico_dir="$(mktemp -d)"
+for size in 16 32 48 64 128 256; do
+    sips -z $size $size "$master" --out "$ico_dir/${size}.png" > /dev/null
+done
+python3 - "$ico_dir" packaging/majik.ico <<'PY'
+import struct, sys
+from pathlib import Path
+
+source, destination = Path(sys.argv[1]), Path(sys.argv[2])
+sizes = [16, 32, 48, 64, 128, 256]
+images = [(size, (source / f"{size}.png").read_bytes()) for size in sizes]
+
+header = struct.pack("<HHH", 0, 1, len(images))  # reserved, type=icon, count
+offset = len(header) + 16 * len(images)
+entries, payload = b"", b""
+for size, data in images:
+    # 256 is written as 0 in the directory entry; the field is one byte.
+    entries += struct.pack("<BBBBHHII", size % 256, size % 256, 0, 0, 1, 32, len(data), offset)
+    payload += data
+    offset += len(data)
+destination.write_bytes(header + entries + payload)
+print(f"  {destination} ({len(images)} sizes, {len(header + entries + payload)} bytes)")
+PY
+
+echo
+echo "Regenerated. Commit the results."

@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Build a distributable Majik tarball for Linux.
+#
+#   script/bundle-linux
+#
+# Deliberately does not bundle shared libraries the way Zed's does: Majik links no third-party
+# dylibs (openh264 is vendored, SQLite is bundled, TLS is rustls), so the tarball only needs the
+# system packages listed in its README. Chasing `ldd` output would add the one genuinely fragile
+# part of that approach for no benefit here.
+set -euo pipefail
+# shellcheck source=script/lib/release.sh
+source "$(dirname "$0")/lib/release.sh"
+cd "$(repo_root)"
+
+target="$(rustc --version --verbose | sed -n 's/^host: //p')"
+arch="$(uname -m)"
+version="$(crate_version)"
+
+echo "Building Majik ${version} (${RELEASE_CHANNEL}) for ${target}"
+
+# Everything below this line is a stable-channel build.
+stamp_channel
+cargo build --locked --release -p majik-app --target "$target"
+
+binary="target/${target}/release/majik"
+require_channel_marker "$binary" "$RELEASE_CHANNEL"
+
+# The bundle id doubles as the icon and .desktop file name, so the desktop entry and the window's
+# Wayland app id agree.
+APP_ID="com.app.majik"
+APP_NAME="Majik"
+export APP_ID APP_NAME
+
+stage="target/linux/majik-linux-${arch}"
+rm -rf "$stage"
+mkdir -p "$stage/bin" "$stage/share/applications"
+
+cp "$binary" "$stage/bin/majik"
+strip "$stage/bin/majik" 2> /dev/null || llvm-objcopy --strip-debug "$stage/bin/majik"
+
+for size in 512 256 128; do
+    mkdir -p "$stage/share/icons/hicolor/${size}x${size}/apps"
+    cp "packaging/linux-icons/${size}.png" "$stage/share/icons/hicolor/${size}x${size}/apps/${APP_ID}.png"
+done
+
+envsubst < packaging/majik.desktop.in > "$stage/share/applications/${APP_ID}.desktop"
+cp packaging/linux-install.sh "$stage/install.sh"
+chmod +x "$stage/install.sh"
+sed "s/__VERSION__/${version}/g" packaging/linux-readme.md > "$stage/README.md"
+# GPL-3 asks that the licence travel with every binary we hand out.
+cp LICENSE NOTICE "$stage/"
+
+archive="target/majik-linux-${arch}.tar.gz"
+rm -f "$archive"
+tar -czf "$archive" -C "$(dirname "$stage")" "$(basename "$stage")"
+
+echo
+echo "Built ${archive} (Majik ${version}, ${RELEASE_CHANNEL}, ${arch})"

@@ -1,0 +1,58 @@
+Majik
+Copyright (C) 2026 Kos Keller
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See LICENSE for the full text.
+
+--------------------------------------------------------------------------------
+Third-party components
+--------------------------------------------------------------------------------
+
+Majik links roughly 900 Rust crates. The great majority are dual MIT OR
+Apache-2.0; the components below are the ones carrying obligations or caveats
+worth naming. `cargo license` over Cargo.lock produces the exhaustive list.
+
+Apache-2.0 (notice retention required)
+  gpui, gpui_platform and the other GPUI crates
+    Copyright Zed Industries, Inc. — https://github.com/zed-industries/zed
+  gpui-component, gpui-base
+    Copyright Longbridge — https://github.com/longbridge/gpui-component
+
+  Apache-2.0 is one-way compatible with GPL-3.0: Apache-licensed code may be
+  combined into this GPL-3.0 work. It would not be compatible with GPL-2.0,
+  which is why Majik is GPL-3.0-or-later rather than v2.
+
+MPL-2.0 (file-level copyleft; modified files must be published)
+  symphonia and its twelve companion crates (audio demux and decode)
+  dwrote (Windows text), option-ext
+  Majik does not modify these crates, so no source publication is owed.
+
+MIT (bundled assets, not linked code)
+  HugeIcons — the icons in crates/majik-app/assets/icons are generated from the free
+  @hugeicons/core-free-icons package. https://hugeicons.com
+
+Trademarks (bundled assets, not licensed under the GPL)
+  crates/majik-app/assets/logos holds the wordmarks and logos of the providers and
+  model vendors Majik can call — fal, Replicate, OpenRouter, OpenAI, Google, Meta,
+  ByteDance, Alibaba, Runway, ElevenLabs, Kling, MiniMax, Pixverse, Recraft, LTX,
+  Veed, Sourceful, Flux, Grok among them. They are the trademarks of their
+  respective owners and are reproduced nominatively, to identify which provider or
+  model a generation came from. No affiliation with or endorsement by those owners
+  is claimed. Majik's GPL-3.0 grant covers Majik's own code and assets; it does not
+  grant any right in these marks, and it is not a licence to use them. Anyone
+  redistributing a modified Majik under a different name should replace them.
+
+BSD-2-Clause
+  openh264, openh264-sys2 — Copyright Cisco Systems, Inc.
+
+  H.264 patents: Majik builds openh264 from source (`features = ["source"]`).
+  Cisco's royalty-free arrangement with the AVC patent pool covers Cisco's own
+  precompiled binaries, not third-party builds, so AVC patent licensing for
+  distributed Majik binaries is not covered by that arrangement.
+
+Other licences present in the dependency tree: MIT, BSD-3-Clause, ISC, Zlib,
+Unicode-3.0, BSL-1.0, CC0-1.0 and Unlicense. No GPL- or AGPL-licensed
+dependency is linked; nothing in the tree imposes an obligation beyond those
+named above.

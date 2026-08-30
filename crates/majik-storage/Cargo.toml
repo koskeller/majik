@@ -1,0 +1,18 @@
+[package]
+name = "majik-storage"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Content-addressed blob storage behind Majik's library files"
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

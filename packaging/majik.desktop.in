@@ -1,0 +1,17 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=$APP_NAME
+Comment=Generate images, video and audio through hosted model providers
+# No %U/%F: Majik declares no MimeType and its one positional argument is a library folder, not a
+# document. A launcher passing a file:// URL here would be taken as a library path, scheme and all.
+Exec=majik
+TryExec=majik
+Icon=$APP_ID
+Terminal=false
+Categories=Graphics;AudioVideo;
+Keywords=image;video;audio;generation;ai;
+# Must match WindowOptions::app_id, which is what Wayland reports as the toplevel's app id.
+# Without the two agreeing the window gets no icon and no taskbar grouping.
+StartupWMClass=$APP_ID
+StartupNotify=true

@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Bump the workspace version, commit it and tag it. Never pushes — it prints the push command and the
+# command that undoes everything, so a mistake costs nothing.
+#
+#   script/bump-version patch|minor|major
+set -euo pipefail
+# shellcheck source=script/lib/release.sh
+source "$(dirname "$0")/lib/release.sh"
+cd "$(repo_root)"
+
+increment="${1:-}"
+case "$increment" in
+    patch | minor | major) ;;
+    *)
+        echo "Usage: ${0##*/} <patch|minor|major>" >&2
+        exit 1
+        ;;
+esac
+
+if [[ -n "$(git status --short --untracked-files=no)" ]]; then
+    echo "Refusing to bump the version with uncommitted changes: the tag would name a commit that" >&2
+    echo "doesn't contain them." >&2
+    exit 1
+fi
+
+branch="$(git rev-parse --abbrev-ref HEAD)"
+if [[ "$branch" != "main" ]]; then
+    echo "Releases are tagged from main; you are on ${branch}." >&2
+    exit 1
+fi
+
+if ! command -v cargo-set-version > /dev/null; then
+    echo "cargo-set-version is missing. Install it with: cargo install cargo-edit" >&2
+    exit 1
+fi
+
+old_sha="$(git rev-parse HEAD)"
+cargo set-version --workspace --bump "$increment"
+# Refresh Cargo.lock so the commit carries it, and prove the workspace still builds at the new version.
+cargo check --workspace --quiet
+
+version="$(crate_version)"
+tag="v${version}"
+
+git commit --quiet --all --message "Release Majik ${version}"
+git tag "$tag"
+
+cat <<MESSAGE
+
+Committed and tagged ${tag} locally. Nothing has been pushed.
+
+  Push it (this is what starts the release):
+
+      git push origin ${branch} ${tag}
+
+  Undo it:
+
+      git tag -d ${tag} && git reset --hard ${old_sha}
+
+MESSAGE

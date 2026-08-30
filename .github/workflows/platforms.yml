@@ -1,0 +1,142 @@
+name: Platforms
+# On-demand cross-platform verification. Not run on push — macOS runners are billed at 10x
+# and Windows at 2x, so this is triggered manually before a release or after platform-sensitive
+# changes:
+#   gh workflow run platforms.yml                # everything
+#   gh workflow run platforms.yml -f app=false   # portable crates only; skip the three full-app jobs
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: 'Also build and test the full app (workspace) on all three OSes, and bundle it on macOS'
+        type: boolean
+        default: true
+  # `release.yml` calls this, so the check you run by hand before tagging and the gate the release
+  # runs are the same jobs rather than two copies that drift apart.
+  workflow_call:
+    inputs:
+      app:
+        description: 'Also build and test the full app (workspace) on all three OSes, and bundle it on macOS'
+        type: boolean
+        default: true
+        required: false
+
+concurrency:
+  group: platforms-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Panics still report file and line; the rest of the debuginfo is what makes linking slow and the
+  # cache huge (saving it cost ~5 min on Windows alone).
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+
+jobs:
+  # Platform-independent crates: pure logic, providers (HTTP via rustls), generation, SQLite, audio.
+  # These must build and pass on all three desktop OSes.
+  portable:
+    name: portable (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The build is the expensive part and is valid whether or not the tests pass:
+          # without this a failing run saves nothing and the next one starts cold again.
+          cache-on-failure: true
+          shared-key: platforms
+      - name: Install ALSA (Linux, for cpal/rodio in majik-audio)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Build
+        run: cargo build -p majik-core -p majik-storage -p majik-providers -p majik-generation -p majik-audio
+      - name: Test
+        run: cargo test -p majik-core -p majik-storage -p majik-providers -p majik-generation -p majik-audio
+      - name: Clippy
+        run: cargo clippy -p majik-core -p majik-storage -p majik-providers -p majik-generation -p majik-audio -- -D warnings
+
+  # Full workspace incl. the GPUI app and macOS platform crates (drag-out, clipboard, share, video).
+  macos-app:
+    name: macOS app (full)
+    if: ${{ inputs.app }}
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The build is the expensive part and is valid whether or not the tests pass:
+          # without this a failing run saves nothing and the next one starts cold again.
+          cache-on-failure: true
+          shared-key: platforms
+      - name: Build
+        run: cargo build --workspace
+      - name: Test
+        run: cargo test --workspace
+      # Only when run by hand: release.yml has its own signing bundle jobs, and a second unsigned
+      # bundle there would burn 10x-billed macOS minutes to produce something it throws away.
+      - name: Bundle
+        if: github.event_name == 'workflow_dispatch'
+        run: ./script/bundle-mac
+
+  # The GPUI app on the other two desktops. Never run on a real machine yet: this is the smoke test
+  # that turns "never compiled for Windows/Linux" into a concrete error list. Share, the
+  # multi-flavour clipboard and drag-out (Windows / X11) degrade behind `SUPPORTED` gates; the menu
+  # bar is not drawn there at all yet.
+  linux-app:
+    name: Linux app (full)
+    if: ${{ inputs.app }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The build is the expensive part and is valid whether or not the tests pass:
+          # without this a failing run saves nothing and the next one starts cold again.
+          cache-on-failure: true
+          shared-key: platforms
+      - name: Install gpui system dependencies (as in Zed's script/linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libfontconfig-dev libwayland-dev libx11-xcb-dev \
+            libxkbcommon-x11-dev libssl-dev libzstd-dev libvulkan1 mesa-vulkan-drivers clang cmake
+      - name: Build
+        run: cargo build --workspace
+      - name: Test
+        run: cargo test --workspace
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  windows-app:
+    name: Windows app (full)
+    if: ${{ inputs.app }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The build is the expensive part and is valid whether or not the tests pass:
+          # without this a failing run saves nothing and the next one starts cold again.
+          cache-on-failure: true
+          shared-key: platforms
+      - name: Build
+        run: cargo build --workspace
+      - name: Test
+        run: cargo test --workspace
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings

@@ -1,0 +1,54 @@
+name: CI
+# Cheap, always-on check: build + test + clippy the platform-independent crates on Linux
+# (1x billing multiplier). The cross-platform matrix and the full macOS app build live in
+# platforms.yml and run on demand (Actions tab -> "Platforms" -> "Run workflow", or
+# `gh workflow run platforms.yml`), since macOS minutes are billed at 10x and Windows at 2x.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+# Cancel superseded runs on the same branch/PR so a burst of pushes only pays for the last one.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # The release scripts only ever run at release time, where a typo is expensive. shellcheck is
+  # preinstalled on the runner and takes a couple of seconds.
+  scripts:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck -x script/lib/*.sh script/get-version script/check-release-tag
+          script/bump-version script/bundle-mac script/bundle-linux script/generate-icons
+          packaging/linux-install.sh
+
+  portable:
+    name: portable (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install ALSA (for cpal/rodio in majik-audio)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Build
+        run: cargo build -p majik-core -p majik-storage -p majik-providers -p majik-generation -p majik-audio
+      - name: Test
+        run: cargo test -p majik-core -p majik-storage -p majik-providers -p majik-generation -p majik-audio
+      - name: Clippy
+        run: cargo clippy -p majik-core -p majik-storage -p majik-providers -p majik-generation -p majik-audio -- -D warnings

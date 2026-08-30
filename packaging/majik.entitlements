@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for the Developer ID build (`script/bundle-mac`).
+
+  Majik is not sandboxed, so the `com.apple.security.files.*`, `network.client` and `app-sandbox`
+  keys a sandboxed app would need are no-ops here and are deliberately absent. So are
+  `device.audio-input` (majik-audio only ever opens an output stream), `automation.apple-events`
+  (nothing scripts other apps) and `disable-library-validation` (everything is statically linked).
+
+  The two that are here cover GPUI's renderer, which is Zed's and ships with both. Removing them is
+  worth trying once the pipeline is proven, but a wrong guess costs a full notarization cycle.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+</dict>
+</plist>

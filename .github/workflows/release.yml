@@ -1,0 +1,183 @@
+name: Release
+# Tag-driven. `script/bump-version` makes the commit and the tag; pushing the tag runs everything
+# below, which ends with a *draft* GitHub Release carrying every artifact. A human reads the draft
+# and publishes it — nothing here makes a release public.
+#
+#   script/bump-version minor
+#   git push origin main v0.2.0
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+# Never cancel a release in progress: a half-uploaded release is worse than a slow one.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # MAJIK_CHANNEL is deliberately absent, here and in every job. It is stamped inside the bundle
+  # scripts, in their own process. Setting it at workflow or job level would leak it into the test
+  # steps, where `config::tests::channel_defaults_to_dev` legitimately fails under a stable stamp —
+  # and writing it to $GITHUB_ENV would leak it the same way.
+
+jobs:
+  # Refuses to go further unless the tag names the version in Cargo.toml, before anything is built
+  # or drafted.
+  version:
+    name: Check the tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        run: script/check-release-tag
+
+  # The same 3-OS build/test/clippy the pre-release check runs by hand, so the gate and the check
+  # cannot drift.
+  tests:
+    name: Tests
+    # Gated on the tag check so a mistyped tag doesn't burn 10x-billed macOS minutes first.
+    needs: version
+    uses: ./.github/workflows/platforms.yml
+
+  draft:
+    name: Draft the release
+    runs-on: ubuntu-latest
+    needs: version
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create the draft release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" ||
+            gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" --generate-notes
+
+  bundle-macos:
+    name: macOS (${{ matrix.arch }})
+    runs-on: macos-14
+    needs: [version, tests]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, arch: aarch64 }
+          - { target: x86_64-apple-darwin, arch: x86_64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+      - name: Bundle
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_NOTARIZATION_KEY: ${{ secrets.APPLE_NOTARIZATION_KEY }}
+          APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
+          APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
+        run: script/bundle-mac ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Majik-${{ matrix.arch }}.dmg
+          path: target/${{ matrix.target }}/release/Majik-${{ matrix.arch }}.dmg
+          if-no-files-found: error
+
+  bundle-linux:
+    name: Linux (x86_64)
+    runs-on: ubuntu-latest
+    # Built against Ubuntu 22.04's glibc (2.35) rather than the runner's, since that is the
+    # tarball's compatibility floor.
+    container: ubuntu:22.04
+    needs: [version, tests]
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y curl git build-essential pkg-config gettext-base \
+            libasound2-dev libfontconfig-dev libwayland-dev libx11-xcb-dev \
+            libxkbcommon-x11-dev libssl-dev libzstd-dev clang cmake
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-linux
+      - name: Bundle
+        run: script/bundle-linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: majik-linux-x86_64.tar.gz
+          path: target/majik-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  bundle-windows:
+    name: Windows (x86_64)
+    runs-on: windows-latest
+    needs: [version, tests]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-windows
+      - name: Bundle
+        shell: pwsh
+        run: script/bundle-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MajikSetup-x86_64.exe
+          path: target/MajikSetup-x86_64.exe
+          if-no-files-found: error
+
+  upload:
+    name: Upload the assets
+    runs-on: ubuntu-latest
+    needs: [draft, bundle-macos, bundle-linux, bundle-windows]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+      - name: Collect the artifacts and checksum them
+        run: |
+          mkdir -p release-artifacts
+          find ./artifacts -type f -exec mv {} release-artifacts/ \;
+          cd release-artifacts
+          # Written outside the directory first: `sha256sum ./* > SHA256SUMS` in place relies on the
+          # shell expanding the glob before it truncates the target, which is not worth depending on.
+          sha256sum ./* > ../SHA256SUMS
+          mv ../SHA256SUMS .
+          cat SHA256SUMS
+      - name: Upload to the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" release-artifacts/* --clobber
+
+  # A bundle job that silently produced nothing would otherwise leave a draft that looks complete.
+  validate:
+    name: Validate the assets
+    runs-on: ubuntu-latest
+    needs: upload
+    steps:
+      - name: Every expected asset is present
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          expected='["Majik-aarch64.dmg", "Majik-x86_64.dmg", "majik-linux-x86_64.tar.gz", "MajikSetup-x86_64.exe", "SHA256SUMS"]'
+          actual="$(gh release view "$GITHUB_REF_NAME" --json assets -q '[.assets[].name]')"
+          missing="$(echo "$expected" | jq -r --argjson actual "$actual" '. - $actual | .[]')"
+          if [ -n "$missing" ]; then
+              echo "::error::the release is missing assets:"
+              echo "$missing"
+              exit 1
+          fi
+          echo "All expected assets are present. Review the draft and publish it:"
+          echo "  gh release edit $GITHUB_REF_NAME --draft=false"

@@ -1,0 +1,47 @@
+[package]
+name = "majik-app"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "The Majik desktop application: GPUI windows, views and app state"
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "majik"
+path = "src/main.rs"
+
+[dependencies]
+majik-core = { path = "../majik-core" }
+majik-video = { path = "../majik-video" }
+majik-providers = { path = "../majik-providers" }
+majik-generation = { path = "../majik-generation" }
+majik-platform = { path = "../majik-platform" }
+majik-audio = { path = "../majik-audio" }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+directories.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+image.workspace = true
+gpui.workspace = true
+gpui_platform.workspace = true
+gpui-component.workspace = true
+gpui-base.workspace = true
+# `gpui::ImageCacheItem::Loading` holds a `futures::future::Shared<Task<…>>`, so our image cache
+# needs `FutureExt::shared` to build one (gpui pulls the same crate in).
+futures = "0.3"
+# `gpui::RenderImage::new` takes a `SmallVec` of frames; the image cache builds one.
+smallvec = "1"
+rust-embed = "8"
+chrono = "0.4"
+resvg = "0.45"
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+tempfile = "3"

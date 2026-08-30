@@ -1,0 +1,31 @@
+[package]
+name = "majik-providers"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Hosted model providers for Majik: catalogs, capabilities, pricing and HTTP clients"
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+image.workspace = true
+thiserror.workspace = true
+async-trait = "0.1"
+base64 = "0.22"
+sha2.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2", "charset"] }
+tokio = { version = "1", features = ["time", "sync", "macros", "rt-multi-thread"] }
+url = "2"
+majik-core = { path = "../majik-core" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+wiremock = "0.6"
+tempfile = "3"
