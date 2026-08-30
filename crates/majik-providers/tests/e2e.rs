@@ -1,9 +1,9 @@
 //! Live-API tests: the real fal.ai / Replicate / OpenRouter endpoints, with real keys and real money.
 //!
-//! Every test here is `#[ignore]`d, which is the whole gate: `cargo test` (and CI) skips them and
-//! says how many, while the file still compiles under `cargo clippy --all-targets` so it cannot rot.
-//! Keys come from the environment and gate per provider — a missing key skips loudly, so you can run
-//! with only the keys you hold.
+//! Every test here is `#[ignore]`d, so `cargo test` (and CI) skips them and says how many, while
+//! the file still compiles under `cargo clippy --all-targets` so it cannot rot. Keys come from the
+//! environment, one per provider; a missing key skips loudly, so you can run with only the keys you
+//! hold.
 //!
 //! ```sh
 //! cargo test -p majik-providers --test e2e -- --ignored                 # everything (expensive)
@@ -20,7 +20,7 @@ use majik_providers::{
     VideoAspectRatio, VideoGenerationSettings, VideoModel,
 };
 
-// ----- the gate ---------------------------------------------------------------------------------
+// ----- keys -------------------------------------------------------------------------------------
 
 /// The key for a provider, or `None` with a visible note. A missing key skips rather than fails:
 /// you rarely hold all three.
@@ -36,8 +36,8 @@ fn key(var: &str) -> Option<String> {
 
 /// One runtime for the whole binary. `majik_providers::http` keeps a process-wide `reqwest::Client`
 /// whose connection pool is bound to the runtime that first used it, so the runtime-per-test that
-/// `#[test]` creates poisons the client for every later test ("dispatch task is gone"). The
-/// app has exactly one long-lived runtime — the engine's — so a shared one mirrors production.
+/// `#[test]` creates poisons the client for every later test ("dispatch task is gone"). The app has
+/// exactly one long-lived runtime, the engine's, so a shared one matches production.
 fn rt() -> &'static tokio::runtime::Runtime {
     static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RT.get_or_init(|| tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("test runtime"))
@@ -162,9 +162,9 @@ async fn image_to_video(descriptor: &'static ProviderDescriptor, key: &str, id: 
     assert_video(id, &bytes);
 }
 
-/// Two reference images the prompt addresses by handle — the request shape the composer builds when
+/// Two reference images the prompt addresses by handle: the request shape the composer builds when
 /// the user attaches references and types `@Image1`. Each provider rewrites the handles into the
-/// model's own dialect, so a failure here is a dialect that has drifted.
+/// model's own dialect, so a failure here means a dialect has changed.
 async fn reference_to_video(descriptor: &'static ProviderDescriptor, key: &str, id: &str) {
     let settings = cheapest_video(descriptor, video_model(id));
     let assets = [
@@ -224,7 +224,7 @@ async fn remove_background(descriptor: &'static ProviderDescriptor, key: &str) {
 
 /// What the composer puts straight into the prompt field, so the model has to have obeyed "the
 /// rewritten prompt only": no wrapping quotes, no "Here's your prompt", no markdown fence. A
-/// failure here means the instruction needs work, which is worth knowing.
+/// failure here means the instruction needs work.
 #[track_caller]
 pub fn assert_is_a_bare_prompt(who: &str, original: &str, improved: &str) {
     let text = improved.trim();
@@ -721,7 +721,7 @@ mod openrouter {
 }
 
 /// Invalid keys against the real endpoints. Needs the network but no key of your own, so these are
-/// the tests to reach for when an auth-mapping change needs proving.
+/// the tests to run when checking a change to auth mapping.
 mod errors {
     use majik_providers::{catalog, GenerationError, ProviderClient, ProviderDescriptor};
 
@@ -734,7 +734,7 @@ mod errors {
 
     /// The text path is a different endpoint per provider (fal's `any-llm`, a Replicate prediction
     /// for another model, an OpenRouter body without `modalities`), so a bad key exercises code the
-    /// image tests never touch — and an endpoint that has been withdrawn answers 404, not 401.
+    /// image tests never touch. An endpoint that has been withdrawn answers 404, not 401.
     async fn assert_rejects_the_key_for_text(descriptor: &'static ProviderDescriptor, bogus_key: &str) {
         let error = ProviderClient::new(descriptor, bogus_key)
             .complete_text("Rewrite the prompt.", "a cat", 64)
@@ -782,7 +782,7 @@ mod errors {
 
 mod guard {
     //! Not ignored, and makes no network call: the matrix above must keep covering exactly what each
-    //! provider says it supports. The matrix is generated from the catalogs, so it cannot drift
+    //! provider says it supports. The matrix is generated from the catalogs, so it cannot diverge
     //! from them the way a hand-written list would.
 
     use majik_providers::{ProviderDescriptor, ToolId};

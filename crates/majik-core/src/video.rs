@@ -3,7 +3,8 @@
 //! same on macOS, Windows and Linux. The encoder half (`encode_solid_clip`) exists for the Mock
 //! provider and for tests, which is why it lives here rather than in `majik-providers`.
 //!
-//! Scope: H.264 (`avc1`) in ISO-BMFF with an optional AAC track — what every provider returns.
+//! Scope: H.264 (`avc1`) in ISO-BMFF with an optional AAC track, which is what every provider
+//! returns.
 //! Anything else is [`VideoError::UnsupportedCodec`] rather than a silent failure.
 
 use std::cmp::Reverse;
@@ -198,7 +199,7 @@ fn stsd_fourcc(content: &StsdBoxContent) -> String {
     }
 }
 
-/// Container facts only — never decodes, so it is cheap enough for the completion path.
+/// Container facts only; never decodes, so it is cheap enough to run when a generation completes.
 pub fn probe(path: &Path) -> Result<VideoInfo, VideoError> {
     let (_, d) = demux(path)?;
     Ok(VideoInfo {
@@ -292,7 +293,7 @@ impl Source {
         self.demuxed.has_audio
     }
 
-    /// Median sample duration, clamped to 1/120..=1 s — how often a player needs to ask for frames.
+    /// Median sample duration, clamped to 1/120..=1 s: how often a player needs to ask for frames.
     pub fn frame_interval(&self) -> Duration {
         self.demuxed.frame_interval
     }
@@ -455,7 +456,7 @@ fn yuv420_to_bgra(picture: &h264::Picture<'_>, out: &mut [u8]) {
     }
 }
 
-/// A solid-colour H.264 clip at one frame per second, every frame an IDR — what the Mock provider
+/// A solid-colour H.264 clip at one frame per second, every frame an IDR: what the Mock provider
 /// returns and what tests decode.
 pub fn encode_solid_clip(width: u32, height: u32, seconds: u32, rgb: [u8; 3]) -> Result<Vec<u8>, VideoError> {
     encode_clip(width, height, seconds.max(1), 1, 1, rgb)

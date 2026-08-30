@@ -513,7 +513,7 @@ pub fn video_reference_endpoint(model: &VideoModel) -> Option<&'static str> {
 }
 
 /// The request keys and prompt dialect of a model's reference endpoint. Read off each endpoint's
-/// own `openapi.json` on 2026-08-29 — no two families agree, and like the price tables these drift,
+/// own `openapi.json` on 2026-08-29. No two families agree, and like the price tables these change,
 /// so re-check the schema before adding a model here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReferenceParams {
@@ -587,7 +587,7 @@ pub enum VideoEndpointVariant {
 /// `image_size` with named presets; GPT uses `image_size` with pixel dimensions.
 ///
 /// Returns `None` when the model isn't on fal, or when the requested aspect ratio isn't supported
-/// by the model's size family — callers then skip the key.
+/// by the model's size family; callers then skip the key.
 pub fn api_image_size(model: &ImageModel, aspect_ratio: AspectRatio) -> Option<(&'static str, String)> {
     match model.id {
         GEMINI_3_PRO | GEMINI_31_FLASH | GEMINI_25_FLASH => Some(("aspect_ratio", aspect_ratio.raw().to_string())),

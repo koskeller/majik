@@ -1,12 +1,12 @@
 //! The Library window: the sidebar on the left and the composer panel on the right (both
-//! collapsible, widths persisted) around the feed — on every library screen (Library, Favorites,
-//! albums, tool feeds) — or the detail covering the whole window (it grows out of its feed cell and
-//! shrinks back into it, drawn over the split meanwhile), plus the dialog/notification layers. While
-//! `Config.onboarding_completed` is false the window shows the onboarding flow instead (port of
-//! `ContentView`'s onboarding gate).
+//! collapsible, widths persisted) around the feed, on every library screen (Library, Favorites,
+//! albums, tool feeds). The detail instead covers the whole window: it grows out of its feed cell
+//! and shrinks back into it, drawn over the split meanwhile. The dialog and notification layers sit
+//! on top. While `Config.onboarding_completed` is false the window shows the onboarding flow
+//! instead (port of `ContentView`'s onboarding check).
 //!
-//! The composer used to be its own window; as a panel, Recreate / Use Image / ⌘N reach it through
-//! events and actions handled here — never through a window handle, which can't re-enter the
+//! The composer used to be its own window. As a panel, Recreate / Use Image / ⌘N reach it through
+//! events and actions handled here, never through a window handle, which can't re-enter the
 //! window that is dispatching the action.
 
 use gpui::{prelude::*, px, App, Context, Entity, FocusHandle, Pixels, Size, Task, Window};
@@ -52,7 +52,7 @@ pub struct LibraryWindow {
 }
 
 /// The two collapsible panels around the feed. Everything that differs between them lives here;
-/// the show/hide and width-persistence mechanics are shared.
+/// showing, hiding and persisting the width are shared.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Side {
     Sidebar,
@@ -191,7 +191,7 @@ impl LibraryWindow {
                 cx.observe(&detail, |_, _, cx| cx.notify()).detach();
                 cx.subscribe_in(&detail, window, |this, detail, ev: &DetailEvent, window, cx| match ev {
                     DetailEvent::WillClose { id } => {
-                        // Cell boxes recorded before a resize point at the wrong place: fade instead.
+                        // Cell boxes recorded before a resize point at the wrong place, so fade instead.
                         let same_viewport = window.viewport_size() == this.detail_viewport;
                         let cell = this.feed.update(cx, |f, cx| f.land_on(id, cx)).filter(|_| same_viewport);
                         detail.update(cx, |d, cx| d.close_towards(cell, cx));
@@ -209,7 +209,7 @@ impl LibraryWindow {
                     }
                     DetailEvent::Compose(pending) => {
                         // Straight to the split (no close morph): the panel is under the cover,
-                        // and the detail's own close path would hand focus back to the feed.
+                        // and closing the detail normally would hand focus back to the feed.
                         let current = detail.read(cx).current_id();
                         this.detail = None;
                         if let Some(id) = &current {
@@ -256,7 +256,7 @@ impl LibraryWindow {
         .detach();
 
         // `onboarding_completed` flips via `update_config` (onboarding finish / debug reset);
-        // re-render so the gate below picks it up. Other config writes (draft prompt, appearance)
+        // re-render so the check below picks it up. Other config writes (draft prompt, appearance)
         // don't concern this window.
         cx.observe_global::<Config>(|this, cx| {
             if cx.global::<Config>().onboarding_completed == this.onboarding.is_some() {
@@ -338,7 +338,7 @@ impl LibraryWindow {
     }
 
     fn hide_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // Keystrokes routed to a node that is no longer rendered die at the root.
+        // Keystrokes routed to a node that is no longer rendered stop at the root.
         if self.compose.read(cx).contains_focus(window, cx) {
             self.feed.read(cx).focus_handle().focus(window, cx);
         }
@@ -369,9 +369,10 @@ impl LibraryWindow {
         }));
     }
 
-    /// Post one OS notification for everything that finished — only while the user is elsewhere;
-    /// an active Majik window already shows the result. gpui posts it through the platform's
-    /// notification centre (macOS needs the `.app` bundle; Windows the app identity set in `main`).
+    /// Post one OS notification for everything that finished, and only while the user is
+    /// elsewhere: an active Majik window already shows the result. gpui posts it through the
+    /// platform's notification centre (macOS needs the `.app` bundle; Windows the app identity set
+    /// in `main`).
     fn flush_notification(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (completed, failed) = std::mem::take(&mut self.finished);
         self.notify_task = None;
@@ -401,8 +402,8 @@ impl LibraryWindow {
     }
 
     /// One of the split's side panels: hidden rather than omitted while collapsed so the panel
-    /// indices in the shared state stay stable; `flex_none` keeps a dragged width from growing
-    /// with the window or when the other side collapses — the feed is the flexible panel.
+    /// indices in the shared state stay stable. `flex_none` keeps a dragged width from growing
+    /// with the window or when the other side collapses, since the feed is the flexible panel.
     fn side_panel(&self, side: Side, content: impl IntoElement, cx: &App) -> ResizablePanel {
         let panel = self.panel(side);
         let content = gpui::div().id(side.selector()).debug_selector(|| side.selector().into()).size_full().overflow_hidden().child(content);
@@ -417,8 +418,8 @@ impl LibraryWindow {
 impl LibraryWindow {
     /// The window's own title bar, as in Zed's main window: a 34px row under the transparent native
     /// bar (the traffic lights sit in its left padding on macOS, the window controls at its end
-    /// elsewhere) that follows the app theme, and carries the panel toggles while the library
-    /// screen is showing — a cover (onboarding, a detail) has no panels to toggle.
+    /// elsewhere) that follows the app theme. It carries the panel toggles while the library screen
+    /// is showing; onboarding and the detail cover the window and have no panels to toggle.
     fn render_title_bar(&self) -> impl IntoElement {
         let library_screen = self.onboarding.is_none() && self.detail.is_none();
         let toggle = |id: &'static str, icon_name: &'static str, side: Side| {
@@ -491,7 +492,7 @@ impl Render for LibraryWindow {
 }
 
 /// The window's appearance changed (the OS switched, or the window just reported it). Only a
-/// "system" preference follows it; an explicit light/dark choice stays put — syncing regardless
+/// "system" preference follows it; an explicit light/dark choice stays as it is. Syncing regardless
 /// turned a saved "dark" light again the moment the window opened.
 fn follow_system_appearance(window: &mut Window, cx: &mut App) {
     if cx.global::<Config>().appearance == "system" {
@@ -598,7 +599,7 @@ mod tests {
         feed.update(vcx, |f, cx| f.open_at(index, cx));
         vcx.run_until_parked();
         let detail = window.read_with(vcx, |w, _| w.detail.clone()).expect("the feed's Open puts a detail up");
-        // Let the open morph land: it is ticked by `render`, which the test drives by a notify.
+        // Let the open morph finish: it is ticked by `render`, which the test drives by a notify.
         vcx.background_executor.advance_clock(crate::morph::DURATION);
         detail.update(vcx, |_, cx| cx.notify());
         vcx.run_until_parked();
@@ -786,7 +787,7 @@ mod tests {
         vcx.run_until_parked();
         let detail = window.read_with(vcx, |w, _| w.detail.clone()).expect("the feed's Open puts a detail up");
         detail.read_with(vcx, |d, _| assert!(d.is_transitioning(), "growing out of its cell"));
-        // Esc during the open morph is ignored; let it land first. The morph is ticked by
+        // Esc during the open morph is ignored; let it finish first. The morph is ticked by
         // `render`, which the app drives per animation frame and the test by a notify.
         vcx.background_executor.advance_clock(crate::morph::DURATION);
         detail.update(vcx, |_, cx| cx.notify());
@@ -1072,7 +1073,7 @@ mod tests {
     }
 
     /// Press a cell, move past GPUI's drag threshold, release over the album's sidebar row: the
-    /// generation lands in the album, the way a user files a cell.
+    /// generation is filed into the album, the way a user does it.
     #[gpui::test]
     fn dragging_a_cell_onto_an_album_row_files_it_there(cx: &mut TestAppContext) {
         let (e, window, vcx) = library(cx, 2);
@@ -1172,7 +1173,7 @@ mod tests {
     }
 
     /// Dragging one side's handle while the other is hidden must not be corrected against the
-    /// hidden panel's stale width, and showing it again keeps both.
+    /// hidden panel's saved width, and showing it again keeps both.
     fn drag_while_other_hidden(cx: &mut TestAppContext, hidden: Side, dragged: Side, width: Pixels) {
         let (_e, window, vcx) = library(cx, 0);
         toggle(hidden, vcx);

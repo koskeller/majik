@@ -6,14 +6,14 @@
 //! Secret Service. One item rather than one per provider means one read at startup, one write per
 //! save, and at most one keychain dialog.
 //!
-//! Debug builds keep the map in `development_credentials.json` instead (Zed does the
-//! same): a login-keychain item's ACL trusts the *code signature* of the binary that created it, and
-//! an unsigned `cargo run` binary or an ad-hoc-signed bundle changes identity on every rebuild, so
+//! Debug builds keep the map in `development_credentials.json` instead, as Zed does. A
+//! login-keychain item's ACL trusts the *code signature* of the binary that created it, and an
+//! unsigned `cargo run` binary or an ad-hoc-signed bundle changes identity on every rebuild, so
 //! each read after a rebuild would raise the "enter your keychain password" dialog.
 //! `MAJIK_USE_KEYCHAIN=1` opts a debug build back into the keychain.
 //!
 //! The store is deliberately *not* split by build channel ([`crate::config::credentials_dir`] is
-//! always the stable folder, and [`KEYCHAIN_URL`] carries no channel): a provider key is entered
+//! always the stable folder, and [`KEYCHAIN_URL`] carries no channel), so a provider key is entered
 //! once and survives wiping the dev folder. The cost is that the map is one item, so removing a key
 //! in one channel removes it in the other.
 
@@ -37,15 +37,15 @@ pub trait SecretBackend: Send + Sync {
 /// rolling the cache back if persisting fails.
 ///
 /// The startup [`Self::load`] can take a while (the keychain may sit behind a dialog) and the app
-/// stays usable meanwhile, so an edit made before it lands neither replaces the stored map with the
-/// one key the user just typed nor gets overwritten when the read finally resolves.
+/// stays usable meanwhile, so an edit made before it finishes neither replaces the stored map with
+/// the one key the user just typed nor gets overwritten when the read finally resolves.
 pub struct ApiKeys {
     cache: Mutex<KeyMap>,
     backend: Box<dyn SecretBackend>,
-    /// Whether the startup read has landed in the cache. Until then the cache holds only what was
+    /// Whether the startup read has reached the cache. Until then the cache holds only what was
     /// edited this session, so a save writes through the stored map instead of replacing it.
     loaded: AtomicBool,
-    /// Providers edited before the startup read landed; their edit wins over the read's snapshot.
+    /// Providers edited before the startup read finished; their edit wins over the read's snapshot.
     edited_before_load: Mutex<HashSet<String>>,
 }
 
@@ -130,9 +130,9 @@ impl ApiKeys {
     }
 
     fn persist(self: &Arc<Self>, provider: &str, previous: Option<String>, cx: &mut App) -> Task<Result<()>> {
-        // Before the startup read has landed the cache lacks whatever it will bring, so writing
-        // the cache alone would wipe every other provider's key: write through the stored map.
-        // Both are captured now: the startup read may land (and clear the edit list) before the
+        // Before the startup read finishes the cache lacks whatever it will bring, so writing the
+        // cache alone would wipe every other provider's key: write through the stored map. Both are
+        // captured now, because the startup read may finish (and clear the edit list) before the
         // write below runs, and the stored map must still lose what this session deleted.
         let (stored, edited) = if self.loaded.load(Ordering::SeqCst) {
             (None, Vec::new())
@@ -159,9 +159,9 @@ impl ApiKeys {
         })
     }
 
-    /// Write the cache over `stored` (the backend's map when the startup read hasn't landed yet;
-    /// `None` once the cache is the whole truth), dropping the `edited` providers the cache no
-    /// longer holds — deletions made this session.
+    /// Write the cache over `stored` (the backend's map when the startup read hasn't finished yet;
+    /// `None` once the cache holds everything), dropping the `edited` providers the cache no longer
+    /// holds, which are the deletions made this session.
     async fn write_through(&self, stored: Option<Task<Result<KeyMap>>>, edited: Vec<String>, cx: &mut AsyncApp) -> Result<()> {
         let mut keys = match stored {
             Some(read) => read.await?,
@@ -222,7 +222,7 @@ impl SecretBackend for MemoryBackend {
 
 pub const DEVELOPMENT_FILE: &str = "development_credentials.json";
 
-/// Plain JSON on disk, readable only by the user. Debug builds only — see the module docs.
+/// Plain JSON on disk, readable only by the user. Debug builds only; see the module docs.
 pub struct FileBackend {
     pub path: PathBuf,
 }

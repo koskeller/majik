@@ -1,6 +1,6 @@
 //! The detail view's open/close transition: the feed cell's box grows into the stage's fitted
-//! image rect, and shrinks back into its cell on close — what Photos does. Pure and clock-driven
-//! like `paging.rs` so the view tests can step it headlessly.
+//! image rect, and shrinks back into its cell on close, as Photos does. Pure and clock-driven like
+//! `paging.rs` so the view tests can step it headlessly.
 
 use std::time::{Duration, Instant};
 

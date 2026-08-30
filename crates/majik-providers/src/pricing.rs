@@ -5,7 +5,7 @@
 //! [`crate::models`] (which are id-only by design). Each provider owns a `pricing` table beside its
 //! capability table and hands it to the registry through [`crate::ProviderDescriptor::price`].
 //!
-//! Everything here is an *estimate*. Provider prices drift, some models bill on the size of an
+//! Everything here is an *estimate*. Provider prices change, some models bill on the size of an
 //! output we haven't produced yet, and a model we have no figure for reports [`Estimate::Unknown`]
 //! rather than guessing.
 
@@ -15,14 +15,14 @@ use crate::models::ToolModel;
 use crate::settings::{AudioGenerationSettings, ImageGenerationSettings, VideoGenerationSettings};
 
 /// USD in micro-dollars ($1 = 1_000_000). An integer so the arithmetic and the string the user
-/// reads never drift apart through a float.
+/// reads can never disagree through a float.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Usd(pub u64);
 
 impl Usd {
     pub const ZERO: Usd = Usd(0);
 
-    /// One dollar in micro-dollars — the unit every table entry is written in.
+    /// One dollar in micro-dollars, the unit every table entry is written in.
     pub const PER_DOLLAR: u64 = 1_000_000;
 
     pub fn is_zero(self) -> bool {
@@ -33,7 +33,7 @@ impl Usd {
 impl fmt::Display for Usd {
     /// Money, rounded on the integer micro-dollars so the result never depends on float
     /// formatting. Two decimals from a dime up; three below it, because prices really do run
-    /// $0.003 an image and rounding those to whole cents (`$0.025` → `$0.03`) is a 20% lie on a
+    /// $0.003 an image and rounding those to whole cents (`$0.025` → `$0.03`) is 20% out on a
     /// per-item figure. A trailing zero is dropped, so $0.04 doesn't read as `$0.040`.
     /// `Usd::ZERO` is "Free".
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -59,9 +59,9 @@ impl fmt::Display for Usd {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Estimate {
     Exact(Usd),
-    /// No price data for this model on this provider. A deliberate, reviewed state — the
-    /// `every_supported_model_is_priced_or_listed_as_unpriced` guard test lists every model
-    /// allowed to be here — and the composer says so instead of showing a number.
+    /// No price data for this model on this provider. This is deliberate: the
+    /// `every_supported_model_is_priced_or_listed_as_unpriced` guard test lists every model allowed
+    /// to be here, and the composer says so instead of showing a number.
     Unknown,
 }
 
@@ -96,7 +96,7 @@ pub enum PricedJob<'a> {
 }
 
 impl PricedJob<'_> {
-    /// The catalog id of the model being priced — the key every provider table matches on.
+    /// The catalog id of the model being priced, which is the key every provider table matches on.
     pub fn model_id(&self) -> &str {
         match self {
             PricedJob::Image(s) => s.model.id,
@@ -119,9 +119,8 @@ pub fn flat(micros: u64) -> Estimate {
 
 /// Billed by megapixels of output, with the first one charged at a floor rate.
 ///
-/// Megapixels are rounded to the nearest, never below one — which is what reproduces the worked
-/// examples fal publishes for this shape (1024×1024 = 1 MP, 1920×1080 = 2 MP, 512×512 still pays
-/// for one).
+/// Megapixels are rounded to the nearest, never below one, which reproduces the worked examples
+/// fal publishes for this shape (1024×1024 = 1 MP, 1920×1080 = 2 MP, 512×512 still pays for one).
 pub fn per_megapixel(first: u64, extra: u64, width: u32, height: u32) -> Estimate {
     let pixels = u64::from(width) * u64::from(height);
     let megapixels = ((pixels + 500_000) / 1_000_000).max(1);
@@ -139,8 +138,8 @@ pub fn per_character(micros_per_character: u64, characters: usize) -> Estimate {
 }
 
 /// Picks a rate from a lookup table keyed on some setting, e.g. resolution or (resolution, audio).
-/// `None` when the table has no row for `key` — the caller returns [`Estimate::Unknown`], which is
-/// the honest answer for a combination we never priced.
+/// `None` when the table has no row for `key`; the caller then returns [`Estimate::Unknown`], which
+/// is the right answer for a combination we never priced.
 pub fn rate<K: PartialEq>(table: &[(K, u64)], key: K) -> Option<u64> {
     table.iter().find(|(k, _)| *k == key).map(|(_, micros)| *micros)
 }
@@ -212,7 +211,7 @@ mod tests {
 
     #[test]
     fn megapixels_round_to_nearest_with_a_one_megapixel_floor() {
-        // $0.03 first megapixel, $0.015 each extra — fal's flux-2-pro shape, checked against the
+        // $0.03 first megapixel, $0.015 each extra: fal's flux-2-pro shape, checked against the
         // worked examples on fal.ai/models/fal-ai/flux-2-pro.
         assert_eq!(per_megapixel(30_000, 15_000, 512, 512), Estimate::Exact(Usd(30_000)), "a part megapixel still pays for one");
         assert_eq!(per_megapixel(30_000, 15_000, 1024, 1024), Estimate::Exact(Usd(30_000)));

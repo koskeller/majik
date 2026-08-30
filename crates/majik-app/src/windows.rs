@@ -63,7 +63,7 @@ impl Singleton {
     }
 }
 
-/// At least this much of a restored window must land on its display, else it is re-centred
+/// At least this much of a restored window must fall on its display, else it is re-centred
 /// (a monitor that was unplugged, or a frame saved off-screen).
 const MIN_VISIBLE: (f32, f32) = (120., 60.);
 /// Moves and resizes come in bursts; the frame is written this long after the last one.
@@ -188,9 +188,9 @@ pub fn save_all_frames(cx: &mut App) {
 
 pub fn open_library(cx: &mut App) {
     if let Some(handle) = cx.global::<Windows>().library {
-        // Deferred: ⌘1 arrives while the Library window itself is dispatching it, and a window can't
-        // be updated from within its own dispatch — activating directly would fail and open a
-        // second Library window. A handle whose window is gone falls through to opening one.
+        // Deferred: ⌘1 arrives while the Library window itself is dispatching it, and a window
+        // can't be updated from within its own dispatch, so activating directly would fail and open
+        // a second Library window. A handle whose window is gone falls through to opening one.
         cx.defer(move |cx| {
             if handle.update(cx, |_, window, _| window.activate_window()).is_err() {
                 cx.global_mut::<Windows>().library = None;

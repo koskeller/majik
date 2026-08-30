@@ -5,10 +5,11 @@ use gpui::{App, Global};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// The build channel, stamped at compile time: `script/lib/release.sh` exports `MAJIK_CHANNEL=stable`,
-/// so the shipped bundle is the only [`Channel::Stable`] build. Everything else — `cargo run`,
-/// `cargo run --release`, `cargo test` — is [`Channel::Dev`] and keeps its own library, preferences
-/// and app identity, so it can be wiped without touching the app you actually use.
+/// The build channel, stamped at compile time: `script/lib/release.sh` exports
+/// `MAJIK_CHANNEL=stable`, so the shipped bundle is the only [`Channel::Stable`] build. Everything
+/// else — `cargo run`, `cargo run --release`, `cargo test` — is [`Channel::Dev`] and keeps its own
+/// library, preferences and app identity, so it can be wiped without touching the app you actually
+/// use.
 ///
 /// Deliberately not `cfg!(debug_assertions)`: a release-profile build for profiling is still
 /// development and must not open the real library.
@@ -44,9 +45,9 @@ const fn channel_const() -> Channel {
     }
 }
 
-/// This build's [`Channel::marker`], baked into the binary so the packaging scripts can prove the
-/// artifact they are about to ship carries the stamp. `majik --channel` prints it, which is also
-/// what keeps the linker from dropping it.
+/// This build's [`Channel::marker`], baked into the binary so the packaging scripts can check that
+/// the artifact they are about to ship carries the stamp. `majik --channel` prints it, which is
+/// also what stops the linker dropping it.
 pub const CHANNEL_MARKER: &str = channel_const().marker();
 
 /// `majik --version`, and the version row on Settings → About.
@@ -63,12 +64,12 @@ impl Channel {
         }
     }
 
-    /// A namespaced string the packaging scripts grep for in the built binary, to prove it was
+    /// A namespaced string the packaging scripts grep for in the built binary, to confirm it was
     /// compiled with the channel they are about to package it as. Namespaced because `"stable"`
     /// alone appears in the binary for a dozen unrelated reasons.
     ///
     /// `script/lib/release.sh` and `script/bundle-windows.ps1` grep for this; renaming it without
-    /// updating them would silently disable that guard, so a test pins the three together.
+    /// updating them would silently disable that check, so a test pins the three together.
     pub const fn marker(self) -> &'static str {
         match self {
             Channel::Stable => "majik-channel:stable",
@@ -124,8 +125,8 @@ pub fn app_name() -> &'static str {
 pub struct AppDirs {
     /// `config.json`, `drafts.json`.
     pub config: PathBuf,
-    /// The default library (media, database, thumbnails) — potentially gigabytes, so never a
-    /// roaming location.
+    /// The default library (media, database, thumbnails). It can be gigabytes, so never a roaming
+    /// location.
     pub data: PathBuf,
     /// Regenerable downloads (voice previews); safe to delete at any time.
     pub cache: PathBuf,
@@ -305,10 +306,10 @@ pub fn config_path() -> Option<PathBuf> {
     config_dir().map(|d| d.join("config.json"))
 }
 
-/// Where API keys are persisted — the one thing every channel shares, so a provider key is entered
-/// once and wiping the dev folder doesn't lose it. It is always the *stable* folder, which means a
-/// dev build on a machine that has never run the shipped app creates that folder. The whole key map
-/// is stored as one item, so removing a key in one channel removes it in the other.
+/// Where API keys are persisted. This is the only thing every channel shares, so a provider key is
+/// entered once and wiping the dev folder doesn't lose it. It is always the *stable* folder, which
+/// means a dev build on a machine that has never run the shipped app creates that folder. The whole
+/// key map is stored as one item, so removing a key in one channel removes it in the other.
 ///
 /// `None` until `main` sets the config dir, which keeps tests off the real file.
 pub fn credentials_dir() -> Option<PathBuf> {
@@ -342,7 +343,7 @@ impl Config {
     }
 }
 
-/// Mutate + persist the global config.
+/// Mutate and persist the global config.
 pub fn update_config(cx: &mut App, f: impl FnOnce(&mut Config)) {
     let cfg = cx.global_mut::<Config>();
     f(cfg);
@@ -370,14 +371,15 @@ mod tests {
         assert_eq!(Channel::Stable.marker(), "majik-channel:stable");
         assert_eq!(Channel::Dev.marker(), "majik-channel:dev");
         // The marker has to be findable in the binary without matching by accident: `stable` alone
-        // occurs throughout it, so the prefix is the whole point.
+        // occurs throughout it, which is why it carries a prefix.
         assert!(Channel::Stable.marker().starts_with("majik-channel:"));
     }
 
     #[test]
     fn every_bundle_script_greps_for_the_marker_the_binary_emits() {
-        // Renaming the marker without updating the scripts would leave them grepping for a string no
-        // build emits — the "forgot MAJIK_CHANNEL" guard would pass every time, on every platform.
+        // Renaming the marker without updating the scripts would leave them grepping for a string
+        // no build emits, so the "forgot MAJIK_CHANNEL" check would pass every time, on every
+        // platform.
         let shared = include_str!("../../../script/lib/release.sh");
         let windows = include_str!("../../../script/bundle-windows.ps1");
         for (name, script) in [("script/lib/release.sh", shared), ("script/bundle-windows.ps1", windows)] {
@@ -398,7 +400,8 @@ mod tests {
 
     #[test]
     fn stable_dirs_are_exactly_the_shipped_ones() {
-        // Renaming any of these orphans a real user's library: they are the installed app's paths.
+        // Renaming any of these leaves a real user's library orphaned: they are the installed
+        // app's paths.
         let stable = dirs(Channel::Stable);
         if cfg!(target_os = "macos") {
             let dir = PathBuf::from("/data/com.app.majik");
@@ -433,14 +436,15 @@ mod tests {
     #[test]
     fn credentials_are_shared_and_stay_off_disk_in_tests() {
         assert!(credentials_dir().is_none(), "no config dir is set in tests, so keys never touch disk");
-        // Once `main` sets it, it resolves to the stable folder on every channel — that is what
+        // Once `main` sets it, it resolves to the stable folder on every channel, which is what
         // makes the key store shared while everything else is split.
         assert_ne!(dirs(Channel::Dev).config, dirs(Channel::Stable).config);
     }
 
     #[test]
     fn the_bundle_plist_matches_the_stable_identity() {
-        // `bundle-mac` never templates these, so the plist and the code can only be kept in step here.
+        // `bundle-mac` never templates these, so this test is the only thing keeping the plist and
+        // the code in agreement.
         let plist = include_str!("../../../packaging/Info.plist");
         let id = format!("<key>CFBundleIdentifier</key><string>{}</string>", Channel::Stable.bundle_id());
         let name = format!("<key>CFBundleName</key><string>{}</string>", Channel::Stable.app_name());
@@ -453,7 +457,7 @@ mod tests {
         let plist = include_str!("../../../packaging/Info.plist");
         // `script/bundle-mac` substitutes both CFBundleVersion and CFBundleShortVersionString.
         assert_eq!(plist.matches("__VERSION__").count(), 2, "packaging/Info.plist lost a version placeholder");
-        // A hardcoded version would survive the substitution and ship stale.
+        // A hardcoded version would survive the substitution and ship out of date.
         assert!(!plist.contains(env!("CARGO_PKG_VERSION")), "packaging/Info.plist hardcodes a version");
         // The plist names the binary the bundle script copies in, which is `[[bin]] name`.
         assert!(plist.contains("<key>CFBundleExecutable</key><string>majik</string>"));
@@ -489,8 +493,8 @@ mod tests {
     #[test]
     fn the_installer_app_id_is_never_changed() {
         // Windows decides whether an installer upgrades an existing install or sits beside it by
-        // this GUID. Changing it orphans every install that came before — the Windows counterpart
-        // of `stable_dirs_are_exactly_the_shipped_ones`.
+        // this GUID. Changing it orphans every install that came before. This is the Windows
+        // counterpart of `stable_dirs_are_exactly_the_shipped_ones`.
         let iss = include_str!("../../../packaging/majik.iss");
         assert!(iss.contains("#define AppId \"{92561171-E8BA-4C40-BC5E-9A8C3191D8D3}\""));
         assert!(iss.contains("OutputBaseFilename=MajikSetup-{#Arch}"));
@@ -505,8 +509,8 @@ mod tests {
         assert_eq!(resolve_library_root(None, None, &configured), PathBuf::from("/configured"));
         assert_eq!(resolve_library_root(None, None, &unset), default_library_root());
         assert!(default_library_root().ends_with("Library"));
-        // The overrides are deliberately channel-independent: that is how a dev build opens a copy
-        // of the real library. Only the fallback follows the channel.
+        // The overrides deliberately ignore the channel: that is how a dev build opens a copy of
+        // the real library. Only the fallback follows the channel.
         assert!(default_library_root().starts_with(app_dirs().map(|d| d.data).unwrap_or_else(|| PathBuf::from("."))));
     }
 }

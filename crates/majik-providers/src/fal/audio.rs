@@ -70,8 +70,8 @@ pub fn build_audio_request_body(prompt: &str, settings: &AudioGenerationSettings
             // `GeminiDialogue` when speaker2 is set.
             let speaker2 = settings.speaker2.as_ref().unwrap_or(&settings.speaker1);
             // fal's gemini-tts SpeakerConfig requires speaker_id to match ^\w+$ (no whitespace).
-            // The user types "Speaker 1: …" / "Speaker 2: …" — rewrite those prefixes to
-            // "Speaker1:" / "Speaker2:" so they match the speaker_ids we send.
+            // The user types "Speaker 1: …" / "Speaker 2: …", so rewrite those prefixes to
+            // "Speaker1:" / "Speaker2:" to match the speaker_ids we send.
             json!({
                 "model": "gemini-2.5-pro-tts",
                 "prompt": normalize_speaker_prefixes(prompt),

@@ -47,8 +47,8 @@ pub fn descriptor() -> &'static ProviderDescriptor {
     })
 }
 
-// Mock supports every catalog model — capabilities come from whichever first-party provider knows
-// the model. Not a defensive fallback.
+// Mock supports every catalog model; capabilities come from whichever first-party provider knows
+// the model. This is not a defensive fallback.
 
 fn image_capabilities(model: &ImageModel) -> Option<ModelCapabilities> {
     crate::fal::descriptor().image_capabilities(model).or_else(|| crate::openrouter::descriptor().image_capabilities(model))

@@ -19,11 +19,11 @@ pub mod openrouter {
     pub const BASE_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
     pub const HTTP_REFERER: &str = "https://majik.app";
     pub const TITLE: &str = "Majik";
-    /// Rewriting a prompt is a fast, shallow task the user waits on with the composer frozen, so
-    /// thinking must be off: reasoning tokens count against the budget and leave an empty
-    /// completion, and the latency risks the 30 s deadline. Claude Haiku 4.5 has it off by default
-    /// and is carried by all three providers. (Live-tested; `openai/gpt-5-mini` returned nothing
-    /// here and fal rejected it outright.)
+    /// Rewriting a prompt is a quick task the user waits on with the composer frozen, so thinking
+    /// must be off: reasoning tokens count against the budget and leave an empty completion, and
+    /// the latency risks the 30 s deadline. Claude Haiku 4.5 has it off by default and is carried
+    /// by all three providers. (Tested live; `openai/gpt-5-mini` returned nothing here and fal
+    /// rejected it outright.)
     pub const TEXT_MODEL: &str = "anthropic/claude-haiku-4.5";
 }
 

@@ -1,16 +1,16 @@
 //! A folder of files (assets) plus a SQLite database of app state (`.majik/library.db`).
 //!
-//! The database is the source of truth. An [`Asset`] is a file the library holds — a generation's
+//! The database is the source of truth. An [`Asset`] is a file the library holds: a generation's
 //! output (`<uuid>.<ext>` in the root), an input it was given, or an import (`.majik/assets/`). A
-//! [`Generation`] is a generation: it stores no file of its own but references its output asset and,
-//! through [`GenerationInput`]s, the assets it consumed — so using an output as an input again shares the
+//! [`Generation`] stores no file of its own but references its output asset and, through
+//! [`GenerationInput`]s, the assets it consumed, so using an output as an input again shares the
 //! row rather than copying bytes. Files that merely sit in the folder are not assets.
 //!
 //! On open every asset is checked against the folder: one whose file is gone is flagged
-//! [`Asset::missing`] and its generation shown as [`Status::Missing`] (never dropped — favourites,
-//! albums and the request survive, and everything recovers when the file returns); a generating or
-//! failed row whose output file exists is promoted to completed (a crash between writing the file and
-//! the row). Deleting a generation soft-deletes it and leaves its assets alone; an asset can only be
+//! [`Asset::missing`] and its generation shown as [`Status::Missing`]. Such a row is never dropped —
+//! favourites, albums and the request survive, and everything recovers when the file returns. A
+//! generating or failed row whose output file exists is promoted to completed (a crash between
+//! writing the file and the row). Deleting a generation soft-deletes it and leaves its assets alone; an asset can only be
 //! trashed once no live generation references it.
 
 use anyhow::{anyhow, Context, Result};
@@ -32,7 +32,7 @@ pub enum FeedFilter {
     Library,
     Favorites,
     Album(AlbumId),
-    /// Every asset — outputs, inputs and imports — rather than generations.
+    /// Every asset (outputs, inputs and imports) rather than generations.
     Assets,
 }
 
@@ -69,7 +69,7 @@ pub struct Library {
     root: PathBuf,
     cache_dir: PathBuf,
     /// Backing store for library-owned content (assets, thumbnails, trash). Local today; an
-    /// S3-compatible backend can replace it without touching the rest of the library.
+    /// S3-compatible backend can replace it without changing the rest of the library.
     blobs: Arc<dyn BlobStore>,
     db: Db,
     /// Live generations, newest first.
@@ -234,8 +234,8 @@ impl Library {
         self.generations.iter().find(|it| it.output_asset_id.as_ref() == Some(id)).map(|it| it.id.clone())
     }
 
-    /// Whether any live generation references the asset (as its output or one of its inputs) — the
-    /// one rule behind whether it may be deleted.
+    /// Whether any live generation references the asset (as its output or one of its inputs). This
+    /// alone decides whether it may be deleted.
     pub fn is_referenced(&self, id: &AssetId) -> bool {
         self.generation_producing(id).is_some() || self.inputs.iter().any(|i| &i.asset_id == id)
     }
@@ -308,11 +308,11 @@ impl Library {
                     item.status = Status::Missing;
                 }
                 (Status::Generating | Status::Failed, Some(asset)) if !asset.missing => {
-                    // The file is there. Either the row never flipped (a crash mid-completion: the
-                    // attempt is still open and completes along with it), or a Missing row's file
-                    // came back after a retry of it failed: the attempt that produced the file is
-                    // the one the row mirrors again, and the failed retry stays in the history as
-                    // what it was. Only a file no attempt accounts for is credited to the active one.
+                    // The file is there. Either the row never flipped (a crash mid-completion, so
+                    // the attempt is still open and completes along with it), or a Missing row's
+                    // file came back after a retry of it failed: the row mirrors the attempt that
+                    // produced the file again, and the failed retry stays in the history unchanged.
+                    // Only a file no attempt accounts for is credited to the active one.
                     let jobs = self.db.load_jobs(&item.id)?;
                     let active = item.active_job_id.as_ref().and_then(|id| jobs.iter().find(|j| &j.id == id));
                     let producer = jobs.iter().find(|j| j.status == JobStatus::Completed && j.output_asset_id.as_ref() == Some(&asset.id));
@@ -349,11 +349,11 @@ impl Library {
         Ok(())
     }
 
-    /// Drop thumbnails no asset points at any more (the asset was deleted or its file changed, which
-    /// changes the thumbnail key). Thumbnails are a cache, so an over-eager sweep only costs a
-    /// regeneration; a failure only costs disk space, hence best-effort with a log.
+    /// Drop thumbnails no asset points at any more (the asset was deleted or its file changed,
+    /// which changes the thumbnail key). Thumbnails are a cache, so sweeping too much only costs a
+    /// regeneration and a failure only costs disk space, so this is best-effort with a log.
     /// Remove every stored tier of a thumbnail. Best-effort with a log, like the sweep: a
-    /// thumbnail is a cache, and a file left behind only costs disk until the next sweep.
+    /// thumbnail is a cache, and a file left behind only costs disk space until the next sweep.
     fn delete_thumbnail_tiers(&self, thumb: &Path, what: &str) {
         for tier in thumbnails::TIERS {
             let Some(key) = thumbnails::sized_thumb_path(thumb, tier).as_deref().and_then(thumbnails::thumb_key_for_path) else { continue };
@@ -366,7 +366,7 @@ impl Library {
     fn sweep_thumbnails(&self) {
         // Every tier of a live asset's thumbnail, not just the standard one it records: the large
         // tier is a sibling file (`<hash>@800.jpg`), and sweeping it would delete on every launch
-        // exactly the work the feed did on the last one.
+        // the work the feed did on the last one.
         let referenced: std::collections::HashSet<String> = self
             .assets
             .iter()
@@ -481,9 +481,9 @@ impl Library {
 
     /// Delete generations: they leave every feed and album, their assets stay (the output remains
     /// an asset of the library; see [`Self::delete_assets`]). An attempt still in flight is
-    /// recorded as canceled with the row — the engine's own word never lands on a deleted row.
-    /// Best-effort per item: a row that can't be written is kept, so in-memory state never
-    /// diverges from what was actually removed.
+    /// recorded as canceled with the row, since the engine's own outcome is never applied to a
+    /// deleted row. Best-effort per item: a row that can't be written is kept, so in-memory state
+    /// never disagrees with what was actually removed.
     pub fn delete_generations(&mut self, ids: &[GenerationId]) -> Result<()> {
         let mut deleted: Vec<GenerationId> = Vec::new();
         let mut first_err: Option<anyhow::Error> = None;
@@ -518,8 +518,9 @@ impl Library {
     }
 
     /// Trash assets: the file goes to `.majik/trash/` (nothing is ever hard-deleted) and the row
-    /// goes. Refused for an asset a live generation still references — the generation would lose
-    /// its output or an input it can be retried with. Best-effort per asset, first error returned.
+    /// goes with it. Refused for an asset a live generation still references, since the generation
+    /// would lose its output or an input it can be retried with. Best-effort per asset, first error
+    /// returned.
     pub fn delete_assets(&mut self, ids: &[AssetId]) -> Result<()> {
         let mut deleted: Vec<AssetId> = Vec::new();
         let mut first_err: Option<anyhow::Error> = None;
@@ -638,7 +639,7 @@ impl Library {
         })
     }
 
-    /// Append one exchange to an attempt's trail (bodies bounded) and fold it into the attempt's
+    /// Append one exchange to an attempt's traces (bodies bounded) and fold it into the attempt's
     /// provider columns, as one write. Touches nothing the feed shows.
     pub fn record_trace(&mut self, job: &JobId, trace: JobTrace) -> Result<()> {
         let trace = trace.bounded();
@@ -647,9 +648,9 @@ impl Library {
 
     /// Start the next attempt of a failed or missing row (a retry): a new queued job becomes the
     /// active one and the row flips back to generating, keeping its output asset so a regenerated
-    /// file lands under the same id. Refused while the active attempt is still in flight — one
+    /// file is written under the same id. Refused while the active attempt is still in flight; one
     /// attempt at a time is what keeps the engine's events unambiguous. Nothing changes in memory
-    /// unless the attempt was written: a row must never spin for a job that doesn't exist.
+    /// unless the attempt was written, so a row never spins for a job that doesn't exist.
     pub fn start_attempt(&mut self, id: &GenerationId) -> Result<JobId> {
         let item = self.get(id).ok_or_else(|| anyhow!("unknown item {id}"))?;
         if let Some(active) = self.active_job(id) {
@@ -706,8 +707,8 @@ impl Library {
     }
 
     /// Add a file to the library as an asset of its own (a composer drop, an import). Content
-    /// addressed: the same bytes again return the existing asset, and an asset whose file had gone
-    /// missing gets it back. Returns the asset's id.
+    /// addressed, so the same bytes again return the existing asset, and an asset whose file had
+    /// gone missing gets it back. Returns the asset's id.
     pub fn import_asset(&mut self, content_type: &str, bytes: &[u8]) -> Result<AssetId> {
         let hash = content_hash(bytes);
         if let Some(id) = self.db.find_asset_by_hash(&hash)? {
@@ -790,7 +791,7 @@ impl Library {
         }
     }
 
-    /// An asset's bytes, through the blob store (the one way library content is read).
+    /// An asset's bytes, through the blob store (the only way library content is read).
     pub fn asset_bytes(&self, asset: &Asset) -> Result<Vec<u8>> {
         if asset.missing {
             return Err(anyhow!("{} has no file", asset.file_name()));
@@ -800,9 +801,9 @@ impl Library {
     }
 
     /// Write the produced bytes as `<id>.<ext>`, register them as the row's output asset and mark
-    /// the row — and its active attempt — completed, in one transaction. A regenerated row (retry
-    /// of a missing file) reuses its asset row. Memory changes only once the database has: on a
-    /// failed write the row is still generating, with its attempt open for the failure to land on.
+    /// the row and its active attempt completed, in one transaction. A regenerated row (retry of a
+    /// missing file) reuses its asset row. Memory changes only once the database has: on a failed
+    /// write the row is still generating, with its attempt open to record the failure.
     pub fn complete_generation(&mut self, id: &GenerationId, bytes: &[u8], is_upscaled: bool) -> Result<PathBuf> {
         let item = self.get(id).ok_or_else(|| anyhow!("unknown item {id}"))?;
         let media_type = item.media_type;
@@ -898,9 +899,9 @@ impl Library {
     }
 
     /// The row's attempt is over as `status`. An attempt already recorded as over (a retry refused
-    /// before it could start, on a row whose last attempt failed — or completed, for a Missing row)
-    /// keeps what it recorded: the refusal becomes a new attempt that ended on the spot, so the
-    /// history never rewrites a provider's verdict.
+    /// before it could start, on a row whose last attempt failed, or completed for a Missing row)
+    /// keeps what it recorded: the refusal becomes a new attempt that ended immediately, so the
+    /// history never rewrites what a provider reported.
     fn end_attempt(&mut self, id: &GenerationId, status: JobStatus, message: String, kind: Option<&str>) {
         let now = now_ms();
         let refused = match self.active_job(id) {
@@ -1035,7 +1036,7 @@ mod tests {
 
     /// Every tier of a live thumbnail survives a reopen, and all of them go when the asset does.
     /// The sweep used to keep only the standard `<hash>.<ext>` name, so the large tier the feed had
-    /// just rendered was deleted on the next launch and paid for again.
+    /// just rendered was deleted on the next launch and had to be rendered again.
     #[test]
     fn reopening_keeps_every_tier_and_deleting_an_asset_takes_them_all() {
         let (dir, mut lib) = temp_library(1);
@@ -1299,7 +1300,7 @@ mod tests {
         let id = lib.add_generating(MediaType::Image, None, None, Some("Mock".into()), None);
         let file = format!("{id}.png");
         lib.fail_generation(&id, "interrupted");
-        // Simulate the output asset landing without the row ever flipping.
+        // Simulate the output asset being written without the row ever flipping.
         std::fs::write(dir.path().join(&file), png(1)).unwrap();
         let asset = Asset {
             id: AssetId::new(),

@@ -13,9 +13,9 @@ use majik_providers::{
 /// One runtime for every test in this binary. `http::client()` is a process-wide `reqwest::Client`
 /// whose pooled connections each carry a dispatch task owned by the runtime that opened them. Give
 /// every test its own runtime and that task dies with the test while the idle connection stays in
-/// the pool — so when a later wiremock server binds the port the dead one released, the next test
+/// the pool, so when a later wiremock server binds the port the dead one released, the next test
 /// handed that connection fails with "dispatch task is gone: runtime dropped the dispatch task".
-/// Which test loses is a race, so it fails on one runner and passes on the others. One runtime for
+/// Which test fails is a race, so it breaks on one runner and passes on the others. One runtime for
 /// the whole binary keeps every dispatch task alive as long as the pool that refers to it, the way
 /// `e2e.rs` already shares its own.
 fn rt() -> &'static tokio::runtime::Runtime {

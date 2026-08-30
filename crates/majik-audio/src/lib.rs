@@ -100,9 +100,9 @@ pub fn probe(path: &Path) -> Result<AudioInfo> {
     // scan, so remember where they ended.
     let mut last_end_ts: u64 = 0;
 
-    // Some containers (notably AAC in MP4) only describe the channel layout
+    // Some containers (AAC in MP4, for one) only describe the channel layout
     // inside the codec's private config, which symphonia parses when it
-    // decodes. Decoding one packet is cheap enough to get an honest answer.
+    // decodes. Decoding one packet is cheap enough to get the real answer.
     if channels == 0 {
         if let Ok(mut decoder) =
             symphonia::default::get_codecs().make(&params, &DecoderOptions::default())
@@ -134,7 +134,7 @@ pub fn probe(path: &Path) -> Result<AudioInfo> {
                             last_end_ts = last_end_ts.max(packet.ts().saturating_add(packet.dur()));
                         }
                     }
-                    // EOF surfaces as an UnexpectedEof io error in symphonia 0.5.
+                    // EOF is reported as an UnexpectedEof io error in symphonia 0.5.
                     Err(SymphoniaError::IoError(e))
                         if e.kind() == std::io::ErrorKind::UnexpectedEof =>
                     {

@@ -159,7 +159,7 @@ mod tests {
         let all = ids(6);
         let mut s = Selection::default();
         s.click(&all[3], 3, Modifiers::default(), &all);
-        // A new item lands at the top: the clicked item is now at 4.
+        // A new item is inserted at the top: the clicked item is now at 4.
         let mut inserted = vec![GenerationId("new".into())];
         inserted.extend(all.iter().cloned());
         s.retain_in(&inserted);

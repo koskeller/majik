@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use crate::model::{Generation, MediaType};
 use crate::video;
 
-/// Long edge of stored thumbnails. Enough for a cell up
-/// to 400 device pixels — every zoom level but the largest, on a 2x display.
+/// Long edge of stored thumbnails. Enough for a cell up to 400 device pixels, which is every zoom
+/// level but the largest on a 2x display.
 pub const THUMB_MAX: u32 = 400;
 
 /// Every stored tier, smallest first. The tiers of one source are siblings of a single file: they
@@ -83,7 +83,7 @@ pub fn ensure_thumbnail_for(path: &Path, kind: MediaType, store: &dyn BlobStore)
 }
 
 /// [`ensure_thumbnail_for`] at a given tier. A source smaller than `long_edge` is stored as it is:
-/// the tiers are a ceiling, never an upscale.
+/// the tiers are a maximum, never an upscale.
 pub fn ensure_thumbnail_sized(path: &Path, kind: MediaType, long_edge: u32, store: &dyn BlobStore) -> Result<PathBuf> {
     let hash = thumb_key(path)?;
     match kind {
@@ -95,8 +95,8 @@ pub fn ensure_thumbnail_sized(path: &Path, kind: MediaType, long_edge: u32, stor
                 return store.local_path(&key);
             }
             // Only ever shrink. `DynamicImage::resize` would happily blow a 120 px source up to
-            // the tier's size, which costs disk and decode time for no detail — and the video
-            // poster path has never done it.
+            // the tier's size, which costs disk and decode time for no detail, and the video
+            // poster code has never done it.
             let bytes = if img.width().max(img.height()) > long_edge {
                 encode_thumbnail(&img.resize(long_edge, long_edge, FilterType::Triangle), ext)?
             } else {

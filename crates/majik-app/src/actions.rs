@@ -45,12 +45,12 @@ actions!(
     ]
 );
 
-/// Keys are written with gpui's `secondary` modifier — ⌘ on macOS, Ctrl on Windows and Linux —
+/// Keys are written with gpui's `secondary` modifier (⌘ on macOS, Ctrl on Windows and Linux),
 /// never `cmd`, which is the Windows / Super key off macOS.
 pub const NEW_COMPOSITION_KEYS: &str = "secondary-n";
 
-/// The platform's spelling of a binding for help text (`⌘N` on macOS, `Ctrl+N` elsewhere) —
-/// the same formatting the Shortcuts page and tooltips use, so copy never hard-codes a glyph.
+/// The platform's spelling of a binding for help text (`⌘N` on macOS, `Ctrl+N` elsewhere), the
+/// same formatting the Shortcuts page and tooltips use, so text never hard-codes a glyph.
 pub fn keystroke_label(keys: &str) -> String {
     match Keystroke::parse(keys) {
         Ok(keystroke) => Kbd::format(&keystroke),
@@ -63,7 +63,7 @@ pub fn keystroke_label(keys: &str) -> String {
 
 /// One row of the Settings → Shortcuts page: a label plus the bindings that trigger it (the same
 /// keys in several contexts, or several keys for one action). [`init`] installs exactly these, so
-/// the page can never drift from the keymap.
+/// the page can never disagree with the keymap.
 pub struct Shortcut {
     pub group: &'static str,
     pub label: &'static str,
@@ -290,7 +290,7 @@ mod tests {
     }
 
     /// The drawn menu bar (Windows / Linux) reads `GlobalState`, the native one (macOS) reads
-    /// gpui's own store: `init` fills both from the same list, so the two can never disagree.
+    /// gpui's own store. `init` fills both from the same list, so the two can never disagree.
     /// Two actions on the same keystroke in the same context would make one of them unreachable,
     /// and which one wins is an accident of table order.
     #[test]

@@ -1,12 +1,12 @@
 //! Newtypes for the string ids that cross the provider boundary.
 //!
-//! Every one of them is a persistence key — written into `library.db`, into a stored request, or
-//! into `config.json` — so the raw strings are frozen and a rename is a schema change.
+//! Every one of them is a persistence key, written into `library.db`, into a stored request, or
+//! into `config.json`, so the raw strings are fixed and a rename is a schema change.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// Provider identifier. The raw strings are persistence keys — do not change them.
+/// Provider identifier. The raw strings are persistence keys; do not change them.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ProviderId(pub String);

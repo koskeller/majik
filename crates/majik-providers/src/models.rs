@@ -379,7 +379,7 @@ pub struct VideoReferences {
 }
 
 impl VideoReferences {
-    /// Images only — the common case.
+    /// Images only, which is the common case.
     pub fn images(images: usize) -> Self {
         Self { images, ..Self::default() }
     }
@@ -470,7 +470,7 @@ impl VideoModelCapabilities {
     /// Declares the model's reference lists and merges their ranges into the asset constraints, so
     /// the composer offers a card per kind. Call it after `with_asset_constraints`, which replaces
     /// the whole set. References and frames are mutually exclusive at every provider that says
-    /// anything about it — that is a validation rule, not something the constraint set can express.
+    /// anything about it, which is a validation rule the constraint set cannot express.
     pub fn with_references(mut self, references: VideoReferences) -> Self {
         let mut constraints = std::mem::take(&mut self.asset_constraints);
         for role in [crate::AssetRole::ReferenceImage, crate::AssetRole::ReferenceVideo, crate::AssetRole::Audio] {

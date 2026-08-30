@@ -1,5 +1,5 @@
-//! Voice picker sheet: voice rows with subtitle / metadata and a
-//! preview play button; previews are downloaded once into the OS cache dir.
+//! Voice picker sheet: voice rows with a subtitle, metadata and a preview play button. Previews
+//! are downloaded once into the OS cache dir.
 
 use gpui::{prelude::*, px, App, Entity, SharedString, WeakEntity, Window};
 use gpui_component::button::{ButtonVariants as _};
@@ -180,7 +180,7 @@ pub fn open_voice_picker(compose: WeakEntity<ComposeView>, speaker: Speaker, voi
 
 fn render(state: &Entity<PreviewState>, compose: WeakEntity<ComposeView>, speaker: Speaker, voices: Vec<AudioVoice>, current: Option<AudioVoice>, allow_none: bool, cx: &mut App) -> impl IntoElement {
     // A single self-cancelling ticker refreshes the icon while a preview plays; it stops (and clears
-    // itself) as soon as nothing is playing, so re-renders don't spawn a growing pile of timers.
+    // itself) as soon as nothing is playing, so re-renders don't build up a pile of timers.
     state.update(cx, |s, cx| {
         if s.playing_id().is_some() && s.ticker.is_none() {
             s.ticker = Some(cx.spawn(async move |this, cx| loop {

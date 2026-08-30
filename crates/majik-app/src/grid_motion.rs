@@ -1,13 +1,13 @@
-//! The feed grid's motion: cells enter and leave on a snappy spring at 90 % scale, the media
-//! filter and column count ease over 0.25 s — moving and resizing every surviving cell — and only
-//! small changes (|Δcount| ≤ 4) animate at all, so the initial load and bulk deletes don't storm
-//! the grid.
+//! The feed grid's motion: cells enter and leave on a snappy spring at 90 % scale, and the media
+//! filter and column count ease over 0.25 s, moving and resizing every surviving cell. Only small
+//! changes (|Δcount| ≤ 4) animate at all, so the initial load and bulk deletes don't flood the grid.
 //!
 //! Every id has a [`Place`] (index + column count). When a place changes, the cell's on-screen
 //! [`Visual`] (position + side) is interpolated from where it was to where it belongs, so deleting
 //! a cell slides its neighbours into the gap and zooming resizes and rearranges in place. Removed
-//! cells linger as fading "ghosts" drawn from a render snapshot (the library forgets deleted items
-//! immediately). Pure, like `paging.rs`: the view supplies the executor clock and pixel geometry.
+//! cells linger as fading "ghosts" drawn from a render snapshot, since the library drops deleted
+//! items immediately. Pure, like `paging.rs`: the view supplies the executor clock and pixel
+//! geometry.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;

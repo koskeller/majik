@@ -1,10 +1,10 @@
 //! Live-API tests for prompt improvement as the app actually performs it: the instruction
 //! [`majik_generation::improve`] builds, carried by `Engine::improve_prompt` to a real provider.
 //!
-//! `majik-providers`' own `e2e.rs` covers `complete_text` at the client level; this covers the layer
-//! above it — the system prompt we ship, the token budget derived from the model's cap, and the
-//! engine's key handling. Same gate as that suite: every live test is `#[ignore]`d and keyed off the
-//! environment.
+//! `majik-providers`' own `e2e.rs` covers `complete_text` at the client level; this covers what
+//! sits above it: the system prompt we ship, the token budget derived from the model's cap, and the
+//! engine's key handling. Same rules as that suite: every live test is `#[ignore]`d and reads its
+//! key from the environment.
 //!
 //! ```sh
 //! cargo test -p majik-generation --test e2e -- --ignored
@@ -37,8 +37,8 @@ fn key_var(provider: &ProviderId) -> &'static str {
 
 /// One engine for the whole binary, resolving keys from the environment. It owns a tokio runtime,
 /// and `majik_providers::http` keeps a process-wide `reqwest::Client` bound to whichever runtime
-/// first uses it — an engine per test would poison that client for the next one ("dispatch task is
-/// gone"). The app runs one engine too, so this is also what production does. Never dropped.
+/// first uses it, so an engine per test would poison that client for the next one ("dispatch task
+/// is gone"). The app runs one engine too, so this matches production. Never dropped.
 fn engine() -> &'static Engine {
     static ENGINE: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
     ENGINE.get_or_init(|| {
@@ -71,7 +71,7 @@ fn improved(descriptor: &'static ProviderDescriptor, generation_type: &Generatio
     text
 }
 
-/// What lands in the prompt field: the instruction demands the rewritten prompt alone.
+/// What goes into the prompt field: the instruction demands the rewritten prompt alone.
 #[track_caller]
 fn assert_is_a_bare_prompt(who: &str, original: &str, improved: &str) {
     let text = improved.trim();
@@ -143,8 +143,8 @@ macro_rules! improve_tests {
                 assert_is_a_bare_prompt($descriptor.display_name, prompt, &text);
             }
 
-            /// A model that declares a prompt cap must get a rewrite that fits it — otherwise
-            /// Generate is gated the moment the text lands in the field.
+            /// A model that declares a prompt cap must get a rewrite that fits it, or Generate is
+            /// disabled the moment the text reaches the field.
             #[test]
             #[ignore = $why]
             fn respects_the_models_prompt_cap() {
@@ -168,7 +168,7 @@ improve_tests!(fal, "FAL_API_KEY", "live API: needs FAL_API_KEY", majik_provider
 improve_tests!(replicate, "REPLICATE_API_KEY", "live API: needs REPLICATE_API_KEY", majik_providers::replicate::descriptor());
 improve_tests!(openrouter, "OPENROUTER_API_KEY", "live API: needs OPENROUTER_API_KEY", majik_providers::openrouter::descriptor());
 
-/// Needs the network but no key of your own: the engine must surface a provider's rejection rather
+/// Needs the network but no key of your own: the engine must report a provider's rejection rather
 /// than hang or answer with something the composer would paste into the prompt field.
 #[test]
 #[ignore = "live API: hits the network (no key needed)"]

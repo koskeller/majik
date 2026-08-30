@@ -1,9 +1,9 @@
 //! Two voice lists exist because the two providers accept different voice sets:
-//! - [`replicate_voices`] — the voice enum from Replicate's `elevenlabs/v3` OpenAPI schema
-//!   — re-check with `scripts/replicate-audio-schema.py` when the model version changes.
-//! - [`fal_voices`] — voice names accepted by fal's `elevenlabs/tts/eleven-v3` and
-//!   `elevenlabs/text-to-dialogue/eleven-v3` endpoints.
-//!   fal documents Rachel as the default and the remaining voices as examples/options.
+//! - [`replicate_voices`]: the voice enum from Replicate's `elevenlabs/v3` OpenAPI schema.
+//!   Re-check with `scripts/replicate-audio-schema.py` when the model version changes.
+//! - [`fal_voices`]: voice names accepted by fal's `elevenlabs/tts/eleven-v3` and
+//!   `elevenlabs/text-to-dialogue/eleven-v3` endpoints. fal documents Rachel as the default and the
+//!   remaining voices as examples or options.
 //!
 //! Ids are the literal wire values sent to the provider; keep them and every subtitle / preview
 //! URL / category / gender / accent / language code exactly as the provider spells it.

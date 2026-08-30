@@ -1,5 +1,5 @@
 //! Rewriting a prompt with a small text model: the instruction the composer sends and the request
-//! that carries it. No HTTP here — [`crate::engine::Engine`] makes the call.
+//! that carries it. No HTTP here; [`crate::engine::Engine`] makes the call.
 
 use majik_core::model::MediaType;
 use majik_providers::{AssetRole, GenerationError, ProviderDescriptor, ProviderId};
@@ -11,13 +11,13 @@ use crate::validation::prompt_character_limit;
 /// small enough that a model that starts rambling is cut off rather than billed for.
 const DEFAULT_MAX_TOKENS: usize = 400;
 
-/// Where a rewrite's single outcome arrives. Dropping it walks away from the call.
+/// Where a rewrite's single outcome arrives. Dropping it abandons the call.
 pub type ImproveReceiver = async_channel::Receiver<Result<String, GenerationError>>;
 /// The other end, held by whatever is running the rewrite.
 pub type ImproveSender = async_channel::Sender<Result<String, GenerationError>>;
 
 /// The one-slot channel a rewrite reports through. A [`crate::engine::JobRunner`] implementation
-/// makes one per ask; the caller awaits the receiver.
+/// makes one per request; the caller awaits the receiver.
 pub fn improve_channel() -> (ImproveSender, ImproveReceiver) {
     async_channel::bounded(1)
 }
@@ -45,7 +45,7 @@ pub fn text_request(prompt: &str, generation_type: &GenerationType, provider: &P
 
 /// The instruction the model rewrites under: what it is writing for, what is already decided
 /// elsewhere (ratio, resolution, duration), what the user attached, and how to answer.
-/// The handles the attached references are addressed by, in the order the roles arrive — the same
+/// The handles the attached references are addressed by, in the order the roles arrive: the same
 /// numbering the composer shows and the provider clients rewrite.
 fn reference_handles(reference_roles: &[AssetRole]) -> Vec<String> {
     let mut seen: Vec<AssetRole> = Vec::new();
@@ -85,8 +85,8 @@ pub fn instruction(generation_type: &GenerationType, provider: &ProviderDescript
     if !reference_roles.is_empty() {
         let roles = reference_roles.iter().map(|r| r.display_name().to_lowercase()).collect::<Vec<_>>().join(", ");
         // The rewriter is a text call: the images go to the generation model, not to it. Saying
-        // they are "attached" makes a literal model answer "I don't see any images" — which would
-        // land in the prompt field.
+        // they are "attached" makes a literal model answer "I don't see any images", which would
+        // then go into the prompt field.
         lines.push(format!(
             "The generation will also receive {} reference image{} ({roles}), which you cannot see. Write the prompt so it refers to them (\"the subject in the reference\", \"the style of the reference\") instead of describing or inventing what they show.",
             reference_roles.len(),

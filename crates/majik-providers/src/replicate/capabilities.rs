@@ -81,7 +81,7 @@ pub const SUPPORTED_IMAGE_MODEL_IDS: &[&str] = &[
     // slug has openai_api_key as a *required* input (BYOK / pass-through
     // billing), unlike the gpt-image-1.5 and gpt-image-2 slugs which are
     // billed through Replicate. Our keychain holds one Replicate token
-    // per user; we can't surface a second OpenAI sk-key passthrough.
+    // per user; we can't hold a second OpenAI sk-key to pass through.
     SEEDREAM_5_PRO,
     SEEDREAM_5_LITE,
     SEEDREAM_45,
@@ -674,7 +674,7 @@ pub fn api_safety_override(model: &ImageModel) -> Option<Vec<(&'static str, Valu
         FLUX_2_MAX | FLUX_2_PRO | FLUX_2_FLEX => Some(vec![("safety_tolerance", json!(5))]),
         GPT_5 | GPT_IMAGE_2 => Some(vec![("moderation", json!("low"))]),
         // nano-banana-pro: default is already block_only_high, but set
-        // explicitly so we don't silently drift if Replicate changes it.
+        // explicitly so we don't silently diverge if Replicate changes it.
         GEMINI_3_PRO => Some(vec![("safety_filter_level", json!("block_only_high"))]),
         GEMINI_31_FLASH | GEMINI_25_FLASH | RECRAFT_V4_PRO | WAN_27_PRO => None,
         _ => None,

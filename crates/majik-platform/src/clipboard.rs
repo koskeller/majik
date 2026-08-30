@@ -1,17 +1,17 @@
-//! Multi-representation clipboard writes (port of `ClipboardService.copyMedia`): each item is placed on
-//! the pasteboard as both a file URL (Finder / Mail get the file) and its raw bytes under the native
-//! type (image / audio editors).
+//! Multi-representation clipboard writes (port of `ClipboardService.copyMedia`): each item is placed
+//! on the pasteboard as both a file URL (Finder / Mail get the file) and its raw bytes under the
+//! native type (image / audio editors).
 //!
 //! There is no portable way to do this. gpui's clipboard carries a `ClipboardEntry::ExternalPaths`
-//! variant, but every backend drops it on write — `gpui_macos::pasteboard` and
-//! `gpui_windows::clipboard` both match it to `{}` — so gpui can put an image or a string on the
-//! clipboard, never a file. Nor is the multi-entry case portable: Windows writes each entry (an
-//! image *and* a string), while macOS concatenates the strings and discards the image. So the
-//! portable layer writes one flavour and this module adds the files themselves where it can:
-//! macOS writes the file URLs and the bytes together in [`copy_media`], Windows adds a `CF_HDROP`
-//! list beside whatever was written with [`add_file_references`]. Linux can do neither yet: its
-//! clipboard is owned by the display-server connection gpui holds, so a second owner in the same
-//! process would fight it — that one needs `ExternalPaths` support upstream in gpui.
+//! variant, but every backend drops it on write (`gpui_macos::pasteboard` and
+//! `gpui_windows::clipboard` both match it to `{}`), so gpui can put an image or a string on the
+//! clipboard, never a file. The multi-entry case is not portable either: Windows writes each entry
+//! (an image *and* a string), while macOS concatenates the strings and discards the image. So the
+//! portable code writes one flavour and this module adds the files themselves where it can: macOS
+//! writes the file URLs and the bytes together in [`copy_media`], Windows adds a `CF_HDROP` list
+//! beside whatever was written with [`add_file_references`]. Linux can do neither yet: its clipboard
+//! is owned by the display-server connection gpui holds, so a second owner in the same process would
+//! conflict with it. That needs `ExternalPaths` support upstream in gpui.
 
 use std::path::PathBuf;
 
@@ -30,10 +30,10 @@ pub const SUPPORTED: bool = cfg!(target_os = "macos");
 /// macOS needs no second step ([`copy_media`] already wrote them); Linux has no way to yet.
 pub const ADDS_FILE_REFERENCES: bool = cfg!(target_os = "windows");
 
-/// Add `paths` to the clipboard as the files themselves, keeping what is already there — so a paste
+/// Add `paths` to the clipboard as the files themselves, keeping what is already there, so a paste
 /// into Explorer or a mail composer yields the files while a paste into an image editor still gets
-/// the bitmap the portable path wrote. Opening the clipboard does not empty it, so the `CF_HDROP`
-/// list lands beside the existing formats rather than replacing them.
+/// the bitmap the portable code wrote. Opening the clipboard does not empty it, so the `CF_HDROP`
+/// list sits beside the existing formats rather than replacing them.
 #[cfg(target_os = "windows")]
 pub fn add_file_references(paths: &[PathBuf]) -> anyhow::Result<()> {
     use anyhow::anyhow;

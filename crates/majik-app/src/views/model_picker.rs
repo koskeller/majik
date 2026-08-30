@@ -1,8 +1,8 @@
-//! Model picker, a searchable palette: a dialog with a
-//! search field on top and one row per model — logo tile, name, maker, description and capability
-//! chips; the current model is checked. Typing filters the rows, ↑/↓ move the highlight, Enter picks and
-//! Escape closes. Built on gpui-component's `List`, which owns the search input and the `"List"` key
-//! context, so the keyboard behaviour is the same as its `Select` / `ComboBox`.
+//! Model picker, a searchable palette: a dialog with a search field on top and one row per model
+//! (logo tile, name, maker, description and capability chips), with the current model checked.
+//! Typing filters the rows, ↑/↓ move the highlight, Enter picks and Escape closes. Built on
+//! gpui-component's `List`, which owns the search input and the `"List"` key context, so the
+//! keyboard behaviour is the same as its `Select` / `ComboBox`.
 
 use gpui::{prelude::*, px, App, Entity, ScrollStrategy, Task, WeakEntity, Window};
 use gpui_component::list::{List, ListDelegate, ListItem, ListState};
@@ -115,10 +115,9 @@ pub fn rows(provider: &'static ProviderDescriptor, tab: ComposeTab) -> Vec<Model
     }
 }
 
-/// Row height without / with a chips line. Every row gets the same explicit height because the list is
-/// virtualised and measures a single row for all of them.
-/// Row cards are fixed-height because the list measures one item and uses it for all: a name
-/// line plus a description, or plus a chip row when any model in the list has chips.
+/// Row height without and with a chips line. Every row gets the same explicit height because the
+/// list is virtualised and measures a single row for all of them: a name line plus a description,
+/// or plus a chip row when any model in the list has chips.
 const ROW_HEIGHT: f32 = 52.;
 const ROW_HEIGHT_WITH_CHIPS: f32 = 64.;
 /// Air between the cards. The list can't space items itself (it lays them out by the measured
@@ -460,7 +459,7 @@ mod tests {
     }
 
     /// The models added in the 2026-08 catalog sweep have to reach the picker, with the capability
-    /// chips their tables declare — a model in the catalog but missing from a provider's tables
+    /// chips their tables declare. A model in the catalog but missing from a provider's tables
     /// renders no chips and produces no request when you hit Generate.
     #[gpui::test]
     fn the_newest_models_are_offered_with_their_chips(cx: &mut TestAppContext) {

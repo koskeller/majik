@@ -61,7 +61,7 @@ pub struct ComposeView {
     entering: HashSet<SharedString>,
     /// The asset role whose picker card an external drag is currently over.
     drop_target: Option<AssetRole>,
-    /// The album new generations land in: the sidebar's selection, kept current by the owner.
+    /// The album new generations go into: the sidebar's selection, kept current by the owner.
     album: Option<AlbumId>,
     prompt: Entity<TextareaState>,
     /// The rewrite in flight, if any. Dropping the task cancels it and unfreezes the panel.
@@ -185,8 +185,8 @@ impl ComposeView {
     pub fn apply(&mut self, pending: PendingCompose, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_provider(window, cx);
         if let Some(id) = pending.recreate {
-            // The row's stored request and the assets it referenced, read here rather than
-            // handed over: the composer is the one that knows what to make of them.
+            // The row's stored request and the assets it referenced, read here rather than passed
+            // in, because the composer is what knows how to interpret them.
             let (request, inputs) = {
                 let library = self.library.read(cx);
                 let request = library.lib.get(&id).and_then(|item| item.request_json.as_deref()).and_then(Request::from_json);
@@ -360,13 +360,13 @@ impl ComposeView {
     // ----- prompt / generate -------------------------------------------------------
 
     /// The selected model's prompt cap; `None` when it declares none, in which case nothing is
-    /// gated here and the provider is the judge.
+    /// limited here and the provider decides.
     fn prompt_limit(&self) -> Option<usize> {
         let generation_type = self.state.generation_type()?;
         validation::prompt_character_limit(&generation_type, self.state.provider).ok().flatten()
     }
 
-    /// What the user typed, trimmed — the one prompt this panel holds.
+    /// What the user typed, trimmed. The only prompt this panel holds.
     fn prompt_value(&self, cx: &App) -> String {
         self.prompt.read(cx).value().trim().to_string()
     }
@@ -385,8 +385,8 @@ impl ComposeView {
 
     /// The estimate under the Generate button: what pressing it right now would cost.
     ///
-    /// `None` draws no line at all — only on an audio tab with nothing typed, where the cost is a
-    /// pure function of the text's length and there is genuinely nothing to say yet.
+    /// `None` draws no line at all. That happens only on an audio tab with nothing typed, where
+    /// the cost depends entirely on the text's length, so there is nothing to say yet.
     fn cost_caption(&self, cx: &App) -> Option<SharedString> {
         let characters = self.prompt_value(cx).chars().count();
         let total = self.total(cx);
@@ -429,7 +429,7 @@ impl ComposeView {
     }
 
     /// Whether the Improve button is drawn at all: a media tab with a prompt, on a provider that
-    /// routes a text model. (The button is then disabled until something is typed.)
+    /// routes a text model. (It is then disabled until something is typed.)
     fn can_improve(&self) -> bool {
         matches!(self.state.tab, ComposeTab::Media(MediaType::Image) | ComposeTab::Media(MediaType::Video)) && self.state.provider.supports_prompt_improvement()
     }
@@ -443,8 +443,8 @@ impl ComposeView {
         }
     }
 
-    /// Drop the in-flight rewrite. The prompt is untouched — it was never modified — and the panel
-    /// unfreezes on the next render.
+    /// Drop the in-flight rewrite. The prompt is untouched, since it was never modified, and the
+    /// panel unfreezes on the next render.
     fn cancel_improve(&mut self, cx: &mut Context<Self>) {
         if self.improving.take().is_some() {
             cx.notify();
@@ -790,7 +790,7 @@ impl ComposeView {
     }
 
     /// The providers with a key (or needing none), the current one checked, then a way into
-    /// Settings → Providers — the only entry when no provider is ready yet.
+    /// Settings → Providers, which is the only entry when no provider is ready yet.
     fn provider_menu(this: WeakEntity<Self>, providers: Vec<&'static ProviderDescriptor>, current: ProviderId) -> impl Fn(PopupMenu, &mut Window, &mut gpui::Context<PopupMenu>) -> PopupMenu + 'static {
         move |mut menu, _, _| {
             for descriptor in &providers {
@@ -840,7 +840,7 @@ impl ComposeView {
                 None => v_flex().size_full().items_center().justify_center().child(icon("file-x").size_5()).into_any_element(),
             })
             .child(gpui::div().absolute().bottom_0p5().left_0p5().px_1().rounded_sm().bg(gpui::black().opacity(0.5)).text_xs().text_color(gpui::white()).child(asset.role.display_name()))
-            // Always-visible remove badge (a clear dark circle) — no hover dependency.
+            // Always-visible remove badge (a clear dark circle); it does not depend on hover.
             .when_some(remove_index, |d, i| {
                 d.child(
                     gpui::div()
@@ -1254,7 +1254,7 @@ impl Render for ComposeView {
                     cx.propagate();
                 }
             }))
-            // A grid drag let go anywhere else on the panel still lands (the cards take theirs first).
+            // A grid drag let go anywhere else on the panel still drops (the cards take theirs first).
             .on_drop(cx.listener(|v, dragged: &DraggedAssets, window, cx| v.drop_on_panel(dragged, window, cx)))
             // A toolbar-height header like the feed's, so the two rows line up across the split
             // (without the feed's rule under it). The provider is the outer choice — it decides
@@ -1496,7 +1496,7 @@ mod tests {
         view.update(vcx, |v, cx| assert!(!v.can_generate(cx), "no prompt → disabled"));
         set_prompt(&view, vcx, "a red apple");
         view.update(vcx, |v, cx| assert!(v.can_generate(cx), "prompt → enabled"));
-        // Image models declare no cap: the length is the provider's business, so nothing gates here.
+        // Image models declare no cap: the length is the provider's business, so nothing is limited here.
         view.update(vcx, |v, _| assert_eq!(v.prompt_limit(), None));
         set_prompt(&view, vcx, &"x".repeat(20_000));
         view.update(vcx, |v, cx| assert!(v.can_generate(cx), "no declared cap → still enabled"));
@@ -1594,7 +1594,7 @@ mod tests {
             assert!(v.improving.is_none());
             assert!(v.can_generate(cx), "generate is available again");
         });
-        // `replace_all` leaves the caret at the start, so the keystroke lands there.
+        // `replace_all` leaves the caret at the start, so the keystroke goes there.
         vcx.simulate_keystrokes("!");
         view.update(vcx, |v, cx| assert_eq!(v.prompt_text(cx), "!a tabby cat", "and the field takes edits again"));
     }
@@ -2111,7 +2111,7 @@ mod tests {
         view.update_in(vcx, |v, w, cx| v.drop_on_panel(&clip, w, cx));
         assert_eq!(toasts(vcx), before + 1, "a video has no role to land in");
 
-        // Audio lands on the video tab, beside the references it is one of.
+        // Audio goes to the video tab, beside the references it is one of.
         select_video_model(&view, vcx, "seedance-2.5");
         let sound = dragged(&view, vcx, &[(MediaType::Audio, "voice.wav")]);
         view.update_in(vcx, |v, w, cx| v.drop_on_panel(&sound, w, cx));
@@ -2224,7 +2224,7 @@ mod tests {
         });
     }
 
-    /// What the row stores is what makes the handles mean anything: role and position.
+    /// The handles only mean something because the row stores role and position.
     #[gpui::test]
     fn generate_stores_every_reference_in_order(cx: &mut TestAppContext) {
         let (view, vcx, e) = compose_window!(cx, "Mock");

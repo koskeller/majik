@@ -8,11 +8,11 @@
 //! [`FEED_IMAGE_BUDGET`] decoded bytes are held.
 //!
 //! The invariant to keep in mind before touching [`LruImageCache::evict`]: an entry is only ever
-//! evicted once its decode has landed *and* been charged to the budget. A load in flight is never
-//! cancelled, and every decode is charged exactly once — by [`LruImageCache::settle`], from the task
-//! that awaits it, rather than the next time the image is asked for. That matters: a tile can
-//! scroll off before its decode finishes, and an entry nothing ever asks for again would otherwise
-//! stay uncharged, invisible to the budget, forever — which is the leak this cache exists to stop.
+//! evicted once its decode has finished *and* been charged to the budget. A load in flight is never
+//! cancelled, and every decode is charged exactly once, by [`LruImageCache::settle`] from the task
+//! that awaits it, rather than the next time the image is asked for. A tile can scroll off before
+//! its decode finishes, and an entry nothing asks for again would otherwise stay uncharged and
+//! invisible to the budget forever, which is the leak this cache exists to stop.
 
 use futures::FutureExt as _;
 use gpui::{App, AppContext as _, Asset as _, AssetLogger, Entity, ImageAssetLoader, ImageCache, ImageCacheError, ImageCacheItem, RenderImage, Resource, WeakEntity, Window};
@@ -36,30 +36,30 @@ use std::sync::Arc;
 /// - 3008 × 1692 (6K XDR at default scaling) ≈ 32 × 22 = 704 tiles ≈ 450 MB
 ///
 /// 512 MB covers all three, with room to spare in practice: cells fill the width and most
-/// thumbnails are not square, so 640 KB is the ceiling rather than the average. Raise it for a
+/// thumbnails are not square, so 640 KB is the maximum rather than the average. Raise it for a
 /// bigger display; lowering it below the table above would make the feed decode continuously at the
-/// smallest zoom. `budget_covers_the_largest_frame_the_feed_can_draw` guards that.
+/// smallest zoom. `budget_covers_the_largest_frame_the_feed_can_draw` checks that.
 pub const FEED_IMAGE_BUDGET: usize = 256 * 1024 * 1024;
 
 /// Decoded bytes the detail view may hold in full-size images.
 ///
-/// The stage decodes what `paging::visible_slots` lists — the item plus up to two neighbours on
-/// each side, so that paging is instant — and the same rule applies as above: the budget has to
-/// exceed one frame's demand. The largest output the catalog can produce is 4K
-/// (`ImageResolution::Uhd`, 3840 px on the long edge), i.e. 59 MB decoded for a square one and
-/// ~33 MB for 16:9, so five slots ask for at most ~295 MB. 384 MB covers that with room for the
-/// before/after compare (two images at once) and the info panel's input cards. Beyond 4K — an
-/// imported 8K asset, say — paging back and forth re-decodes instead of holding both, which is the
-/// right trade: one image that large is 268 MB on its own.
+/// The stage decodes what `paging::visible_slots` lists: the item plus up to two neighbours on
+/// each side, so that paging is instant. The same rule applies as above — the budget has to exceed
+/// one frame's demand. The largest output the catalog can produce is 4K (`ImageResolution::Uhd`,
+/// 3840 px on the long edge), which is 59 MB decoded for a square one and ~33 MB for 16:9, so five
+/// slots ask for at most ~295 MB. 384 MB covers that with room for the before/after compare (two
+/// images at once) and the info panel's input cards. Above 4K, say an imported 8K asset, paging
+/// back and forth re-decodes instead of holding both, which is worth it: one image that large is
+/// 268 MB on its own.
 pub const DETAIL_IMAGE_BUDGET: usize = 192 * 1024 * 1024;
 
 pub struct LruImageCache {
-    /// Handed to the task awaiting each decode so it can charge the bytes when they land.
+    /// Handed to the task awaiting each decode so it can charge the bytes when it finishes.
     this: WeakEntity<Self>,
     budget: usize,
-    /// Decoded bytes the cache references — what `budget` bounds. Bytes the cache *references*,
-    /// not bytes it uniquely owns: if a caller ever stashes an `Arc<RenderImage>` from here,
-    /// eviction stops being a release.
+    /// Decoded bytes the cache references, which is what `budget` bounds. These are bytes the
+    /// cache references, not bytes it uniquely owns: if a caller keeps an `Arc<RenderImage>` from
+    /// here, evicting it no longer frees anything.
     bytes: usize,
     /// Keyed by `gpui::hash(&Resource)`, the key gpui's own caches use.
     entries: HashMap<u64, Entry>,
@@ -70,15 +70,15 @@ pub struct LruImageCache {
     /// draw into: a 400 px thumbnail costs 640 KB decoded whatever it is drawn at, and at the
     /// smallest zoom a cell is under 200 device px, so decoding at the file's size spends five
     /// times the memory (and five times the sprite atlas) on pixels nobody sees. `None` decodes the
-    /// file as it is — what the detail's stage wants, since it fills the window.
+    /// file as it is, which is what the detail's stage wants since it fills the window.
     target: Option<u32>,
 }
 
 struct Entry {
     item: ImageCacheItem,
-    /// Decoded bytes charged to the budget: 0 while the decode is in flight, and 0 for good if it
-    /// failed — a handful of bytes per broken thumbnail, kept so a failing file isn't re-decoded on
-    /// every frame.
+    /// Decoded bytes charged to the budget: 0 while the decode is in flight, and 0 permanently if
+    /// it failed. That costs a handful of bytes per broken thumbnail, kept so a failing file isn't
+    /// re-decoded on every frame.
     bytes: usize,
     last_used: u64,
 }
@@ -107,8 +107,8 @@ impl LruImageCache {
         })
     }
 
-    /// Charge a decode that has landed against the budget, then evict down to it. Called once per
-    /// load, from the task that awaited it.
+    /// Charge a finished decode against the budget, then evict down to it. Called once per load,
+    /// from the task that awaited it.
     fn settle(&mut self, key: u64, window: &mut Window, cx: &mut App) {
         let Some(entry) = self.entries.get_mut(&key) else { return };
         if entry.bytes != 0 {
@@ -208,9 +208,9 @@ impl ImageCache for LruImageCache {
         }
 
         // One shared task, held by both the entry and the waiter below, as gpui's own caches do.
-        // With a target set we decode the file ourselves so the pixels land at the size they are
-        // drawn at; without one, gpui's loader handles every source it knows (SVG, animated GIF,
-        // remote URIs), which the detail's stage needs.
+        // With a target set we decode the file ourselves so the pixels come out at the size they
+        // are drawn at; without one, gpui's loader handles every source it knows (SVG, animated
+        // GIF, remote URIs), which the detail's stage needs.
         let task = match (self.target, &resource) {
             (Some(long_edge), Resource::Path(path)) => {
                 let path = path.clone();
@@ -255,9 +255,9 @@ const TARGET_STEP: u32 = 32;
 /// thumbnail drawn bigger than it was stored is stretched by the GPU, exactly as before, rather
 /// than costing memory for pixels that carry no detail.
 ///
-/// Mirrors what gpui's own loader produces — a `RenderImage` of BGRA frames — for the still images
-/// the feed draws. Anything with more than one frame or a source gpui has to fetch goes through
-/// its loader instead (see the caller).
+/// Produces the same thing as gpui's own loader, a `RenderImage` of BGRA frames, for the still
+/// images the feed draws. Anything with more than one frame or a source gpui has to fetch goes
+/// through its loader instead (see the caller).
 fn decode_scaled(path: &Path, long_edge: u32) -> Result<Arc<RenderImage>, ImageCacheError> {
     let bytes = std::fs::read(path).map_err(|e| ImageCacheError::Io(Arc::new(e)))?;
     let image = image::load_from_memory(&bytes).map_err(|e| ImageCacheError::Image(Arc::new(e)))?;
@@ -278,7 +278,7 @@ fn decode_scaled(path: &Path, long_edge: u32) -> Result<Arc<RenderImage>, ImageC
 }
 
 /// Decoded bytes an image holds. `RenderImage` keeps one 4-byte-per-pixel buffer per frame and
-/// `as_bytes` hands back exactly that buffer, so this is the real cost of the `Arc` — animated
+/// `as_bytes` returns exactly that buffer, so this is the real cost of the `Arc`, animated
 /// thumbnails included.
 fn decoded_bytes(image: &RenderImage) -> usize {
     (0..image.frame_count()).filter_map(|frame| image.as_bytes(frame)).map(<[u8]>::len).sum()
@@ -331,7 +331,7 @@ mod tests {
         (probe, vcx, cache)
     }
 
-    /// Draw `images`, let the decodes land, and deliver the frame their completion asks for.
+    /// Draw `images`, let the decodes finish, and deliver the frame their completion asks for.
     fn draw(probe: &Entity<Probe>, vcx: &mut VisualTestContext, images: &[&PathBuf]) {
         probe.update(vcx, |probe, cx| {
             probe.images = images.iter().map(|path| (*path).clone()).collect();
@@ -456,10 +456,10 @@ mod tests {
         cache.read_with(vcx, |cache, _| assert_eq!(cache.bytes(), 2 * IMAGE_BYTES));
         let image = cache.update(vcx, |cache, _| cache.loaded(&resource(&a))).expect("a decoded");
 
-        // Eviction is driven by decodes landing, not by a timer or by a frame: memory can only grow
-        // when a new image arrives, so that is the moment the budget is applied. A cache that is
-        // over budget and draws nothing new therefore stays put until the next decode — which is
-        // why a feed that has stopped scrolling never churns.
+        // Eviction is driven by decodes finishing, not by a timer or by a frame: memory can only
+        // grow when a new image arrives, so that is when the budget is applied. A cache that is
+        // over budget and draws nothing new stays as it is until the next decode, so a feed that
+        // has stopped scrolling never churns.
         cache.update(vcx, |cache, _| cache.set_budget(IMAGE_BYTES));
         draw(&probe, vcx, &[&a, &b]);
         cache.read_with(vcx, |cache, _| assert_eq!(cache.bytes(), 2 * IMAGE_BYTES, "nothing new decoded, nothing evicted"));
@@ -542,9 +542,9 @@ mod tests {
 
     /// The budget is only safe while it exceeds what one frame can ask for; below that the feed
     /// would evict tiles it is about to redraw. Now that cells decode at the size they are drawn,
-    /// a screenful costs about the window's own area in device pixels — near enough the same at
-    /// every zoom, since smaller tiles mean proportionally more of them — so this checks the
-    /// largest window Majik plausibly runs in, at every zoom level, on a 2x display.
+    /// a screenful costs about the window's own area in device pixels, which is roughly the same at
+    /// every zoom since smaller tiles mean proportionally more of them. So this checks the largest
+    /// window Majik plausibly runs in, at every zoom level, on a 2x display.
     /// See [`FEED_IMAGE_BUDGET`].
     #[test]
     fn budget_covers_the_largest_frame_the_feed_can_draw() {

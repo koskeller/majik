@@ -1,8 +1,7 @@
-//! Generates deterministic solid-colour MP4s for the mock provider: one H.264 keyframe per
-//! second, `yuv420p`, sized from the requested aspect ratio and resolution, coloured from a hash of
-//! the prompt. Encoding happens in process
-//! (`majik_core::video::encode_solid_clip`), so no ffmpeg is involved and the clip is exactly what
-//! was asked for.
+//! Generates deterministic solid-colour MP4s for the mock provider: one H.264 keyframe per second,
+//! `yuv420p`, sized from the requested aspect ratio and resolution, coloured from a hash of the
+//! prompt. Encoding happens in process (`majik_core::video::encode_solid_clip`), so no ffmpeg is
+//! involved and the clip is exactly what was asked for.
 
 use crate::error::GenerationError;
 use crate::models::{VideoAspectRatio, VideoModel, VideoResolution};

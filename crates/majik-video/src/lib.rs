@@ -1,15 +1,15 @@
 //! Video playback for Majik: one software path on every platform.
 //!
-//! [`Player`] is the UI-thread state machine — play/pause/seek/loop, a clock, the frame on
-//! screen — over a [`Source`] (`majik_core::video`: MP4 demux + H.264 decode) that lives behind a
-//! mutex so decoding can run on a background thread. The crate owns no threads or timers: the app
-//! asks for a [`DecodeJob`], runs it on its executor, and hands the [`DecodeResult`] back with
+//! [`Player`] is the UI-thread state machine (play/pause/seek/loop, a clock, the frame on screen)
+//! over a [`Source`] (`majik_core::video`: MP4 demux + H.264 decode) that lives behind a mutex so
+//! decoding can run on a background thread. The crate owns no threads or timers: the app asks for a
+//! [`DecodeJob`], runs it on its executor, and hands the [`DecodeResult`] back with
 //! [`Player::apply`]. That keeps playback deterministic under GPUI's test executor, whose clock is
 //! injected as [`Now`].
 //!
 //! When the file has an audio track, [`majik_audio::Player`] plays it and *is* the clock, so
-//! frames follow the audio position; otherwise (or when no output device exists — headless CI)
-//! the injected clock drives playback.
+//! frames follow the audio position. Otherwise, or when no output device exists (headless CI), the
+//! injected clock drives playback.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -208,7 +208,7 @@ impl Player {
         (self.size.0 > 0 && self.size.1 > 0).then_some(self.size)
     }
 
-    /// The frame that should be on screen now (none until the first decode lands).
+    /// The frame that should be on screen now (none until the first decode finishes).
     pub fn frame(&self) -> Option<&Arc<Frame>> {
         self.frame.as_ref()
     }
@@ -254,7 +254,7 @@ impl Player {
 
     /// Store a job's result; returns true when the frame on screen changed. Results decoded for a
     /// position from before the last seek are dropped. A decode error pauses playback and is kept
-    /// in [`Self::error`] — the last good frame stays up.
+    /// in [`Self::error`]; the last good frame stays up.
     pub fn apply(&mut self, result: DecodeResult) -> bool {
         self.in_flight = false;
         if result.generation != self.generation {

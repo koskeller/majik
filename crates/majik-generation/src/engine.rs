@@ -20,14 +20,14 @@ pub const IMPROVE_DEADLINE: Duration = Duration::from_secs(30);
 /// Headroom over the provider client's own poll budget. `Timeouts::total` bounds the poll loop
 /// alone: fetching the result payload and then downloading the bytes both happen after it, each
 /// bounded by that profile's `Timeouts::request` (120 s) rather than by `total`. The engine has to
-/// cover them — its deadline wraps the whole sequence, so a shorter headroom fires mid-download and
-/// writes off a render the provider has already finished and charged for. It still has to be the
-/// outer bound: if it fired first the client's `QueueTimeout` would never be the error the user
-/// sees. The one retry restarts the client's full poll budget, which no fixed headroom can cover —
-/// a retried job that runs that long loses to this deadline, which is the intent.
+/// cover them, because its deadline wraps the whole sequence: a shorter headroom fires mid-download
+/// and discards a render the provider has already finished and charged for. It also has to be the
+/// outer bound, or the client's `QueueTimeout` would never be the error the user sees. The one
+/// retry restarts the client's full poll budget, which no fixed headroom can cover, so a retried
+/// job that runs that long hits this deadline, which is intended.
 const CLIENT_HEADROOM: Duration = Duration::from_secs(300);
 
-/// The provider client's own budget for a job of this kind — the bound the engine has to outlast.
+/// The provider client's own budget for a job of this kind, which the engine has to outlast.
 fn client_timeouts(media_type: MediaType) -> Timeouts {
     match media_type {
         MediaType::Image => Timeouts::IMAGE,
@@ -38,16 +38,16 @@ fn client_timeouts(media_type: MediaType) -> Timeouts {
 
 /// The deadline for a job whose length isn't known: the client's poll budget for that media type
 /// plus [`CLIENT_HEADROOM`]. Video renders scale with the clip, so prefer [`stale_timeout_for`]
-/// wherever the request is in hand — this is the floor it starts from.
+/// wherever the request is available; this is the minimum it starts from.
 pub fn stale_timeout(media_type: MediaType) -> Duration {
     client_timeouts(media_type).total + CLIENT_HEADROOM
 }
 
-/// How long a configured job may take before it is called stale. Video is the case that moves: a
-/// 30 s Seedance 2.5 or WAN 3.0 render takes far longer than the 4 s clip beside it in the
-/// catalog, so the budget comes from the requested duration rather than a flat per-type constant.
-/// Derived from the provider client's own [`Timeouts::video`] budget so the two can't drift into
-/// disagreeing about when a job is dead.
+/// How long a configured job may take before it is considered timed out. Video is the case that
+/// varies: a 30 s Seedance 2.5 or WAN 3.0 render takes far longer than the 4 s clip beside it in
+/// the catalog, so the budget comes from the requested duration rather than a flat per-type
+/// constant. Derived from the provider client's own [`Timeouts::video`] budget so the two can't end
+/// up disagreeing about when a job is dead.
 pub fn stale_timeout_for(generation_type: &GenerationType) -> Duration {
     match generation_type {
         GenerationType::Video(settings) => Timeouts::video(settings.duration).total + CLIENT_HEADROOM,
@@ -284,9 +284,9 @@ impl Engine {
             };
             // Dropped from `active` before the outcome is announced, not after: a receiver that
             // reacts to a terminal event and then asks whether the row is still running must be
-            // told no. Announcing first leaves a window where it is both finished and active, which
-            // is a race the caller cannot avoid — and one that only ever lost on Windows.
-            // Cancelling in that window was already a no-op; the outcome is decided by this point.
+            // told no. Announcing first leaves a window where it is both finished and active, a
+            // race the caller cannot avoid, and one that only ever failed on Windows. Cancelling in
+            // that window was already a no-op; the outcome is decided by this point.
             active.lock().unwrap().remove(&id);
             if let Err(e) = events.send(event).await {
                 tracing::warn!(target: "majik", "{id}: reporting the outcome: {e}");
@@ -311,7 +311,7 @@ async fn complete_text(request: &TextRequest, keys: &ApiKeys) -> Result<String, 
 /// One retry after 2 s for retriable errors, all under the per-type deadline.
 async fn run_with_retry(job: &Job, keys: &ApiKeys, events: &async_channel::Sender<Event>) -> Result<Vec<u8>, GenerationError> {
     let deadline = job.deadline();
-    // A resumed job with no time left is already stale: don't poll at all.
+    // A resumed job with no time left has already timed out: don't poll at all.
     if deadline.is_zero() {
         return Err(GenerationError::Timeout);
     }
@@ -342,7 +342,7 @@ async fn run_once(job: &Job, keys: &ApiKeys, events: &async_channel::Sender<Even
         return Err(GenerationError::Unauthorized(format!("No API key configured for {}", descriptor.display_name)));
     }
     // The provider reports its job handle and every exchange from inside the request; the app
-    // persists them so the row can be resumed after a relaunch and its attempt has its trail.
+    // persists them so the row can be resumed after a relaunch and its attempt keeps its traces.
     let (accepted_events, accepted_id, accepted_job) = (events.clone(), job.id().clone(), job.job().clone());
     let on_accepted = Arc::new(move |handle: JobHandle| {
         let event = Event::Accepted { id: accepted_id.clone(), job: accepted_job.clone(), external_id: Some(handle.job_id), poll_url: handle.poll_url };
@@ -373,8 +373,8 @@ async fn run_once(job: &Job, keys: &ApiKeys, events: &async_channel::Sender<Even
     }
 }
 
-/// The one image a tool request runs over. Validation refuses a request without it; a retry whose
-/// input file vanished is caught before submission, so this is the last line.
+/// The one image a tool request runs over. Validation refuses a request without it, and a retry
+/// whose input file vanished is caught before submission, so this is the last check.
 fn tool_input(request: &Request) -> Result<&[u8], GenerationError> {
     request.assets.first().map(|a| a.data.as_slice()).ok_or_else(|| GenerationError::InvalidRequest("The tool has no image to run over.".into()))
 }
@@ -414,8 +414,8 @@ mod tests {
         )
     }
 
-    /// A 30 s render takes far longer than a 4 s one, so it can't be judged stale on the same
-    /// clock — that flat cap discarded finished renders the user had already paid for.
+    /// A 30 s render takes far longer than a 4 s one, so it can't be timed out on the same clock.
+    /// The old flat cap discarded finished renders the user had already paid for.
     #[test]
     fn a_longer_clip_gets_a_longer_deadline() {
         let short = stale_timeout_for(&video_request(4).generation_type);
@@ -427,8 +427,8 @@ mod tests {
         }
     }
 
-    /// The engine has to outlast the provider client, or the client's `QueueTimeout` — the error
-    /// that says what actually went wrong — could never reach the user.
+    /// The engine has to outlast the provider client, or the client's `QueueTimeout`, the error
+    /// that says what actually went wrong, could never reach the user.
     #[test]
     fn the_engine_deadline_outlasts_the_client_poll_budget() {
         for duration in [1, 5, 15, 20, 30] {
@@ -447,7 +447,7 @@ mod tests {
     fn the_headroom_covers_the_work_that_follows_the_poll_budget() {
         for media_type in [MediaType::Image, MediaType::Video, MediaType::Audio] {
             let client = client_timeouts(media_type);
-            // The result payload, then the bytes — two requests, plus the retry's delay.
+            // The result payload, then the bytes: two requests, plus the retry's delay.
             let tail = client.request * 2 + RETRY_DELAY;
             assert!(CLIENT_HEADROOM >= tail, "{media_type:?}: headroom {CLIENT_HEADROOM:?} must cover {tail:?}");
         }
@@ -455,8 +455,8 @@ mod tests {
         assert!(longest >= Timeouts::video(Timeouts::MAX_VIDEO_OUTPUT_SECONDS).total + Timeouts::VIDEO.request * 2);
     }
 
-    /// A `Resume` is bounded by the time its attempt has left, not by the per-type default: the
-    /// budget has to be the one the attempt started with.
+    /// A `Resume` is bounded by the time its attempt has left, not by the per-type default, since
+    /// the budget has to be the one the attempt started with.
     #[test]
     fn a_resume_is_bounded_by_its_remaining_time() {
         let job = Job::Resume {
@@ -697,10 +697,10 @@ mod tests {
         assert_eq!(engine.active_count(), 0);
     }
 
-    /// A terminal event means the run is over, so anything the receiver does in response — asking
-    /// whether the row is still running, starting the next attempt — must already see it gone. The
+    /// A terminal event means the run is over, so anything the receiver does in response (asking
+    /// whether the row is still running, starting the next attempt) must already see it gone. The
     /// engine used to announce the outcome before dropping the job, and the window between the two
-    /// was wide enough to lose on Windows.
+    /// was wide enough to fail on Windows.
     #[test]
     fn a_row_is_no_longer_active_the_moment_its_outcome_is_announced() {
         for prompt in ["done #delay:0", "boom #delay:0 #fail:contentFiltered"] {

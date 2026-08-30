@@ -1,11 +1,11 @@
 //! The Settings window, laid out the way Zed's `settings_ui` is: a nav pane of pages on the left,
-//! the current page's rows on the right — title and description, control at the end. One window
-//! (`windows::open_settings`), reached from ⌘, / the menu / the sidebar / the composer's provider
-//! menu; error-recovery mode (a generation can't start without a key) lands on Providers with the
-//! message as a banner and that provider's key field focused.
+//! the current page's rows on the right, with the title and description first and the control at
+//! the end. One window (`windows::open_settings`), reached from ⌘, / the menu / the sidebar / the
+//! composer's provider menu. Error-recovery mode (a generation can't start without a key) opens
+//! Providers with the message as a banner and that provider's key field focused.
 //!
 //! Providers are laid out like Zed's agent settings: every provider is always listed with its own
-//! API key field, link and status, and nothing here picks the active one — that is the composer's
+//! API key field, link and status. Nothing here picks the active one; that is the composer's
 //! provider menu, which offers the providers that have a key (`state::available_providers`).
 
 use gpui::{prelude::*, px, App, AsKeystroke as _, ClickEvent, Context, Entity, FocusHandle, PathPromptOptions, PromptLevel, SharedString, Window};
@@ -472,7 +472,7 @@ fn row(id: impl Into<SharedString>, title: impl IntoElement, description: Option
     row_inner(id, title, description.map(Into::into), control, false, cx)
 }
 
-/// A row that is only its control, spanning the width — the provider key field and its Save button.
+/// A row that is only its control, spanning the width: the provider key field and its Save button.
 fn control_row(id: impl Into<SharedString>, control: impl IntoElement, cx: &App) -> gpui::Stateful<gpui::Div> {
     let theme = cx.theme();
     let id = id.into();
@@ -484,7 +484,7 @@ fn control_row(id: impl Into<SharedString>, control: impl IntoElement, cx: &App)
         .child(h_flex().py_4().items_center().border_b_1().border_color(theme.border).child(control))
 }
 
-/// A [`row`] without a description, packed tighter — for tables such as the shortcut list.
+/// A [`row`] without a description, packed tighter, for tables such as the shortcut list.
 fn compact_row(id: impl Into<SharedString>, title: impl IntoElement, control: impl IntoElement, cx: &App) -> gpui::Stateful<gpui::Div> {
     row_inner(id, title, None, control, true, cx)
 }
@@ -514,7 +514,7 @@ fn row_inner(id: impl Into<SharedString>, title: impl IntoElement, description: 
 
 /// Persist the appearance and apply it to every window. `Theme::change` only refreshes the window
 /// it is given; without the loop the others keep their old colours until something else redraws
-/// them (closing Settings did, which is how the bug showed).
+/// them (closing Settings did, which is how the bug was noticed).
 pub fn set_appearance(appearance: &'static str, window: &mut Window, cx: &mut App) {
     match appearance {
         "light" => Theme::change(ThemeMode::Light, Some(window), cx),
@@ -706,7 +706,7 @@ mod tests {
     }
 
     /// The page is generated from `actions::shortcuts()`, so a new binding shows up by being in that
-    /// table — this pins the newest one (and its group) so a stray edit can't drop it.
+    /// table. This pins the newest one (and its group) so a stray edit can't drop it.
     #[gpui::test]
     fn shortcuts_page_lists_the_composer_prompt_shortcuts(cx: &mut TestAppContext) {
         let _e = env(cx, 0, "Mock");

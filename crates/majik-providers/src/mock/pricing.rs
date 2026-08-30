@@ -1,6 +1,6 @@
-//! Mock's prices. Synthetic — Mock generates nothing and charges nothing — but deterministic, so
-//! the app's composer tests can assert real cost arithmetic without pinning a live provider's
-//! figures, which would rot the suite the first time fal changes a number.
+//! Mock's prices. They are made up, since Mock generates nothing and charges nothing, but they are
+//! deterministic, so the app's composer tests can assert real cost arithmetic without pinning a
+//! live provider's figures, which would break the suite the first time fal changes a number.
 
 use crate::catalog;
 use crate::pricing::{flat, per_character, per_second, Estimate, PricedJob};
@@ -15,8 +15,8 @@ const AUDIO_PER_CHARACTER: u64 = 100;
 /// $0.02 per tool run.
 const TOOL: u64 = 20_000;
 
-/// The one model Mock deliberately reports no price for, so the composer's "no estimate" path is
-/// reachable in the running app and in tests — the same idea as the `#fail:` prompt directives.
+/// The one model Mock deliberately reports no price for, so the composer's "no estimate" case is
+/// reachable in the running app and in tests, like the `#fail:` prompt directives.
 pub const UNPRICED_MODEL_ID: &str = catalog::image::FLUX_1_SCHNELL.id;
 
 pub fn pricing(job: &PricedJob<'_>) -> Estimate {

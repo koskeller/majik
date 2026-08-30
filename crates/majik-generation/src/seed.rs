@@ -49,7 +49,7 @@ pub struct SeedOptions {
     pub imports: usize,
     pub albums: usize,
     /// How many distinct images to render and reuse across the rows. 0 renders every row's file
-    /// separately — every tile different, but a PNG encode per row.
+    /// separately: every tile different, but a PNG encode per row.
     pub pool: usize,
     /// Longest edge of the rendered images; picks the resolution the requests claim
     /// (512 = 0.5K, 1024 = 1K, 2048 = 2K, 3840 = 4K).
@@ -375,9 +375,9 @@ struct PoolClip {
     aspect_ratio: VideoAspectRatio,
 }
 
-/// The files the rows draw from. Rendering one file per row is the honest thing but costs a PNG
+/// The files the rows draw from. Rendering one file per row is the most realistic but costs a PNG
 /// encode per row; a pool keeps the grid varied for a fraction of the time. Clips and tracks are
-/// always pooled — an H.264 encode per row would dominate any run.
+/// always pooled, since an H.264 encode per row would dominate any run.
 struct Pools {
     /// One bucket per [`AspectRatio::ALL`] entry; empty when every row renders its own image.
     images: Vec<Vec<PoolImage>>,
@@ -468,7 +468,7 @@ impl Pools {
     }
 }
 
-/// A 16-bit mono WAV of a fading tone — small, real audio to probe, draw and play back.
+/// A 16-bit mono WAV of a fading tone: small, real audio to probe, draw and play back.
 pub fn tone_wav(seconds: f64, hz: f32) -> Vec<u8> {
     const RATE: u32 = 22_050;
     let seconds = seconds.max(0.1);
@@ -589,7 +589,7 @@ fn write_rows(options: &SeedOptions, plan: &Arc<Vec<PlannedRow>>, pools: &Arc<Po
     Ok((written, bytes))
 }
 
-/// Renders one row's file and builds its rows — the seeding equivalent of `add_generating`
+/// Renders one row's file and builds its rows: the seeding equivalent of `add_generating`
 /// followed by `complete_generation`.
 fn write_row(planned: &PlannedRow, pools: &Pools, store: &dyn BlobStore) -> Result<WrittenRow> {
     let media_type = planned.media_type();
@@ -825,7 +825,7 @@ fn write_imports(options: &SeedOptions, store: &Arc<LocalBlobStore>, db: &mut Db
     Ok(written)
 }
 
-/// Links the rows that asked for an input to an asset that already exists — a tool row to the image
+/// Links the rows that asked for an input to an asset that already exists: a tool row to the image
 /// it ran on, an image row to its reference image.
 fn attach_inputs(options: &SeedOptions, plan: &[PlannedRow], outputs: &[AssetId], imports: &[(AssetId, u64)], db: &mut Db) -> Result<()> {
     let mut candidates: Vec<AssetId> = imports.iter().map(|(id, _)| id.clone()).collect();

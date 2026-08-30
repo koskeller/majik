@@ -1,8 +1,8 @@
-//! Native drag-out of files from the app to Finder / other apps, with real bitmap previews and both a
-//! file-URL and raw-bytes representation per item.
+//! Native drag-out of files from the app to Finder or other apps, with real bitmap previews and
+//! both a file-URL and raw-bytes representation per item.
 //!
-//! On macOS this starts an `NSDraggingSession` on the window's content view. Because Majik's media are
-//! plain files on disk, we drag the file paths directly (no temp staging). Other platforms are stubs
+//! On macOS this starts an `NSDraggingSession` on the window's content view. Majik's media are plain
+//! files on disk, so we drag the file paths directly with no temp staging. Other platforms are stubs
 //! until an OLE / XDND backend is added (see the migration plan, Phase 7/8).
 
 use raw_window_handle::RawWindowHandle;

@@ -131,9 +131,9 @@ impl JobRunner for RecordingRunner {
     }
 }
 
-/// "Relaunch": open the environment's library folder again over a [`RecordingRunner`] — which
-/// recovers the rows the first model left in flight — and make the new model the app's. Returns
-/// it with the jobs the relaunch submitted.
+/// "Relaunch": open the environment's library folder again over a [`RecordingRunner`], which
+/// recovers the rows the first model left in flight, and make the new model the app's. Returns it
+/// with the jobs the relaunch submitted.
 pub fn reopen_recording(env: &TestEnv, cx: &mut TestAppContext) -> (Entity<LibraryModel>, Arc<Mutex<Vec<Job>>>) {
     let (runner, jobs) = RecordingRunner::new();
     let root = env.dir.path().to_path_buf();
@@ -247,7 +247,7 @@ impl Default for Seed {
     }
 }
 
-/// A 64×64, 2 s, one-keyframe-per-second Mock clip — the same bytes the Mock provider returns —
+/// A 64×64, 2 s, one-keyframe-per-second Mock clip, the same bytes the Mock provider returns,
 /// encoded once per test binary.
 pub fn mock_clip() -> &'static [u8] {
     static CLIP: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
@@ -278,7 +278,7 @@ pub fn seed_asset(library: &Entity<LibraryModel>, cx: &mut TestAppContext, kind:
     })
 }
 
-/// A completed row that stores `request` and references `inputs` as `(role raw, asset)` — what a
+/// A completed row that stores `request` and references `inputs` as `(role raw, asset)`: what a
 /// generation or a tool run leaves behind, for tests that recreate or retry it.
 pub fn seed_request(library: &Entity<LibraryModel>, cx: &mut TestAppContext, request: &Request, inputs: &[(&str, AssetId)]) -> GenerationId {
     library.update(cx, |model, cx| {

@@ -9,9 +9,9 @@
 //! - Adjacent turns with the same speaker are merged.
 //! - Empty / whitespace-only prompts return `[]`.
 //!
-//! The core parser is voice-agnostic ([`parse_dialogue`]); [`parse_dialogue_with_voices`] resolves
-//! speakers to voices and merges by voice equality on top (including merging everything when both
-//! speakers share a voice).
+//! The core parser knows nothing about voices ([`parse_dialogue`]); [`parse_dialogue_with_voices`]
+//! resolves speakers to voices and then merges turns with equal voices, which merges everything
+//! when both speakers share a voice.
 
 use crate::models::AudioVoice;
 
@@ -123,7 +123,7 @@ fn strip_label<'a>(trimmed: &'a str, label: &str) -> Option<&'a str> {
     Some(trim_whitespace(rest))
 }
 
-/// Trims Unicode `Zs` (space separators) plus tab — not newlines, and not the other control
+/// Trims Unicode `Zs` (space separators) plus tab, but not newlines and not the other control
 /// characters Rust's `char::is_whitespace` covers.
 fn trim_whitespace(s: &str) -> &str {
     s.trim_matches(is_space_separator)

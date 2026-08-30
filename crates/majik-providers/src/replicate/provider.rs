@@ -226,7 +226,7 @@ impl ReplicateClient {
         let takes_audio_input = caps::api_audio_input_param(model).is_some();
 
         // Audio counts as a reference only where the model has a reference audio list; on a model
-        // with neither that nor a conditioning input, "no audio input" is the honest answer.
+        // with neither that nor a conditioning input, the answer is "no audio input".
         let audio_is_reference = !references.audio.is_empty() && !takes_audio_input && caps::video_reference_params(model).is_some_and(|p| p.audio.is_some());
         if references.has_visual() || audio_is_reference {
             Self::validate_references(&references, first_frame, last_frame, settings)?;
@@ -256,8 +256,8 @@ impl ReplicateClient {
     }
 
     /// The video file behind a succeeded prediction.
-    /// Everything Replicate would reject about a reference request, said in a sentence the user can
-    /// act on. `majik-generation`'s validation catches these first; this is the client's own guard.
+    /// Everything Replicate would reject about a reference request, in a sentence the user can act
+    /// on. `majik-generation`'s validation catches these first; this is the client's own check.
     fn validate_references(
         references: &ReferenceAssets<'_>,
         first_frame: Option<&[u8]>,
@@ -648,7 +648,7 @@ impl ReplicateClient {
             // We requested output_format=png so the bytes are already PNG.
             return Ok(raw_bytes);
         }
-        // The image decoder failed to recognize the bytes — surface as invalid data (mirrors fal).
+        // The image decoder failed to recognize the bytes; report it as invalid data, as fal does.
         transcode_to_png(&raw_bytes).ok_or(ReplicateError::InvalidImageData)
     }
 }

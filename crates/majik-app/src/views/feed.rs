@@ -22,10 +22,10 @@ use crate::image_cache::LruImageCache;
 use crate::state::{self, DraggedAsset, DraggedAssets, LibraryModel, PendingCompose};
 use crate::ui::{BoundsSlot, bounds_slot, button, format_duration, icon, measure_then, now, record_bounds, slot_size, spin, toolbar};
 
-/// The floating thumbnail shown under the cursor during a drag (in-app and promoted native drags).
-/// The thumbnail that follows the pointer while dragging cells out. GPUI anchors the drag view where
-/// the pressed cell's top-left was relative to the pointer, so the box is offset by `press_offset`
-/// to sit centred under the cursor instead (as Finder / Photos do).
+/// The floating thumbnail that follows the pointer while cells are dragged out (in-app and
+/// promoted native drags). GPUI anchors the drag view where the pressed cell's top-left was
+/// relative to the pointer, so the box is offset by `press_offset` to sit centred under the cursor
+/// instead, as Finder and Photos do.
 struct DragPreview {
     image: Option<std::path::PathBuf>,
     count: usize,
@@ -90,7 +90,7 @@ pub enum FeedEvent {
 
 
 /// What a drawn cell was drawn from: an owned copy of its entry, so exit ghosts and the zoom
-/// crossfade can keep drawing it after the library has moved on.
+/// crossfade can keep drawing it after the library has changed.
 #[derive(Clone, Debug)]
 enum CellSnapshot {
     Media(Generation),
@@ -146,8 +146,8 @@ pub struct FeedView {
     deferred_click: Option<(EntryId, usize)>,
     /// Cell transitions (pop-in/out, filter fade, zoom crossfade, thumbnail fade); see `grid_motion`.
     motion: GridMotion<CellSnapshot, EntryId>,
-    /// The cells the last `uniform_list` pass drew — a render cache, not truth. It is the snapshot an
-    /// exit ghost keeps drawing from after the library has already forgotten the item.
+    /// The cells the last `uniform_list` pass drew: a render cache, not the source of truth. An
+    /// exit ghost keeps drawing from this snapshot after the library has already dropped the item.
     last_rendered: HashMap<EntryId, CellSnapshot>,
     /// The window's scale factor as of the last render: cells are sized in points, thumbnails in
     /// device pixels, and the tier depends on the second.
@@ -387,7 +387,7 @@ impl FeedView {
         self.selection.ids.iter().filter_map(|id| id.asset()).filter_map(|id| lib.asset(id).cloned()).collect()
     }
 
-    /// The files behind the selection, whichever kind of entry — what Copy / Save / Reveal
+    /// The files behind the selection, whichever kind of entry: what Copy / Save / Reveal
     /// work on.
     fn selected_exportables(&self, cx: &App) -> Vec<Exportable> {
         let lib = &self.library.read(cx).lib;
@@ -510,7 +510,7 @@ impl FeedView {
         self.scroll.set_offset(point(px(0.), px(-target.max(0.))));
     }
 
-    /// Select `id` for the closing detail to land on. Returns its cell's box when it is on screen
+    /// Select `id` for the closing detail to return to. Returns its cell's box when it is on screen
     /// (the detail shrinks back into it); otherwise scrolls the row into the middle and returns
     /// `None`.
     pub fn land_on(&mut self, id: &EntryId, cx: &mut Context<Self>) -> Option<Bounds<Pixels>> {
@@ -567,8 +567,8 @@ impl FeedView {
     }
 
     /// The measured width changed (window or panel resize): fit the zoom level's columns to it.
-    /// A count that changed re-places every cell without motion, so the next zoom or library change
-    /// animates from this layout rather than a stale one.
+    /// A changed count re-places every cell without motion, so the next zoom or library change
+    /// animates from this layout rather than the previous one.
     fn fit_columns(&mut self, cx: &mut Context<Self>) {
         let width = slot_size(&self.content_size).width;
         if width > px(0.) && self.relayout(feed::columns_for(f32::from(width), self.zoom)) {
@@ -764,7 +764,7 @@ impl FeedView {
     }
 
     /// Ask for the large tier of everything currently on screen, if the cells are big enough to
-    /// want it. Called from the paths that change what is visible — never from a render.
+    /// need it. Called from the code that changes what is visible, never from a render.
     fn request_large_thumbnails(&mut self, cx: &mut Context<Self>) {
         if self.thumbnail_tier() == thumbnails::THUMB_MAX {
             return;
@@ -1050,12 +1050,12 @@ fn selection_menu_entries(info: &MenuInfo, cx: &App) -> Vec<MenuEntry> {
     }
 }
 
-/// The feed's context menu. Open is there but no Reveal in Finder anywhere: the library folder is
-/// the app's, files leave it through Save, Copy and drag. Rows that don't apply to the selection
+/// The feed's context menu. It has Open but never Reveal in Finder: the library folder belongs to
+/// the app, and files leave it through Save, Copy and drag. Rows that don't apply to the selection
 /// stay visible but disabled (single selection), except that a multi-selection drops Recreate
-/// entirely, and there is no Use Image — an item is dragged into the composer; a single generating
-/// item offers Cancel instead of Recreate. Items whose file went missing get Retry — regenerate in
-/// place — and Delete, like failed ones.
+/// entirely. There is no Use Image; an item is dragged into the composer instead. A single
+/// generating item offers Cancel instead of Recreate. Items whose file went missing get Retry,
+/// which regenerates in place, and Delete, like failed ones.
 fn context_menu_entries(items: &[Generation], in_album: Option<&majik_core::model::AlbumId>, cx: &App) -> Vec<MenuEntry> {
     let n = items.len();
     let ids: Vec<GenerationId> = items.iter().map(|i| i.id.clone()).collect();
@@ -1214,8 +1214,8 @@ pub fn copy_items(items: &[Exportable], window: &mut Window, cx: &mut App) {
         crate::ui::toast(window, if media.len() > 1 { format!("Copied {} items", media.len()) } else { "Copied".to_string() }, cx);
         return;
     }
-    // Off macOS gpui's clipboard holds one useful flavour — it drops file paths on every backend,
-    // and only Windows keeps more than one entry — so write the bitmap for a single image and the
+    // Off macOS gpui's clipboard holds one useful flavour: it drops file paths on every backend,
+    // and only Windows keeps more than one entry. So write the bitmap for a single image and the
     // paths as text for anything else.
     let mut image = false;
     if let Some(first) = items.first().filter(|i| i.kind == MediaType::Image) {
@@ -1247,8 +1247,8 @@ pub fn copy_items(items: &[Exportable], window: &mut Window, cx: &mut App) {
     crate::ui::toast(window, copy_toast(items.len(), image, files), cx);
 }
 
-/// What the toast says about a copy that went through the portable path: the files themselves when
-/// the platform carried them, otherwise the one flavour that did land.
+/// What the toast says about a copy that used the portable path: the files themselves when the
+/// platform carried them, otherwise whichever single flavour was written.
 fn copy_toast(count: usize, image: bool, files: bool) -> String {
     match (files, image, count) {
         (true, _, 1) => "Copied".to_string(),
@@ -1557,7 +1557,7 @@ mod tests {
         }};
     }
 
-    /// Columns the zoom level fits in the measured width — what a user sees, computed independently
+    /// Columns the zoom level fits in the measured width: what a user sees, computed independently
     /// of the view's own bookkeeping.
     fn fitted_columns(f: &FeedView) -> usize {
         feed::columns_for(f32::from(slot_size(&f.content_size).width), f.zoom)
@@ -1680,7 +1680,7 @@ mod tests {
     }
 
     /// The relaunch case: a row the previous run left generating with a provider handle keeps
-    /// spinning in the grid (resumed, not failed) and completes in place when the result lands.
+    /// spinning in the grid (resumed, not failed) and completes in place when the result arrives.
     #[gpui::test]
     fn a_resumed_generation_keeps_spinning_and_completes_in_place(cx: &mut TestAppContext) {
         let env = env(cx, 1, "Mock");
@@ -1981,7 +1981,7 @@ mod tests {
         });
         assert!(drawn <= columns * 12, "a 600 px window draws a few rows plus overscan, not {drawn} cells");
         assert!(first_drawn && !last_drawn, "top of the grid is what's drawn");
-        // A fling far past the end lands on the last rows — and draws them on that very frame.
+        // A fling far past the end stops on the last rows, and draws them on that very frame.
         let over_grid = point(px(500.), px(300.));
         vcx.simulate_mouse_move(over_grid, None, gpui::Modifiers::default());
         vcx.simulate_event(ScrollWheelEvent { position: over_grid, delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-1_000_000.))), modifiers: gpui::Modifiers::default(), touch_phase: gpui::TouchPhase::Moved });
@@ -2307,8 +2307,8 @@ mod tests {
         });
     }
 
-    /// Zooming in past what a 400 px thumbnail can fill switches the cells to the large tier —
-    /// driven the way a user does it, so the trigger path is covered and not just the lookup.
+    /// Zooming in past what a 400 px thumbnail can fill switches the cells to the large tier.
+    /// Driven the way a user does it, so the trigger is covered and not just the lookup.
     #[gpui::test]
     fn zooming_in_asks_for_and_draws_the_large_thumbnail_tier(cx: &mut TestAppContext) {
         let (view, vcx, env) = feed_window!(cx, 2);
@@ -2500,7 +2500,7 @@ mod tests {
             cx.notify();
             id
         });
-        // A new generation lands at the top of the feed, pushing the clicked item one slot down.
+        // A new generation appears at the top of the feed, pushing the clicked item one slot down.
         seed_item(&env.library, vcx, Seed::default());
         vcx.run_until_parked();
         view.update(vcx, |f, _| {
@@ -2517,7 +2517,7 @@ mod tests {
         let (first, second) = view.update(vcx, |f, _| (f.ids[0].clone(), f.ids[1].clone()));
         view.update(vcx, |f, _| assert!(f.cell_bounds(&second).is_some(), "drawn last frame"));
         // Deleted from the detail while it covers the feed: the model changes and the feed picks
-        // that up, but the grid is not drawn again before the detail asks where to land.
+        // that up, but the grid is not drawn again before the detail asks where to return to.
         env.library.update(vcx, |m, _| m.lib.delete_generations(std::slice::from_ref(first.media().unwrap())).unwrap());
         view.update(vcx, |f, cx| {
             f.refresh(Change::Library, cx);

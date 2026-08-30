@@ -1,9 +1,9 @@
 //! fal's prices, per model.
 //!
-//! **Checked 2026-08-29** against each model's own page (`fal.ai/models/<endpoint>`) — the general
-//! pricing page carries only a handful of models. Re-sweep from the endpoint tables in
-//! [`super::capabilities`]; the figures here go stale whenever fal reprices, which is why every
-//! number the app shows is labelled an estimate.
+//! **Checked 2026-08-29** against each model's own page (`fal.ai/models/<endpoint>`); the general
+//! pricing page carries only a handful of models. Re-check from the endpoint tables in
+//! [`super::capabilities`]. The figures here go out of date whenever fal reprices, which is why
+//! every number the app shows is labelled an estimate.
 //!
 //! Do NOT guess a price. A model with no published figure belongs in `UNPRICED` in
 //! `tests/shared.rs`, not in a made-up row here.
@@ -50,7 +50,7 @@ fn image(settings: &ImageGenerationSettings) -> Estimate {
         MUSE_IMAGE => flat(10_000),
         WAN_27_PRO => flat(75_000),
         // The GPT endpoints default to `quality: "high"` at 1024×1024 and we send no quality knob,
-        // so that is the tier the request actually lands in.
+        // so that is the tier the request actually uses.
         GPT5 => flat(133_000),
         GPT5_MINI => flat(36_000),
 
@@ -63,7 +63,7 @@ fn image(settings: &ImageGenerationSettings) -> Estimate {
         // 2K = medium, 4K = high — see `capabilities::api_gpt_image_quality`). Figures are the
         // 1024×1024 column; other aspect ratios differ by a few tenths of a cent.
         GPT_IMAGE_2 => by_resolution(&[(I1K, 6_000), (I2K, 53_000), (I4K, 211_000)], settings.resolution),
-        // Qwen Image 3: $0.04 at 1K, $0.075 at 2K. We send no resolution knob, so it lands on 1K.
+        // Qwen Image 3: $0.04 at 1K, $0.075 at 2K. We send no resolution knob, so it uses 1K.
         QWEN_IMAGE_3 => flat(40_000),
         // Seedream 5: $0.0675 up to 1536², $0.135 above it. Our 1K tier is the lower band.
         SEEDREAM_5_PRO => by_resolution(&[(I1K, 67_500), (I2K, 135_000)], settings.resolution),
@@ -101,7 +101,7 @@ fn output_pixels(settings: &ImageGenerationSettings) -> (u32, u32) {
 }
 
 /// fal's named `image_size` presets. Every one is under a megapixel, so today they all bill the
-/// first-megapixel rate — the table is here so a larger preset prices itself correctly.
+/// first-megapixel rate; the table is here so a larger preset prices itself correctly.
 fn preset_pixels(preset: &str) -> (u32, u32) {
     match preset {
         "square_hd" => (1024, 1024),
@@ -117,7 +117,7 @@ fn preset_pixels(preset: &str) -> (u32, u32) {
 // ----- Video --------------------------------------------------------------------------------------
 
 /// Per-second rates keyed on `(resolution, audio on)`. `None` is the resolution for a model with no
-/// resolution knob — the Kling family, whose capability tables declare no resolutions.
+/// resolution knob, which is the Kling family, whose capability tables declare no resolutions.
 type VideoRates = &'static [((Option<VideoResolution>, bool), u64)];
 
 fn video(settings: &VideoGenerationSettings) -> Estimate {
@@ -158,7 +158,7 @@ fn video(settings: &VideoGenerationSettings) -> Estimate {
         KLING_30_STANDARD => &[((None, false), 84_000), ((None, true), 126_000)],
         KLING_26_PRO => &[((None, false), 70_000), ((None, true), 140_000)],
         KLING_25_TURBO_PRO => &[((None, false), 70_000), ((None, true), 70_000)],
-        // Seedance bills video tokens — `width × height × fps × seconds / 1024` — so the
+        // Seedance bills video tokens (`width × height × fps × seconds / 1024`), so the
         // per-second rates below are that formula at 24 fps for each resolution fal offers.
         // Seedance 2 is $0.014 per 1,000 tokens and includes audio in the rate; the derived 720p
         // and 1080p figures reproduce fal's published $0.3034/s and $0.682/s.
@@ -320,7 +320,7 @@ mod tests {
     #[test]
     fn megapixel_models_bill_the_preset_they_are_sent() {
         // Every named preset we send is under a megapixel, so all of them pay the first-megapixel
-        // rate — $0.03 for flux-2-pro, $0.05 for flex, $0.003 for schnell.
+        // rate: $0.03 for flux-2-pro, $0.05 for flex, $0.003 for schnell.
         assert_eq!(dollars(image_price("flux-2-pro", AspectRatio::Square, I1K)), "$0.03");
         assert_eq!(dollars(image_price("flux-2-pro", AspectRatio::Landscape, I1K)), "$0.03");
         assert_eq!(dollars(image_price("flux-2-flex", AspectRatio::Square, I1K)), "$0.05");
@@ -351,7 +351,7 @@ mod tests {
 
     #[test]
     fn token_billed_video_matches_fals_worked_examples() {
-        // "a 720p 5 second video with audio costs roughly $0.26" — the token formula at 24 fps.
+        // "a 720p 5 second video with audio costs roughly $0.26": the token formula at 24 fps.
         assert_eq!(dollars(video_price("seedance-1.5-pro", Some(V720), 5, true)), "$0.26");
         assert_eq!(dollars(video_price("seedance-1.5-pro", Some(V720), 5, false)), "$0.13", "audio doubles the token rate");
         // Published per-second rates for Seedance 2.

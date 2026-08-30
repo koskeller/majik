@@ -153,7 +153,7 @@ impl TabAssets {
 }
 
 /// Why recreate changed something on the way in (`RecreateSettingsWarning`), on the tab the
-/// request landed on.
+/// request opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecreateWarning {
     DefaultModel { tab: ComposeTab, original_model: &'static str, replacement_model: &'static str },
@@ -466,7 +466,7 @@ impl ComposerState {
         }
     }
 
-    /// What *one* output of the current draft costs on the current provider — an estimate, and
+    /// What *one* output of the current draft costs on the current provider: an estimate, and
     /// `Estimate::Unknown` for a model the provider has no price for.
     ///
     /// `prompt_characters` is the length of the text to speak, which is all that per-character TTS
@@ -513,7 +513,7 @@ impl ComposerState {
         self.assets.get(self.tab)
     }
 
-    /// The active tab's assets the current model accepts — what the row shows and Generate sends.
+    /// The active tab's assets the current model accepts: what the row shows and Generate sends.
     pub fn accepted_assets(&self) -> Vec<&DraftAsset> {
         let constraints = self.asset_constraints();
         self.active_assets().iter().filter(|a| constraints.accepts(a.role)).collect()
@@ -557,9 +557,9 @@ impl ComposerState {
     }
 
     /// Where a dropped-in picture goes (`firstAvailableImageRole`): the first open role, frames
-    /// before references. A lone image is a start frame on every model that takes one — a reference
-    /// is a deliberate act, and one dropped by accident would flip the whole request onto the
-    /// reference endpoint. Audio is never an image's role.
+    /// before references. A lone image is a start frame on every model that takes one, because
+    /// attaching a reference should be deliberate: one dropped by accident would move the whole
+    /// request onto the reference endpoint. Audio is never an image's role.
     pub fn first_available_image_role(&self) -> Option<AssetRole> {
         let constraints = self.asset_constraints();
         let frames = [AssetRole::FirstFrame, AssetRole::LastFrame];
@@ -572,8 +572,8 @@ impl ComposerState {
     }
 
     /// The handles the prompt can address, as `(role, 1-based index)` in the order the references
-    /// were attached — `@Image1`, `@Image2`, `@Video1`. Empty unless the active tab is a video one
-    /// whose model declares a reference list of that kind: Wan 2.7's lone audio slot is a
+    /// were attached: `@Image1`, `@Image2`, `@Video1`. Empty unless the active tab is a video one
+    /// whose model declares a reference list of that kind. Wan 2.7's lone audio slot is a
     /// conditioning track, not something a prompt can name.
     pub fn reference_handles(&self) -> Vec<(AssetRole, usize)> {
         let Some(references) = self.video_caps().and_then(|caps| caps.references) else { return Vec::new() };
@@ -626,12 +626,12 @@ impl ComposerState {
     // ----- recreate --------------------------------------------------------------------
 
     /// Port of `loadingRecreateSettings`: rebuild the request's tab from its stored settings and
-    /// select it. An unsupported model falls back to the provider's default draft (original settings
-    /// dropped); supported settings the model can't honour are clamped. Either way at most one
-    /// warning. `assets` replace that tab's draft as stored — the other tabs keep their own, and
-    /// audio has nowhere to keep them. A tool request lands on its tool's tab with its model and
-    /// its one input (one row is one image, whatever batch it was part of). The prompt is the
-    /// caller's to apply.
+    /// select it. An unsupported model falls back to the provider's default draft (the original
+    /// settings are dropped); supported settings the model can't honour are clamped. Either way at
+    /// most one warning. `assets` replace that tab's draft as stored; the other tabs keep their own,
+    /// and audio has nowhere to keep them. A tool request opens its tool's tab with its model and
+    /// its one input (one row is one image, whatever batch it was part of). The caller applies the
+    /// prompt.
     pub fn load_recreate(&self, request: &Request, assets: Vec<DraftAsset>) -> RecreateOutcome {
         let provider = self.provider;
         let mut next = self.clone();
@@ -809,8 +809,8 @@ fn coerce_video(draft: &mut VideoDraft, caps: &VideoModelCapabilities) {
     }
 }
 
-/// `validAudioDraft`. Voices are matched by id so a stale copy of a known voice is refreshed from the
-/// catalog rather than replaced by the default.
+/// `validAudioDraft`. Voices are matched by id so an outdated copy of a known voice is refreshed
+/// from the catalog rather than replaced by the default.
 fn coerce_audio(draft: &mut AudioDraft, caps: &AudioModelCapabilities) {
     draft.speaker1 = match draft.speaker1.as_ref().and_then(|v| voice_by_id(caps, &v.id)) {
         Some(v) => Some(v),

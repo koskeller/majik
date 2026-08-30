@@ -33,10 +33,9 @@ pub fn keys(cx: &App) -> Arc<ApiKeys> {
 #[derive(Clone, Debug)]
 pub enum LibraryEvent {
     Changed,
-    /// A generation reached a terminal state (cancellations excluded) — drives the completion
-    /// notification.
+    /// A generation finished (cancellations excluded). Drives the completion notification.
     GenerationFinished { ok: bool },
-    /// Something the user asked for couldn't be done and no row shows it — the window toasts it.
+    /// Something the user asked for couldn't be done and no row shows it; the window toasts it.
     Error { message: String },
 }
 
@@ -45,10 +44,10 @@ pub struct LibraryModel {
     engine: Box<dyn JobRunner>,
     /// Large-tier thumbnails (`thumbnails::THUMB_LARGE`) that have been rendered, keyed by the
     /// standard-tier path they sit beside, so the feed can pick one during a render without
-    /// touching disk. Keyed by path rather than by asset because the thumbnail's identity is its
+    /// touching disk. Keyed by path rather than by asset because a thumbnail's identity is its
     /// file's (path, mtime, size): a retried generation reuses its asset row but writes a new file,
-    /// and keying by asset would keep drawing the previous attempt's image. Not persisted — a cache
-    /// of a cache, refilled as the tiles that need it come into view.
+    /// so keying by asset would keep drawing the previous attempt's image. Not persisted; it
+    /// refills as the tiles that need it come into view.
     large_thumbnails: HashMap<PathBuf, PathBuf>,
     /// Standard-tier paths already queued, so a settled scroll doesn't ask twice.
     large_pending: HashSet<PathBuf>,
@@ -64,7 +63,7 @@ impl EventEmitter<LibraryEvent> for LibraryModel {}
 #[derive(Clone, Debug, Default)]
 pub struct PendingCompose {
     /// The generation to recreate: the composer reads its stored request and its input assets from
-    /// the library and becomes the state that made it (tool rows land on their tool's tab).
+    /// the library and becomes the state that made it (tool rows open their tool's tab).
     pub recreate: Option<GenerationId>,
 }
 
@@ -133,7 +132,7 @@ impl LibraryModel {
     }
 
     /// Test-only constructor over any [`JobRunner`] (a recording one, to assert what a relaunch
-    /// submits). Like the app, recovers in-flight rows right away — its keys are in memory.
+    /// submits). Like the app, recovers in-flight rows right away, since its keys are in memory.
     #[cfg(test)]
     pub fn open_with_runner(root: PathBuf, engine: Box<dyn JobRunner>, _cx: &mut Context<Self>) -> anyhow::Result<Self> {
         let lib = Library::open(root)?;
@@ -143,11 +142,10 @@ impl LibraryModel {
     }
 
     /// Rows a previous run left "generating", swept once the API keys are loaded (a resume needs
-    /// them): a row whose
-    /// attempt is past its deadline has timed out; one with a provider job handle is resumed for
-    /// the time it has left, looking exactly like a live generation; the rest were interrupted
-    /// and get Retry. The age is the attempt's, not the row's: a retried row is as old as its
-    /// first attempt, its current one may have started seconds ago.
+    /// them). A row whose attempt is past its deadline has timed out; one with a provider job
+    /// handle is resumed for the time it has left, looking exactly like a live generation; the rest
+    /// were interrupted and get Retry. The age used is the attempt's, not the row's: a retried row
+    /// is as old as its first attempt, but its current attempt may have started seconds ago.
     pub fn recover_in_flight(&mut self) {
         let now = majik_core::now_ms();
         for item in self.lib.in_flight() {
@@ -159,9 +157,9 @@ impl LibraryModel {
             let attempt = self.lib.active_job(&item.id);
             let started_at = attempt.as_ref().map(|job| job.started_at_ms.unwrap_or(job.created_at_ms)).unwrap_or(item.created_at_ms);
             // The budget has to be the one the attempt started with, or a long video would be
-            // judged stale on relaunch against a shorter deadline than it was given. A row whose
-            // request no longer parses (its model was dropped from the catalog) falls back to the
-            // per-type floor.
+            // judged timed out on relaunch against a shorter deadline than it was given. A row
+            // whose request no longer parses (its model was dropped from the catalog) falls back
+            // to the minimum for its media type.
             let deadline = match item.request_json.as_deref().and_then(Request::from_json) {
                 Some(request) => stale_timeout_for(&request.generation_type),
                 None => {
@@ -198,7 +196,7 @@ impl LibraryModel {
         self.lib.get(id).and_then(|item| item.active_job_id.clone()).expect("the row has an attempt")
     }
 
-    /// Persist + notify observers. Every mutation funnels through here.
+    /// Persist and notify observers. Every mutation goes through here.
     pub(crate) fn changed(&mut self, cx: &mut Context<Self>) {
         cx.notify();
         cx.emit(LibraryEvent::Changed);
@@ -206,9 +204,9 @@ impl LibraryModel {
 
     // ----- engine events -----------------------------------------------------
 
-    /// An engine event lands on the row's active attempt while that attempt is open, and only
-    /// there: one of another attempt (superseded by a retry), of a row since deleted, or of an
-    /// attempt that already ended (a second run of it, or a relaunch's verdict) is dropped.
+    /// An engine event is applied to the row's active attempt, and only while that attempt is
+    /// open. An event for another attempt (superseded by a retry), for a row since deleted, or for
+    /// an attempt that already ended (a second run of it, or a relaunch's outcome) is dropped.
     pub(crate) fn apply(&mut self, event: Event, cx: &mut Context<Self>) {
         let id = event.id().clone();
         let active = self.lib.get(&id).filter(|item| item.status == Status::Generating).and_then(|item| item.active_job_id.clone());
@@ -222,7 +220,7 @@ impl LibraryModel {
                 None
             }
             Event::Trace { job, trace, .. } => {
-                // The trail is bookkeeping: nothing the feed shows changes, so no notification.
+                // A trace is bookkeeping: nothing the feed shows changes, so no notification.
                 if let Err(e) = self.lib.record_trace(&job, trace) {
                     tracing::warn!(target: "majik", "{id}: recording a provider exchange: {e:#}");
                 }
@@ -285,8 +283,9 @@ impl LibraryModel {
             .filter_map(|id| self.lib.asset(id))
             .filter(|asset| !asset.missing && asset.kind != MediaType::Audio)
             .filter(|asset| {
-                // The tier sits beside the standard one, so there is nothing to render until that
-                // exists — and nothing to redo once it has been rendered, queued or failed.
+                // The large tier sits beside the standard one, so there is nothing to render
+                // until that exists, and nothing to redo once it has been rendered, queued or
+                // failed.
                 asset.thumbnail.as_deref().is_some_and(|standard| {
                     !self.large_thumbnails.contains_key(standard) && !self.large_pending.contains(standard) && !self.large_failed.contains(standard)
                 })
@@ -309,8 +308,8 @@ impl LibraryModel {
                             m.large_thumbnails.insert(standard, path);
                             cx.notify();
                         }
-                        // The standard tier stays on screen; only sharpness is lost. Remembering the
-                        // failure keeps an undecodable file from being re-attempted every scroll.
+                        // The standard tier stays on screen; only sharpness is lost. Remembering
+                        // the failure stops an undecodable file being re-attempted every scroll.
                         Err(e) => {
                             m.large_failed.insert(standard);
                             tracing::warn!(target: "majik", "large thumbnail for asset {id}: {e:#}");
@@ -370,7 +369,7 @@ impl LibraryModel {
         match item.media_type {
             MediaType::Audio => self.probe_audio(item, cx),
             MediaType::Video => {
-                // Probe dimensions/duration off the UI thread (it reads the whole sample table), then thumbnail.
+                // Read dimensions and duration off the UI thread (it reads the whole sample table), then thumbnail.
                 let id = item.id.clone();
                 let path = item.path.clone();
                 cx.spawn(async move |this, cx| {
@@ -398,7 +397,7 @@ impl LibraryModel {
     }
 
     /// Add a file to the library as an asset (a composer drop, a paste, an import) and start its
-    /// thumbnail. Content addressed: the same bytes again return the existing asset.
+    /// thumbnail. Content addressed, so the same bytes again return the existing asset.
     pub fn import_asset(&mut self, content_type: &str, bytes: &[u8], cx: &mut Context<Self>) -> anyhow::Result<AssetId> {
         let id = self.lib.import_asset(content_type, bytes)?;
         if let Some(asset) = self.lib.asset(&id).cloned().filter(|a| a.thumbnail.is_none() && a.kind != MediaType::Audio) {
@@ -482,7 +481,7 @@ impl LibraryModel {
     }
 
     /// Ask the provider's text model to rewrite a prompt. The outcome arrives on the receiver; the
-    /// composer awaits it and drops the receiver to walk away (a rewrite owns no row).
+    /// composer awaits it, and drops the receiver to give up on it (a rewrite owns no row).
     pub fn improve_prompt(&self, request: TextRequest) -> ImproveReceiver {
         self.engine.improve_prompt(request)
     }
@@ -521,8 +520,8 @@ impl LibraryModel {
 
     // ----- generation ------------------------------------------------------------
 
-    /// Insert one placeholder row per request, link the input assets to each and queue the jobs
-    /// `inputs` are the assets the requests' bytes came from — the rows reference them, nothing is
+    /// Insert one placeholder row per request, link the input assets to each and queue the jobs.
+    /// `inputs` are the assets the requests' bytes came from; the rows reference them, nothing is
     /// copied.
     pub fn generate(&mut self, requests: Vec<Request>, inputs: &[(AssetId, AssetRole)], album: Option<AlbumId>, cx: &mut Context<Self>) -> Vec<GenerationId> {
         let links: Vec<(AssetId, &str)> = inputs.iter().map(|(asset, role)| (asset.clone(), role.raw())).collect();
@@ -532,7 +531,7 @@ impl LibraryModel {
     }
 
     /// One placeholder row for `request` — its request stored, `links` referenced as its inputs,
-    /// filed in `album` — plus the engine job. The one way a row comes to be; the caller notifies.
+    /// filed in `album` — plus the engine job. The only way a row is created; the caller notifies.
     fn queue_request(&mut self, request: Request, links: &[(AssetId, &str)], album: Option<&AlbumId>) -> GenerationId {
         let id = self.lib.add_generating(
             request.media_type(),
@@ -555,12 +554,12 @@ impl LibraryModel {
         id
     }
 
-    /// Re-run failed rows from their stored request + assets; a tool row replays its request over
-    /// its stored input.
+    /// Re-run failed rows from their stored request and assets; a tool row replays its request
+    /// over its stored input.
     pub fn retry(&mut self, ids: &[GenerationId], cx: &mut Context<Self>) {
         for id in ids {
             let Some(item) = self.lib.get(id).cloned() else { continue };
-            // A missing file is regenerated in place: the new file lands under the same id.
+            // A missing file is regenerated in place: the new file is written under the same id.
             if !matches!(item.status, Status::Failed | Status::Missing) {
                 continue;
             }
@@ -572,8 +571,8 @@ impl LibraryModel {
             };
             let inputs = self.linked_inputs(id);
             request.assets = inputs.iter().filter_map(|(role, asset)| self.asset_input(asset, *role)).collect();
-            // The row offered Retry, so say why nothing happens: a request short of an input it
-            // was made with would quietly become a different generation (a text-only video), and
+            // The row offered Retry, so say why nothing happens: a request missing an input it
+            // was made with would silently become a different generation (a text-only video), and
             // a tool has nothing to run over.
             if request.assets.len() < inputs.len() || (request.generation_type.tool().is_some() && request.assets.is_empty()) {
                 self.lib.fail_generation(id, "Can't retry: an input is no longer available.");
@@ -590,9 +589,9 @@ impl LibraryModel {
         self.changed(cx);
     }
 
-    /// A generation's input assets with their roles, in the stored order — the one reading of
-    /// `generation_inputs` for Retry and Recreate alike. A link whose role this build doesn't know
-    /// (written by a newer one) is left out, and said so.
+    /// A generation's input assets with their roles, in the stored order. The only place
+    /// `generation_inputs` is read, for both Retry and Recreate. A link whose role this build
+    /// doesn't know (written by a newer one) is left out and logged.
     pub fn linked_inputs(&self, id: &GenerationId) -> Vec<(AssetRole, Asset)> {
         self.lib
             .inputs(id)
@@ -607,7 +606,7 @@ impl LibraryModel {
             .collect()
     }
 
-    /// `asset`'s bytes as a provider input in `role` — the one place a request's bytes come from.
+    /// `asset`'s bytes as a provider input in `role`. The only place a request's bytes come from.
     /// `None` when the file is gone (the row still references the asset, so a retry picks it up
     /// once the file is back) or can't be read. Image roles report the sniffed type, so validation
     /// sees what the bytes are rather than what the import claimed.
@@ -629,8 +628,8 @@ impl LibraryModel {
         Some(AssetInput::new(role, content_type, bytes))
     }
 
-    /// Run a tool with the composer's selected model over library assets, one row per asset — the
-    /// composer's tool tabs. Assets that aren't readable images are skipped.
+    /// Run a tool with the composer's selected model over library assets, one row per asset. This
+    /// is what the composer's tool tabs use. Assets that aren't readable images are skipped.
     pub fn run_tool_on_assets(&mut self, model: &ToolModel, assets: &[AssetId], provider: ProviderId, album: Option<AlbumId>, cx: &mut Context<Self>) -> usize {
         let mut n = 0;
         for id in assets {
@@ -645,11 +644,11 @@ impl LibraryModel {
         n
     }
 
-    /// Run a tool over completed library images with the provider's default model — the context
-    /// menus' direct path. The tool row references the source's output asset directly.
+    /// Run a tool over completed library images with the provider's default model. This is what
+    /// the context menus use. The tool row references the source's output asset directly.
     pub fn run_tool(&mut self, tool: ToolId, ids: &[GenerationId], provider: ProviderId, album: Option<AlbumId>, cx: &mut Context<Self>) -> usize {
         // Without a model the job could only fail at the provider; the menus disable the entry
-        // (`tool_available`), so this is the backstop for the menu bar's unconditional actions.
+        // (`tool_available`), so this only catches the menu bar's unconditional actions.
         let Some(model) = ProviderRegistry::shared().descriptor(&provider).and_then(|d| d.default_tool_model(tool)).cloned() else {
             tracing::warn!(target: "majik", "{}: {provider} has no model for it", tool.label());
             return 0;
@@ -680,8 +679,8 @@ pub fn available_providers(cx: &App) -> Vec<&'static ProviderDescriptor> {
 
 /// The provider generations and tools go to: the one picked in the composer (`Config::provider`)
 /// when it is available, else the first available one (its key was removed, or a fresh install
-/// whose first key is for another provider), else the picked one anyway — nothing can run then,
-/// and `generate` sends the user to Settings for the key.
+/// whose first key is for another provider), else the picked one anyway. In that last case nothing
+/// can run, and `generate` sends the user to Settings for the key.
 pub fn selected_provider(cx: &App) -> &'static ProviderDescriptor {
     let picked = cx.global::<crate::config::Config>().provider_id();
     let available = available_providers(cx);
@@ -700,7 +699,7 @@ pub fn tool_supported(tool: ToolId, cx: &App) -> bool {
 }
 
 /// Whether `tool` can run on any of `items` right now: the selected provider has a model for it
-/// and at least one item is eligible. The one rule behind every menu entry that offers a tool.
+/// and at least one item is eligible. Every menu entry that offers a tool uses this.
 pub fn tool_available(tool: ToolId, items: &[Generation], cx: &App) -> bool {
     tool_supported(tool, cx) && items.iter().any(|item| tool.is_eligible(item))
 }
@@ -800,8 +799,8 @@ mod tests {
 
     #[gpui::test]
     fn an_asset_without_a_standard_thumbnail_is_not_asked_for_a_large_one(cx: &mut TestAppContext) {
-        // Nothing has been thumbnailed yet (an inert library never does it on its own): the large
-        // tier sits beside the standard one, so there is nothing to render until that exists.
+        // Nothing has been thumbnailed yet (an inert library never does it on its own), and the
+        // large tier sits beside the standard one, so there is nothing to render yet.
         let e = env(cx, 1, "Mock");
         let asset = e.library.read_with(cx, |m, _| m.lib.assets()[0].id.clone());
         e.library.update(cx, |m, cx| m.request_large_thumbnails(std::slice::from_ref(&asset), cx));
@@ -810,7 +809,7 @@ mod tests {
     }
 
     /// A retry reuses the asset row but writes a new file, so its thumbnails are new files too.
-    /// Keying the large tier by asset would have kept drawing the previous attempt's image.
+    /// Keying the large tier by asset would keep drawing the previous attempt's image.
     #[gpui::test]
     fn regenerating_an_asset_does_not_keep_the_old_large_tier(cx: &mut TestAppContext) {
         let e = env(cx, 1, "Mock");
@@ -1116,7 +1115,7 @@ mod tests {
             assert_eq!(job.status, majik_core::model::JobStatus::Canceled, "nothing is left running in the history");
             assert!(job.finished_at_ms.is_some());
         });
-        // The engine's own word arrives afterwards and has nowhere to land.
+        // The engine's own outcome arrives afterwards and is dropped.
         let job = e.library.read_with(cx, |m, _| m.lib.jobs(&id)[0].id.clone());
         e.library.update(cx, |m, cx| m.apply(Event::Cancelled { id: id.clone(), job }, cx));
         e.library.read_with(cx, |m, _| assert!(m.lib.get(&id).is_none()));
@@ -1131,7 +1130,7 @@ mod tests {
             m.apply(Event::Completed { id: id.clone(), job: job.clone(), bytes: majik_core::images::solid_png(4, 4, [1, 2, 3]), is_upscaled: false }, cx);
             job
         });
-        // A resume of the same attempt (a relaunch racing the outcome) reports too.
+        // Resuming the same attempt (a relaunch racing the outcome) reports as well.
         e.library.update(cx, |m, cx| m.apply(Event::Failed { id: id.clone(), job, error: Box::new(majik_providers::GenerationError::Timeout) }, cx));
         e.library.read_with(cx, |m, _| {
             assert_eq!(m.lib.get(&id).unwrap().status, Status::Completed, "a finished row is not failed by a late word");
@@ -1532,8 +1531,8 @@ mod tests {
     }
 
     /// A 30 s render is given a longer budget than the flat video default, and a relaunch has to
-    /// judge it on that same budget — otherwise a clip still rendering at the provider is written
-    /// off as timed out and the user loses a render they have already paid for.
+    /// use that same budget. Otherwise a clip still rendering at the provider is treated as timed
+    /// out and the user loses a render they have already paid for.
     #[gpui::test]
     fn relaunch_judges_a_long_video_on_its_own_deadline(cx: &mut TestAppContext) {
         let e = env(cx, 0, "Mock");

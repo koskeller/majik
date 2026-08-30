@@ -1,6 +1,6 @@
-//! Blob storage abstraction. The library keeps its own content — generated media, thumbnails, input
-//! assets, trash — behind [`BlobStore`] so the local filesystem is just one backend; an S3-compatible
-//! backend can be dropped in later without touching the library, thumbnailing, or UI code.
+//! Blob storage abstraction. The library keeps its own content (generated media, thumbnails, input
+//! assets, trash) behind [`BlobStore`], so the local filesystem is only one backend and an
+//! S3-compatible one can be added later without touching the library, thumbnailing, or UI code.
 //!
 //! Blobs are addressed by a **relative key** (a forward-slash path such as `"a1b2.png"` or
 //! `".majik/thumbs/deadbeef.jpg"`). For the local backend a key maps directly to a file under the

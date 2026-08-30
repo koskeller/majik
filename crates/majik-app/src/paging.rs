@@ -3,7 +3,7 @@
 //!
 //! The detail view is modelled as a horizontal strip of viewport-wide slots: slot `k` sits at
 //! `x = (k - index) * width + offset`. `offset` is the strip's displacement from rest, so `+width`
-//! means the previous item is still fully on screen. The resting target is always `0`; a critically
+//! means the previous item is still fully on screen. The resting target is always `0`. A critically
 //! damped spring carries velocity across retargets, which is what makes mashing →, reversing, or
 //! swiping mid-slide seamless. This module is pure so it can be unit-tested without a window; the
 //! view feeds it `TouchPhase`s, pixel deltas and a clock.
@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{Point, SpringConfig, SpringState, TouchPhase};
 
-/// Critically damped, ω₀ = 2π / 0.3 s — visually an ~0.3 s ease-out.
+/// Critically damped, ω₀ = 2π / 0.3 s, which looks like an ~0.3 s ease-out.
 pub const SLIDE_SPRING: SpringConfig = SpringConfig::new(439.0, 41.9, 1.0);
 /// Offset (px) under which a slide is considered finished.
 pub const SETTLE_EPSILON: f32 = 0.5;
@@ -524,7 +524,7 @@ mod tests {
         assert_eq!(paging.offset(), frozen);
         paging.scroll(TouchPhase::Moved, Point::new(-10.0, 0.0), edges, at(t0, 70));
         assert!((paging.offset() - (frozen - 10.0)).abs() < 0.01, "strip follows the fingers from where it was");
-        // The old item is still mostly on screen, so releasing snaps to it — the nearest page — and
+        // The old item is still mostly on screen, so releasing snaps to it as the nearest page and
         // the view steps back; the strip is re-based so nothing jumps.
         assert_eq!(paging.scroll(TouchPhase::Ended, Point::new(0.0, 0.0), edges, at(t0, 500)), Some(Step::Prev));
         assert!((paging.offset() - (frozen - 10.0 - W)).abs() < 0.01);

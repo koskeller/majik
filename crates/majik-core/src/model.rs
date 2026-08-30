@@ -1,7 +1,7 @@
 //! The library's domain types: generations, attempts, assets and the ids that name them.
 //!
-//! A [`Generation`] is one row the app made — its request and a pointer to its active attempt — and
-//! stores no file; an [`Asset`] is a file the library holds and carries no role. The two are joined
+//! A [`Generation`] is one row the app made: its request and a pointer to its active attempt. It
+//! stores no file. An [`Asset`] is a file the library holds and carries no role. The two are joined
 //! by `output_asset_id` and by the inputs table, so re-using an output as an input shares the row
 //! rather than copying bytes. Id strings are persistence keys: they reach `library.db` and the
 //! filenames, so they are never rewritten in place.
@@ -148,7 +148,7 @@ pub enum Status {
     Completed,
     Failed,
     /// Completed, but the file is no longer in the library folder (removed or renamed outside the
-    /// app). Derived on open — never stored; the row is written back as `Completed` so the item
+    /// app). Derived on open and never stored; the row is written back as `Completed` so the item
     /// recovers by itself when the file returns.
     Missing,
 }
@@ -216,7 +216,7 @@ pub struct Generation {
     pub job_id: Option<String>,
     pub poll_url: Option<String>,
     /// When the active attempt started at the provider (`None` while it is still queued), so the
-    /// elapsed time a generating row shows is the attempt's own — a retry starts from zero.
+    /// elapsed time a generating row shows is the attempt's own and a retry starts from zero.
     pub started_at_ms: Option<u64>,
     /// The attempt this row mirrors: its `status`, `error`, `error_kind`, `job_id`, `poll_url` and
     /// `started_at_ms` are the active job's (see [`GenerationJob`]).
@@ -316,7 +316,7 @@ impl JobStatus {
 /// One provider attempt of a generation (flarly's `generationJobs`): a retry is a new attempt of
 /// the same row. The row's `status`, `output_asset_id` and `is_upscaled` are copies of its active
 /// job's, written together; the handle, the error, the timestamps and what the provider said live
-/// only here. Attempts are never deleted — a soft-deleted generation keeps its history.
+/// only here. Attempts are never deleted, so a soft-deleted generation keeps its history.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GenerationJob {
     pub id: JobId,
@@ -418,7 +418,7 @@ impl JobTrace {
 }
 
 /// One file the library holds: a generation's output, an input it was given, or an import. Assets
-/// carry no role — what an asset *is* to a generation lives on that generation ([`GenerationInput`],
+/// carry no role; what an asset *is* to a generation lives on that generation ([`GenerationInput`],
 /// [`Generation::output_asset_id`]), so one asset can be the output of one generation and an input
 /// of several others without copies.
 #[derive(Clone, Debug, PartialEq)]
@@ -465,8 +465,8 @@ impl Asset {
 }
 
 /// What a grid cell or the detail shows: a generation (the Library, Favorites and album feeds) or
-/// an asset (the Assets feed). Generations in flight have no asset yet, and an asset need not have a
-/// generation, so the two stay distinct.
+/// an asset (the Assets feed). Generations in flight have no asset yet, and an asset need not have
+/// a generation, so the two stay distinct.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum EntryId {
     Generation(GenerationId),

@@ -1,9 +1,9 @@
 //! fal.ai provider.
 //!
-//! - [`capabilities`] — supported models, capability tables and endpoint / parameter routing.
-//! - [`provider`] — [`FalClient`], the HTTP client (queue polling + sync tool endpoints).
-//! - [`audio`] — ElevenLabs v3 / Gemini TTS routing and request bodies.
-//! - [`models`] — wire types; [`error`] — `FalError` and HTTP error mapping.
+//! - [`capabilities`]: supported models, capability tables and endpoint / parameter routing.
+//! - [`provider`]: [`FalClient`], the HTTP client (queue polling and sync tool endpoints).
+//! - [`audio`]: ElevenLabs v3 / Gemini TTS routing and request bodies.
+//! - [`models`]: wire types. [`error`]: `FalError` and HTTP error mapping.
 
 pub mod audio;
 pub mod capabilities;

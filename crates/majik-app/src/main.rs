@@ -2,11 +2,12 @@
 //!
 //! `main` parses the two argument-only modes (`--version`, `--channel`), installs the tracing
 //! subscriber and the [`config`] globals, then hands off to [`windows`], which owns the Library and
-//! Settings windows. Everything below this crate is plain Rust — GPUI lives here and nowhere else.
+//! Settings windows. Everything below this crate is plain Rust; GPUI lives here and nowhere else.
 //!
 //! State flows one way: [`state::AppState`] holds the [`state::LibraryModel`] that wraps the library
-//! and the generation engine; views observe it and rebuild from it, and never hold domain copies as
-//! truth. See CLAUDE.md for the architecture and the vocabulary the code uses.
+//! and the generation engine; views observe it and rebuild from it, and never treat a copy of a
+//! domain type as the source of truth. See CLAUDE.md for the architecture and the vocabulary the
+//! code uses.
 
 mod actions;
 mod assets;
@@ -34,8 +35,8 @@ use crate::state::{AppState, LibraryModel};
 
 fn main() {
     // Answered before anything is initialised, and before the first argument is read as a library
-    // path below — a path never starts with `--`. `--channel` is what the packaging scripts'
-    // `require_channel_marker` proves, and referencing the constant keeps the linker from dropping it.
+    // path below (a path never starts with `--`). `--channel` is what the packaging scripts'
+    // `require_channel_marker` checks, and referencing the constant stops the linker dropping it.
     match std::env::args().nth(1).as_deref() {
         Some("--version" | "-v") => {
             println!("{}", config::version_line());

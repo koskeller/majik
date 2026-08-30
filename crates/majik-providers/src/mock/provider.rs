@@ -1,5 +1,5 @@
 //! In-process fake provider used for UI tests and local development. Generates deterministic
-//! fixture bytes on the fly — never makes network calls. Behavior is controlled entirely by
+//! fixture bytes on the fly and never makes network calls. Behavior is controlled entirely by
 //! `#directives` embedded in the prompt text (see [`super::directives`]).
 
 use std::time::Duration;
@@ -55,7 +55,7 @@ impl MockClient {
         self
     }
 
-    /// The exchanges a real provider would have made, so the trail the app keeps is exercised end
+    /// The exchanges a real provider would have made, so the traces the app keeps are exercised end
     /// to end without a network: a submit answered with the job id, and the result once the
     /// `#delay:` has passed (carrying the `#fail:` error when there is one).
     fn trace(&self, label: TraceLabel, kind: &str, parsed: &Parsed, error: Option<&GenerationError>) {

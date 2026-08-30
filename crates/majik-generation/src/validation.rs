@@ -119,7 +119,7 @@ pub fn validate_request(request: &Request, provider: &ProviderDescriptor) -> Res
 }
 
 /// Everything a provider would reject about the reference lists, caught before the row is queued so
-/// the composer can say it in a sentence. The provider clients guard the same rules.
+/// the composer can say it in a sentence. The provider clients check the same rules.
 fn validate_references(request: &Request, settings: &VideoGenerationSettings, provider: &ProviderDescriptor) -> Result<(), ValidationError> {
     let Some(caps) = provider.video_capabilities(&settings.model) else {
         return Err(ValidationError::UnsupportedModel(settings.model.name.to_string()));
@@ -187,7 +187,7 @@ fn validate_image_asset(asset: &AssetInput) -> Result<(), ValidationError> {
     Ok(())
 }
 
-/// A reference video: MP4 only, the one container the app decodes and every provider takes.
+/// A reference video: MP4 only, the only container the app decodes and every provider takes.
 fn validate_video_asset(asset: &AssetInput) -> Result<(), ValidationError> {
     if asset.data.len() > MAX_VIDEO_ASSET_BYTES {
         return Err(ValidationError::AssetTooLarge { media_kind: MediaKind::Video, limit_bytes: MAX_VIDEO_ASSET_BYTES });
@@ -240,7 +240,7 @@ pub fn prompt_character_limit(generation_type: &GenerationType, provider: &Provi
     }
 }
 
-/// An MP4 (`....ftyp`) — H.264 in MP4 is the only video the app reads or writes.
+/// An MP4 (`....ftyp`). H.264 in MP4 is the only video the app reads or writes.
 pub fn is_supported_video_data(data: &[u8]) -> bool {
     data.len() >= 12 && &data[4..8] == b"ftyp"
 }

@@ -1,6 +1,6 @@
-//! The global catalog of every video model. Same pattern as
-//! [`super::image`] — each model is defined once as a `const` in [`defs`] and exposed both as a
-//! named `pub static` and inside [`ALL`]. Ids, names and descriptions are persistence keys / UI copy.
+//! The global catalog of every video model. Same pattern as [`super::image`]: each model is defined
+//! once as a `const` in [`defs`] and exposed both as a named `pub static` and inside [`ALL`]. Ids,
+//! names and descriptions are persistence keys and UI text.
 
 use crate::models::VideoModel;
 

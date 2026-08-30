@@ -1123,15 +1123,15 @@ fn every_provider_tool_model_is_in_the_catalog() {
     }
 }
 
-/// Models a provider offers with no price of their own. Every entry is a deliberate, reviewed
-/// gap — the composer shows "No estimate available" for these — so that adding a model to a
-/// provider forces the decision instead of letting it ship silently unpriced.
+/// Models a provider offers with no price of their own. Every entry is deliberate, and the composer
+/// shows "No estimate available" for them, so adding a model to a provider forces the decision
+/// instead of letting it ship silently unpriced.
 ///
 /// Mock is priced synthetically apart from one model it withholds on purpose, so the composer's
 /// "no estimate" path stays reachable in the app and in tests.
 /// The resume path polls on the budget of the longest clip we render, because it can't know the
 /// length of the job it is re-attaching to. If a model is added that renders for longer, that
-/// budget silently stops covering it — so pin the constant to the capability tables.
+/// budget silently stops covering it, so this pins the constant to the capability tables.
 #[test]
 fn video_budget_covers_every_model() {
     let mut longest = 0;
@@ -1172,7 +1172,7 @@ const UNPRICED: &[(&str, &str)] = &[
     (ProviderId::FAL, "gemini-2.5-pro"),
     // OpenRouter bills these per image-output *token* and doesn't publish how many tokens an image
     // comes to, so there is no per-image figure to convert. Its `pricing.image` field is not that
-    // figure either — it is per *input* image, which is why Nano Banana Pro reads $0.000002 there
+    // figure either: it is per *input* image, which is why Nano Banana Pro reads $0.000002 there
     // against a real $0.15 an image.
     (ProviderId::OPEN_ROUTER, "gemini-3-pro"),
     (ProviderId::OPEN_ROUTER, "gemini-3.1-flash"),
@@ -1192,10 +1192,10 @@ fn is_unpriced(provider: &ProviderId, model_id: &str) -> bool {
     UNPRICED.iter().any(|(p, m)| *p == provider.as_str() && *m == model_id)
 }
 
-/// Builds the jobs a provider would run for `model` across every setting the composer can reach —
-/// each resolution, each side of the audio toggle, the shortest and longest clip — so the guard
-/// proves the pricing table covers the whole model, not just the row its defaults land on. A table
-/// missing one tier is otherwise invisible until the user picks it and the estimate reads
+/// Builds the jobs a provider would run for `model` across every setting the composer can reach:
+/// each resolution, each side of the audio toggle, the shortest and longest clip. That way the
+/// guard checks the pricing table covers the whole model, not just the row its defaults use. A
+/// table missing one tier is otherwise invisible until the user picks it and the estimate reads
 /// "No estimate available".
 #[test]
 fn every_supported_model_is_priced_or_listed_as_unpriced() {

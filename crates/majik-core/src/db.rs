@@ -13,11 +13,11 @@ use crate::thumbnails::thumb_key_for_path;
 /// another version is recreated from scratch (see [`Db::open`]).
 const SCHEMA_VERSION: i64 = 6;
 
-/// The whole schema, in one place. A `generations` row is a generation (its intent: the request and the
-/// inputs) mirroring its active attempt; `generation_jobs` is one row per provider attempt, with
-/// the handle, the outcome and what the provider said; `generation_job_traces` is every HTTP
-/// exchange of an attempt. Deleting an asset detaches it, deleting a generation (never done
-/// hard) would take its attempts along.
+/// The whole schema, in one place. A `generations` row is a generation (its request and its inputs)
+/// mirroring its active attempt; `generation_jobs` is one row per provider attempt, with the
+/// handle, the outcome and what the provider said; `generation_job_traces` is every HTTP exchange
+/// of an attempt. Deleting an asset detaches it; deleting a generation (never done as a hard
+/// delete) would take its attempts with it.
 const SCHEMA: &str = r#"
 CREATE TABLE assets (
     id TEXT PRIMARY KEY,
@@ -129,8 +129,8 @@ pub struct Db {
 
 impl Db {
     /// Open (or create) the database at `path`. A database written by another schema version is
-    /// removed and created afresh — the app isn't live yet, so there is no migration history to
-    /// honour; the files in the folder stay, only the metadata about them goes.
+    /// removed and created afresh: the app isn't released yet, so there is no migration history to
+    /// keep. The files in the folder stay; only the metadata about them goes.
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -293,7 +293,7 @@ impl Db {
     }
 
     /// The provider took the job: it is running under `external_id`, from `now_ms` if this is the
-    /// first word of it (the engine's internal retry reports again; the start stands).
+    /// first report of it (the engine's internal retry reports again; the original start stands).
     pub fn mark_job_running(&self, job: &JobId, external_id: Option<&str>, poll_url: Option<&str>, now_ms: u64) -> Result<()> {
         self.conn.execute(
             "UPDATE generation_jobs SET status = 'running', external_id = ?2, poll_url = ?3, started_at = COALESCE(started_at, ?4) WHERE id = ?1",
@@ -341,10 +341,10 @@ impl Db {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
-    /// Append one exchange to the job's trail and fold it into the job's provider columns: a
-    /// submit sets the request and the create response, and every response seen becomes the
-    /// final one (latest wins — the engine's retry-once leaves the submit that produced the
-    /// outcome); a download records nothing but its size. Returns the entry's sequence number.
+    /// Append one exchange to the job's traces and fold it into the job's provider columns: a
+    /// submit sets the request and the create response, and every response seen becomes the final
+    /// one (the latest wins, so the engine's retry-once leaves the submit that produced the
+    /// outcome). A download records nothing but its size. Returns the entry's sequence number.
     pub fn record_trace(&self, job: &JobId, trace: &JobTrace) -> Result<u32> {
         let seq: i64 = self.conn.query_row("SELECT COALESCE(MAX(seq), -1) + 1 FROM generation_job_traces WHERE job_id = ?1", params![job.0], |r| r.get(0))?;
         self.conn.execute(
@@ -402,7 +402,7 @@ impl Db {
     }
 
     /// Soft delete: the row leaves every feed but keeps its request and its references, and its
-    /// assets are untouched. Album entries go, so the album counts stay honest.
+    /// assets are untouched. Album entries go, so the album counts stay correct.
     pub fn soft_delete_generation(&self, id: &GenerationId, now_ms: u64) -> Result<()> {
         self.conn.execute("UPDATE generations SET deleted_at = ?2 WHERE id = ?1", params![id.0, now_ms as i64])?;
         self.conn.execute("DELETE FROM album_entries WHERE generation_id = ?1", params![id.0])?;
@@ -463,7 +463,7 @@ impl Db {
         Ok(())
     }
 
-    /// Rewrite everything about an asset's bytes: a regenerated output lands in the same file.
+    /// Rewrite everything about an asset's bytes: a regenerated output goes into the same file.
     pub fn update_asset_file(&self, asset: &Asset) -> Result<()> {
         self.conn.execute(
             "UPDATE assets SET content_hash = ?2, content_type = ?3, width = ?4, height = ?5, file_size = ?6, duration = ?7, thumbnail = ?8 WHERE id = ?1",

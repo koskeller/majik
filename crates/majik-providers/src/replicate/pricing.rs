@@ -1,12 +1,12 @@
 //! Replicate's prices, per model.
 //!
 //! **Checked 2026-08-29.** Replicate publishes each model's price in the "Run time and cost" panel
-//! on its page, which the page renders client-side — but the figures ship in the HTML as a
+//! on its page, which the page renders client-side, but the figures ship in the HTML as a
 //! `billingConfig` JSON blob, so `curl https://replicate.com/<slug>` and read
-//! `current_tiers[].{criteria, prices}`. Re-sweep from the slug tables in [`super::capabilities`]
+//! `current_tiers[].{criteria, prices}`. Re-check from the slug tables in [`super::capabilities`]
 //! and [`super::audio`].
 //!
-//! Two billing shapes. Official models bill per output — a flat per-image or per-second price,
+//! Two billing shapes. Official models bill per output: a flat per-image or per-second price,
 //! sometimes with a `criteria` tier on resolution and/or audio, and for the FLUX family a per-run
 //! fee plus a per-output-megapixel rate. Community models (our two tools) bill compute, and their
 //! page publishes only a median run cost, which is what we use.
@@ -91,7 +91,7 @@ fn by_resolution(table: &[(ImageResolution, u64)], resolution: ImageResolution) 
 
 /// A run fee plus `per_megapixel` × the megapixels the request asks for. Replicate's FLUX slugs take
 /// the count as an input (`resolution: "0.5 MP"…`, `output_megapixels: "0.5"…`), so a half-megapixel
-/// request really is billed at half — no rounding up the way fal does it.
+/// request really is billed at half, with no rounding up the way fal does it.
 fn per_output_megapixels(run_fee: u64, per_megapixel: u64, resolution: ImageResolution) -> Estimate {
     // Tenths of a megapixel, matching `capabilities::api_image_resolution`.
     let tenths = match resolution {
@@ -106,12 +106,12 @@ fn per_output_megapixels(run_fee: u64, per_megapixel: u64, resolution: ImageReso
 // ----- Video --------------------------------------------------------------------------------------
 
 /// Per-second rates keyed on `(resolution, audio on)`. `None` is the resolution for a model whose
-/// capability table declares none — the Kling family and Replicate's Sora 2 slug.
+/// capability table declares none: the Kling family and Replicate's Sora 2 slug.
 type VideoRates = &'static [((Option<VideoResolution>, bool), u64)];
 
 fn video(settings: &VideoGenerationSettings) -> Estimate {
     let table: VideoRates = match settings.model.id {
-        // Replicate tiers Veo on audio alone — unlike fal, it publishes no resolution tier, so
+        // Replicate tiers Veo on audio alone. Unlike fal it publishes no resolution tier, so
         // 720p and 1080p bill the same.
         VEO_31 => &[
             ((Some(V720), false), 200_000),
@@ -214,7 +214,7 @@ fn video(settings: &VideoGenerationSettings) -> Estimate {
             ((Some(V1080), false), 130_000),
             ((Some(V1080), true), 130_000),
         ],
-        // flux-3's `t2v_i2v` tier — the draft and video-to-video tiers are modes we never request.
+        // flux-3's `t2v_i2v` tier. The draft and video-to-video tiers are modes we never request.
         FLUX_3 => &[
             ((Some(V720), false), 170_000),
             ((Some(V720), true), 170_000),
@@ -307,7 +307,7 @@ mod tests {
     #[test]
     fn megapixel_models_scale_with_the_megapixels_requested() {
         // flux-2-pro is $0.015 a run plus $0.015 an output megapixel, and the slug takes the
-        // megapixel count outright — so half a megapixel really is billed at half.
+        // megapixel count outright, so half a megapixel really is billed at half.
         assert_eq!(dollars(image_price("flux-2-pro", I05K)), "$0.023");
         assert_eq!(dollars(image_price("flux-2-pro", I1K)), "$0.03");
         assert_eq!(dollars(image_price("flux-2-pro", I2K)), "$0.045");

@@ -23,7 +23,7 @@ Majik is a desktop application with no server of its own. Worth reporting:
   files it shouldn't — nothing in Majik is meant to hard-delete anything.
 - **Update and packaging.** Anything that would let a third party substitute a release artifact.
 
-Out of scope: findings that need an attacker who already runs code as your user, and vulnerabilities
+Out of scope: reports that need an attacker who already runs code as your user, and vulnerabilities
 in the model providers themselves — report those to fal, Replicate or OpenRouter.
 
 ## Supported versions

@@ -1,4 +1,4 @@
-//! Desktop integration that GPUI does not cover, behind one portable surface per capability.
+//! Desktop integration that GPUI does not cover, behind one portable API per capability.
 //!
 //! Each module is a portable API with a `#[cfg(target_os)]` backend and a stub elsewhere, and states
 //! what it can actually do per platform in `const bool`s the callers branch on, so a capability the

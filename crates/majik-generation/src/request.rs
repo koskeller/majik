@@ -13,9 +13,9 @@ pub struct ToolSettings {
     pub model: ToolModel,
 }
 
-/// The operation a request asks for and its settings — a generation of one media type, or a tool
-/// over one image. The `kind` tag of the tool variants is the raw value of the matching
-/// [`ToolId`], so a stored request and the row's `tool` column say the same thing.
+/// The operation a request asks for and its settings: a generation of one media type, or a tool
+/// over one image. The `kind` tag of the tool variants is the raw value of the matching [`ToolId`],
+/// so a stored request and the row's `tool` column say the same thing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 // Variants differ in size (audio carries two voices); it's one value per request, so boxing to

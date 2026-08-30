@@ -19,9 +19,9 @@ pub struct Timeouts {
 
 impl Timeouts {
     pub const IMAGE: Timeouts = Timeouts { request: Duration::from_secs(120), total: Duration::from_secs(360) };
-    /// The floor for a video poll, and the budget for one whose length we don't know (a resume,
-    /// where the engine's own remaining-time bound is the authoritative one). Prefer
-    /// [`Timeouts::video`] wherever the requested duration is in hand.
+    /// The minimum for a video poll, and the budget for one whose length we don't know (a resume,
+    /// where the engine's own remaining-time bound is what counts). Prefer [`Timeouts::video`]
+    /// wherever the requested duration is available.
     pub const VIDEO: Timeouts = Timeouts { request: Duration::from_secs(120), total: Duration::from_secs(600) };
     pub const AUDIO: Timeouts = Timeouts { request: Duration::from_secs(120), total: Duration::from_secs(240) };
     /// Rewriting a prompt is a short interactive call: a slow one is a failure, not a long job.
@@ -48,7 +48,7 @@ impl Timeouts {
 
     /// Re-attaching to a job left in flight by a previous run, which doesn't tell us how long the
     /// clip is. Polls on the budget of the longest clip we render and lets the engine's own
-    /// remaining-time bound do the cutting — the alternative, [`Timeouts::VIDEO`], would abandon a
+    /// remaining-time bound cut it off. The alternative, [`Timeouts::VIDEO`], would abandon a
     /// resumed 30 s render at 10 minutes while the engine still considered it live.
     pub fn video_resume() -> Timeouts {
         Self::video(Self::MAX_VIDEO_OUTPUT_SECONDS)
@@ -67,7 +67,7 @@ pub fn client() -> &'static reqwest::Client {
 }
 
 /// Send one request and report it to `sink`: method, URL, status, duration and both bodies
-/// (bounded, data URIs elided, never the headers — the API key lives there). A transport error
+/// (bounded, data URIs elided, never the headers, since the API key lives there). A transport error
 /// is reported with no status and returned as it was. The `(status, bytes)` shape is what every
 /// client already reduced its responses to.
 pub async fn send_traced(request: reqwest::RequestBuilder, label: TraceLabel, sink: Option<&TraceSink>) -> std::result::Result<(u16, Vec<u8>), reqwest::Error> {
@@ -93,8 +93,8 @@ pub async fn send_traced(request: reqwest::RequestBuilder, label: TraceLabel, si
     result
 }
 
-/// A body as the trail keeps it: JSON with its data URIs elided (a reference image inline would
-/// swamp the entry), any other text as it is, both bounded; binary is left out.
+/// A body as a trace keeps it: JSON with its data URIs elided (a reference image inline would
+/// swamp the entry), any other text as it is, both bounded. Binary is left out.
 fn trace_body(bytes: &[u8]) -> Option<String> {
     if bytes.is_empty() {
         return None;

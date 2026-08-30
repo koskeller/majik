@@ -1,22 +1,23 @@
 # CLAUDE.md
 
 Majik's architecture and house style, and the guidance Claude Code (claude.ai/code) works from.
-Written for both: read it before your first change, human or otherwise.
+Read it before your first change, human or otherwise.
 
 Majik: a cross-platform desktop app for generating images, video and audio through hosted model
 providers (fal / Replicate / OpenRouter), built in Rust on GPUI.
 
 ## Cross-platform first
 
-This app ships on macOS, Windows, and Linux. **Evaluate every decision cross-platform first.** Before
-choosing an approach, ask: does it work — or have a clear path — on all three? Prefer a solution GPUI (or
-another portable crate) already provides on every platform over a macOS-only one we own, even when the
-macOS-only one is nicer today; platform-specific code we maintain is a standing cost and a portability
-debt. When platform-native code is unavoidable, isolate it behind a trait with a `#[cfg(target_os)]`
-backend and a stub for the others (as `majik-platform` / `majik-dragout` already do), and
-say in the PR what the Windows/Linux story is. A macOS-only convenience is acceptable only as a deliberate,
-noted stopgap — never the default. (Example: drag-out uses GPUI's native drag, which covers macOS + Wayland
-now and gains Windows/X11 upstream for free, rather than our own macOS-only `NSDraggingSession`.)
+This app ships on macOS, Windows, and Linux. **Check every decision against all three platforms
+first.** Before choosing an approach, ask whether it works, or has a clear route to working, on all
+three. Prefer something GPUI (or another portable crate) already provides everywhere over a
+macOS-only version we maintain ourselves, even when the macOS-only one is nicer today: we pay for
+platform-specific code forever, and it blocks porting. When platform-native code is unavoidable, put
+it behind a trait with a `#[cfg(target_os)]` backend and a stub for the others, as `majik-platform`
+and `majik-dragout` already do, and say in the PR what happens on Windows and Linux. Use a macOS-only
+convenience only as a deliberate stopgap you note; never as the default. For example, drag-out uses
+GPUI's native drag, which covers macOS and Wayland now and gets Windows/X11 upstream for free,
+rather than our own macOS-only `NSDraggingSession`.
 
 ## Commands
 
@@ -34,19 +35,20 @@ cargo run --release -p majik-generation --example seed_library -- ~/majik-perf \
 gh workflow run platforms.yml                   # on-demand 3-OS matrix + full macOS app build (billed 10x; not on push)
 ```
 
-- **Build channels** (`config.rs`): `script/lib/release.sh` exports `MAJIK_CHANNEL=stable` and is the
-  only place that does, so the bundles the release scripts produce are the only `Stable` builds; everything else — `cargo run`, `cargo run --release`,
-  `cargo test` — is `Dev`. The channel names the app-data folder (macOS `com.app.majik[-dev]`,
-  Windows `Majik[ Dev]`, Linux `majik[-dev]`), so the two are independent installs: separate library,
-  `config.json`, `drafts.json`, window frames and bundle id, and the dev one can be wiped without
-  touching the app you use. Stable's paths are pinned by a test — never rename them. API keys are the
-  one deliberate exception (`config::credentials_dir` is always the stable folder, `KEYCHAIN_URL`
-  carries no channel), so a key is entered once; the cost is that removing one removes it for both.
-  Channel and profile are now separate axes: `cargo run --release` is Dev-channel but keychain-backed
-  with no Mock provider, since `credentials.rs` / `mock/mod.rs` / the Settings Debug section still key
-  off `cfg!(debug_assertions)`. Anything that builds a shippable binary without going through
-  a bundle script silently ships a Dev-channel app — which is why each one calls
-  `require_channel_marker` on the binary before packaging it, and `majik --channel` prints the stamp.
+- **Build channels** (`config.rs`): `script/lib/release.sh` is the only place that exports
+  `MAJIK_CHANNEL=stable`, so the bundles the release scripts produce are the only `Stable` builds;
+  everything else — `cargo run`, `cargo run --release`, `cargo test` — is `Dev`. The channel names the
+  app-data folder (macOS `com.app.majik[-dev]`, Windows `Majik[ Dev]`, Linux `majik[-dev]`), so the
+  two are independent installs with their own library, `config.json`, `drafts.json`, window frames
+  and bundle id, and you can wipe the dev one without touching the app you use. A test pins Stable's
+  paths — never rename them. API keys are the one deliberate exception
+  (`config::credentials_dir` is always the stable folder, `KEYCHAIN_URL` carries no channel), so you
+  enter a key once; the cost is that removing one removes it for both. Channel and build profile are
+  independent: `cargo run --release` is Dev-channel but uses the keychain and has no Mock provider,
+  because `credentials.rs`, `mock/mod.rs` and the Settings Debug section still switch on
+  `cfg!(debug_assertions)`. Anything that builds a shippable binary without going through a bundle
+  script silently ships a Dev-channel app, so each script calls `require_channel_marker` on the
+  binary before packaging it, and `majik --channel` prints the stamp.
 - Video is in-process on every platform (`majik_core::video`: `re_mp4` demux + openh264 decode/encode,
   built from vendored source — no ffmpeg anywhere, also not in tests). H.264 in MP4 only.
 - Dev switches (env): `MAJIK_MOCK_KEYS=1` (in-memory key for Mock — use this with the Mock provider),
@@ -68,10 +70,10 @@ gh workflow run platforms.yml                   # on-demand 3-OS matrix + full m
   `REPLICATE_API_KEY`; a missing key skips that provider loudly, so run with only the keys you hold.
   An unfiltered run is ~170 paid calls including 60 video renders — pass `--test-threads=2` and
   expect to wait. `majik-generation` has its own live suite (`--test e2e`) for prompt improvement as
-  the app performs it: the shipped instruction and the engine, rather than the raw client. Both
+  the app does it, using the shipped instruction and the engine rather than the raw client. Both
   binaries share one tokio runtime (`rt()` / a static `Engine`) because `http::client()` is a
-  process-wide `reqwest::Client` bound to whichever runtime first uses it — a runtime per test
-  poisons it for the next one. The suites are provider-drift detectors, not regression gates: a
+  process-wide `reqwest::Client` bound to whichever runtime first uses it, and a runtime per test
+  poisons it for the next one. These suites detect provider changes rather than regressions: a
   failure may mean the provider changed. Neither is ever run in CI.
 - CI on push (`ci.yml`) only builds/tests/clippies the portable crates on Linux
   (`core storage providers generation audio`); `majik-app`, `majik-video`, `majik-platform`,
@@ -83,8 +85,8 @@ Dependency direction (never reversed): `app → {generation, video, audio, platf
 
 **Vocabulary** (flarly's, kept the same in code, docs and tests):
 - **Asset** — a file the library holds (an output, an input, an import), content-addressed; carries no role.
-- **Generation** — one row the app made from a request: its intent (the `Request`, its input assets
-  with roles) and a pointer to its active attempt; what the Library / album feeds list.
+- **Generation** — one row the app made from a request: the `Request`, its input assets with roles,
+  and a pointer to its active attempt. This is what the Library and album feeds list.
 - **Attempt** (`GenerationJob`) — one provider run of a generation; a retry is the next attempt. The
   row mirrors the active one; every HTTP exchange of it is a **trace**.
 - **Request** — everything needed to (re)run a generation: provider, `GenerationType` (a media
@@ -112,8 +114,8 @@ Dependency direction (never reversed): `app → {generation, video, audio, platf
   stored). Deleting a generation soft-deletes it (`deleted_at`) and leaves its assets alone; an asset
   can only be trashed (`.majik/trash/`, nothing is ever hard-deleted) once no live generation
   references it (`Library::is_referenced`). Thumbnails (`.majik/thumbs/`) belong to assets. All file
-  content goes through `majik-storage::BlobStore` (relative keys; local backend today, S3 seam later) —
-  don't touch library files with `std::fs` directly. A generation's provider runs are
+  content goes through `majik-storage::BlobStore` (relative keys; local backend today, an S3 one
+  later) — don't touch library files with `std::fs` directly. A generation's provider runs are
   **`generation_jobs`** rows (flarly's `generationJobs`): one per attempt (`attempt`, `status`
   `queued | running | completed | failed | canceled`, the provider's `external_id` / `poll_url`, the
   output asset, the error, timestamps, and the provider request / create response / final response
@@ -127,12 +129,13 @@ Dependency direction (never reversed): `app → {generation, video, audio, platf
 - **`majik-providers`** is the provider layer: descriptors, model catalogs, capability tables,
   price tables, error mapping, HTTP clients (fal / Replicate / OpenRouter / Mock). **Pricing**
   (`pricing.rs` + a `pricing.rs` per provider) answers "what will this job cost?" for the composer's
-  live estimate. Prices are per provider *per model* — the same catalog model costs differently on
-  each — so they hang off `ProviderDescriptor::pricing`, never off the id-only catalog structs.
-  Amounts are `Usd` micro-dollars (integers, so the arithmetic and the rendered string can't drift).
+  live estimate. Prices are per provider *per model* — the same catalog model costs a different
+  amount on each — so they live on `ProviderDescriptor::pricing`, never on the id-only catalog
+  structs. Amounts are `Usd` micro-dollars (integers, so the arithmetic and the rendered string
+  can't disagree).
   A model with no figure is `Estimate::Unknown` and the UI says so rather than guessing; the
-  `every_supported_model_is_priced_or_listed_as_unpriced` guard makes that a reviewed decision
-  instead of an accident. Prices drift — every table entry carries the date it was checked.
+  `every_supported_model_is_priced_or_listed_as_unpriced` guard means leaving a model unpriced has
+  to be deliberate. Prices change, so every table entry carries the date it was checked.
   Tests are wiremock request-shape tests in `crates/majik-providers/tests/`; `shared.rs` holds the
   cross-provider suite and `e2e.rs` the opt-in live-API suite, whose matrix is generated from the
   catalogs and checked against each descriptor by a guard test that does run on every push.
@@ -147,7 +150,7 @@ Dependency direction (never reversed): `app → {generation, video, audio, platf
   `ApiKeyStore`. `LibraryModel` wraps `Library` + `Engine`, pumps engine events in a detached
   `cx.spawn` loop, runs thumbnails/probes via `cx.background_spawn`, and funnels every mutation through
   `changed()` (`cx.notify()` + `LibraryEvent::Changed`). Views `cx.observe` the library and rebuild
-  their id lists; they never hold `Generation` copies as truth.
+  their id lists; they never treat a copy of a `Generation` as the source of truth.
 - **Windows.** Two singletons in `windows.rs`, frames persisted in `Config`: the `Library` window and
   the `Settings` window (`views/settings.rs`, modelled on Zed's `settings_ui`: a nav pane of pages —
   General, Providers, Storage, Shortcuts, About — beside the page's `title + description | control`
@@ -190,8 +193,8 @@ Dependency direction (never reversed): `app → {generation, video, audio, platf
   `#[cfg(target_os)]` in a dependency — prefer a runtime `cfg!(...)` branch in our own code, which
   is type-checked on every platform, over `#[cfg]`, which is only compiled on one.
 - **Preferences vs library state.** `Config` (`config.json` in the channel's app-data dir, a `Global`)
-  is app-level: provider, appearance, columns, draft prompt. Everything about media lives in the
-  library DB. In tests no config dir is set, so `Config::save` is a no-op.
+  holds app preferences: provider, appearance, columns, draft prompt. Everything about media lives in
+  the library DB. In tests no config dir is set, so `Config::save` is a no-op.
 - **View tests** (`crates/majik-app/src/test_support.rs`): `env(cx, n_images, "Mock")` seeds a temp
   library with solid-colour PNGs, sets globals, and returns the library entity; then
   `cx.add_window_view(|window, cx| SomeView::new(window, cx))` and drive the real view methods. They
@@ -230,7 +233,7 @@ Follow how the Zed team writes GPUI/Rust; the items below are adapted from Zed's
 - State changes that affect rendering call `cx.notify()`. Cross-entity communication is
   `EventEmitter` + `cx.emit` + `cx.subscribe`; keep `Subscription`s in a `_subscriptions` field or
   `.detach()` them deliberately.
-- Render must be cheap and pure (no IO, no DB queries): precompute in `refresh`/`update` paths, render
+- Render must be cheap and pure (no IO, no DB queries): precompute in `refresh` / `update`, render
   from fields. Conditional trees use `.when(cond, |this| …)` / `.when_some(opt, |this, v| …)`.
 - Text args are `impl Into<SharedString>`. Stateful views are `Entity<T: Render>`; a new reusable
   stateless widget should be a `RenderOnce` + `#[derive(IntoElement)]` type rather than a bare
@@ -243,12 +246,12 @@ Follow how the Zed team writes GPUI/Rust; the items below are adapted from Zed's
 
 **Testing — every feature ships with a full end-to-end suite**
 
-There are no manual test docs; the tests *are* the spec. A feature is not done until its tests cover the
-whole behaviour end to end — the way Zed tests its editor — and `cargo test --workspace` passes.
+There are no manual test docs; the tests are the spec. A feature is not done until its tests cover the
+whole behaviour end to end, the way Zed tests its editor, and `cargo test --workspace` passes.
 
 - Every feature (new view, action, keybinding, menu item, state transition, generation flow) gets a
-  `#[cfg(test)] mod tests` next to the code with a suite that walks each user-visible path: the happy
-  path, every branch/edge case, cancellation, and every failure mode (provider error, missing key,
+  `#[cfg(test)] mod tests` next to the code with a suite that walks every user-visible flow: the happy
+  path, every branch and edge case, cancellation, and every failure mode (provider error, missing key,
   stale/timed-out job, invalid input). A change to behaviour changes or adds a test in the same commit.
 - Tests are end to end through the real stack, headless: `#[gpui::test] fn name(cx: &mut TestAppContext)`,
   `env(cx, n_images, "Mock")` from `test_support.rs` for a real temp library + globals, then
@@ -260,14 +263,14 @@ whole behaviour end to end — the way Zed tests its editor — and `cargo test 
   `#delay:`/`#fail:` prompt directives, and the test executor. Wait with `cx.run_until_parked()`; use
   `cx.background_executor().timer(d).await` for time, never `smol::Timer` or real sleeps. Use
   `#[gpui::test(iterations = N)]` to shake out ordering bugs in async/concurrent flows.
-- Non-UI layers keep their own suites: wiremock request-shape tests for every provider endpoint in
+- The non-UI crates keep their own suites: wiremock request-shape tests for every provider endpoint in
   `crates/majik-providers/tests/` (`shared.rs` for the cross-provider suite), plain unit tests for
   `core`/`storage`/`generation`. A bug fix starts with a failing test that reproduces it.
 - Test code follows the same conventions as production code except that `unwrap()`/`expect()` are fine.
   Keep tests small and named after the behaviour (`compose_submit_with_missing_key_shows_toast`); one
   assertion topic per test, shared setup in `test_support.rs`, no sleeps, and no `#[ignore]` except
-  the live-API suite (`majik-providers/tests/e2e.rs`), which is ignored by definition: it costs money
-  and needs provider keys.
+  the live-API suite (`majik-providers/tests/e2e.rs`), which is ignored because it costs money and
+  needs provider keys.
 
 **Process**
 - Non-trivial changes come with their tests in the same commit (see above).

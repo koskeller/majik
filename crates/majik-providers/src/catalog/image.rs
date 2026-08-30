@@ -2,7 +2,7 @@
 //!
 //! Providers reference entries by id; the same static is shared across providers so switching
 //! providers for the same model preserves the exact display name, logo, and description.
-//! Ids, names and descriptions are persistence keys / UI copy — don't change them lightly.
+//! Ids, names and descriptions are persistence keys and UI text; don't change them lightly.
 //!
 //! Each model is defined once as a `const` in [`defs`] and exposed both as a named `pub static`
 //! and inside [`ALL`] (a `static` cannot be copied into another static's initializer).

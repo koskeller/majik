@@ -1,6 +1,5 @@
-//! The 30 Gemini / Chirp 3 HD voices accepted by fal's
-//! `gemini-tts` endpoint. Ids are the literal wire values; every voice is multilingual and has a
-//! Google-hosted preview clip.
+//! The 30 Gemini / Chirp 3 HD voices accepted by fal's `gemini-tts` endpoint. Ids are the literal
+//! wire values; every voice is multilingual and has a Google-hosted preview clip.
 
 use crate::models::AudioVoice;
 use std::sync::OnceLock;

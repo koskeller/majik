@@ -76,7 +76,7 @@ impl From<reqwest::Error> for GenerationError {
     }
 }
 
-/// `reqwest::Error`'s `Display` is just "error sending request for url (…)"; the cause (connection
+/// `reqwest::Error`'s `Display` is only "error sending request for url (…)"; the cause (connection
 /// reset, refused, TLS…) is in the source chain, which is what anyone reading the failure needs.
 fn error_chain(e: &dyn std::error::Error) -> String {
     let mut text = e.to_string();

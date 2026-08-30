@@ -1,8 +1,8 @@
 //! OpenRouter's prices, per model.
 //!
-//! **Checked 2026-08-29** against each model's page on openrouter.ai. Re-sweep from the slug table
-//! in [`super::capabilities::model_slug_for_id`]; the figures go stale whenever a price moves,
-//! which is why the app always labels the number an estimate.
+//! **Checked 2026-08-29** against each model's page on openrouter.ai. Re-check from the slug table
+//! in [`super::capabilities::model_slug_for_id`]; the figures go out of date whenever a price
+//! moves, which is why the app always labels the number an estimate.
 //!
 //! Do NOT guess a price. A model whose page publishes no figure we can convert belongs in
 //! `UNPRICED` in `tests/shared.rs`, not in a made-up row here.
@@ -13,13 +13,14 @@ use crate::settings::ImageGenerationSettings;
 use super::capabilities::*;
 
 /// What we ask OpenRouter for. The per-megapixel models declare no resolutions, so the request
-/// carries the default `image_size` of "1K" — one megapixel, the rate every one of them floors at.
+/// carries the default `image_size` of "1K", one megapixel, which is the minimum rate for all of
+/// them.
 const OUTPUT: (u32, u32) = (1024, 1024);
 
 pub fn pricing(job: &PricedJob<'_>) -> Estimate {
     match job {
         PricedJob::Image(settings) => image(settings),
-        // OpenRouter routes no video, audio or tool model — see the guard tests in tests/e2e.rs.
+        // OpenRouter routes no video, audio or tool model; see the guard tests in tests/e2e.rs.
         _ => Estimate::Unknown,
     }
 }
@@ -42,7 +43,7 @@ fn image(settings: &ImageGenerationSettings) -> Estimate {
 
         // The Gemini and GPT image models are billed per image-output *token* ($120/M, $60/M,
         // $30/M, $40/M, $8/M). OpenRouter doesn't publish how many tokens an image comes to, and
-        // it varies with resolution, so there is no figure here we could stand behind.
+        // it varies with resolution, so there is no figure here we could rely on.
         _ => Estimate::Unknown,
     }
 }

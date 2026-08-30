@@ -12,7 +12,7 @@ pub type ImageCapabilitiesFn = fn(&ImageModel) -> Option<ModelCapabilities>;
 pub type VideoCapabilitiesFn = fn(&VideoModel) -> Option<VideoModelCapabilities>;
 pub type AudioCapabilitiesFn = fn(&AudioModel) -> Option<AudioModelCapabilities>;
 /// What one output of a configured job costs. `Estimate::Unknown` for a model this provider has no
-/// price for — a legitimate answer, not an error.
+/// price for, which is a valid answer rather than an error.
 pub type PricingFn = fn(&PricedJob<'_>) -> Estimate;
 pub type MakeImageClientFn = fn(&ClientOptions) -> Arc<dyn ImageProviderClient>;
 pub type MakeVideoClientFn = fn(&ClientOptions) -> Option<Arc<dyn VideoProviderClient>>;
@@ -25,7 +25,7 @@ pub type MakeTextClientFn = fn(&ClientOptions) -> Option<Arc<dyn TextProviderCli
 pub struct ProviderDescriptor {
     pub id: ProviderId,
     pub display_name: &'static str,
-    // UI metadata — the app reads these directly; no per-provider switches in app code.
+    // UI metadata; the app reads these directly, so it needs no per-provider switches.
     pub logo_asset_name: &'static str,
     pub api_key_placeholder: &'static str,
     pub api_key_instructions: &'static str,
@@ -102,7 +102,7 @@ impl ProviderDescriptor {
         (self.audio_capabilities)(model)
     }
 
-    /// What one output of `job` costs on this provider. An *estimate*: prices drift and some
+    /// What one output of `job` costs on this provider. An *estimate*: prices change and some
     /// models bill on the size of an output that doesn't exist yet.
     pub fn price(&self, job: &PricedJob<'_>) -> Estimate {
         (self.pricing)(job)

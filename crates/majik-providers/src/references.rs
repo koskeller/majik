@@ -1,17 +1,17 @@
 //! Reference inputs a prompt can address by handle.
 //!
-//! Majik has one handle grammar — `@Image1`, `@Video2`, `@Audio1`, numbered from the asset's
-//! position within its role — and every model spells it differently, so the handles are rewritten
-//! into the model's own dialect when its request body is built. The canonical form is what the
-//! library stores, so a prompt survives a model or provider switch.
+//! Majik has one handle grammar: `@Image1`, `@Video2`, `@Audio1`, numbered from the asset's
+//! position within its role. Every model spells it differently, so the handles are rewritten into
+//! the model's own dialect when its request body is built. The library stores Majik's form, so a
+//! prompt survives a model or provider switch.
 
 use crate::{AssetRole, ProviderAsset};
 
 /// How a model wants its references addressed. Taken from each endpoint's own schema; like the
-/// price tables these drift, so each provider's table carries the date it was checked.
+/// price tables these change, so each provider's table carries the date it was checked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReferenceTagStyle {
-    /// `@Image1` — Majik's own form, so the prompt goes out unchanged (fal Seedance, fal Grok 1.0).
+    /// `@Image1`: Majik's own form, so the prompt goes out unchanged (fal Seedance, fal Grok 1.0).
     At,
     /// `[Image1]` (Replicate Seedance).
     Bracketed,
@@ -21,7 +21,7 @@ pub enum ReferenceTagStyle {
     Character,
     /// `<IMAGE_0>`, **zero-based** (fal Grok Imagine Video 1.5).
     AngleZeroBased,
-    /// `Image 1` in prose — for a model that documents no syntax (fal Veo 3.1, Gemini Omni Flash,
+    /// `Image 1` in prose, for a model that documents no syntax (fal Veo 3.1, Gemini Omni Flash,
     /// Wan 2.7) or asks for prose outright (Wan 3.0, H3). It reads as part of the sentence the user
     /// wrote either way, which a literal `@Image1` would not.
     Prose,
@@ -56,8 +56,8 @@ impl ReferenceCounts {
     }
 }
 
-/// The reference media of one request, in the order the composer attached them — which is the
-/// order their handles are numbered in, and the order they go into the provider's arrays.
+/// The reference media of one request, in the order the composer attached them, which is the order
+/// their handles are numbered in and the order they go into the provider's arrays.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReferenceAssets<'a> {
     pub images: Vec<&'a ProviderAsset>,
@@ -131,8 +131,8 @@ pub fn handles(prompt: &str) -> Vec<(AssetRole, usize)> {
     found
 }
 
-/// Rewrites Majik's handles into `style`. Anything that isn't a handle — an email address, a bare
-/// `@`, a handle past the end of its list — is copied through untouched.
+/// Rewrites Majik's handles into `style`. Anything that isn't a handle (an email address, a bare
+/// `@`, a handle past the end of its list) is copied through untouched.
 pub fn rewrite_handles(prompt: &str, counts: ReferenceCounts, style: ReferenceTagStyle) -> String {
     if style == ReferenceTagStyle::At || counts.is_empty() {
         return prompt.to_string();

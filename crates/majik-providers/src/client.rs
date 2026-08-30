@@ -1,4 +1,4 @@
-//! The provider client traits — image, video, audio — and the [`ProviderClient`] facade over them.
+//! The provider client traits (image, video, audio) and the [`ProviderClient`] facade over them.
 
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -57,7 +57,7 @@ pub struct JobHandle {
 pub type OnAccepted = Arc<dyn Fn(JobHandle) + Send + Sync>;
 
 /// Where clients report every HTTP exchange they make (see [`crate::http::send_traced`]), for
-/// the library's per-attempt trail. Never sees headers.
+/// the library's per-attempt traces. Never sees headers.
 pub type TraceSink = Arc<dyn Fn(JobTrace) + Send + Sync>;
 
 /// What a provider client is built from.

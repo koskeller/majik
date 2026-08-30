@@ -29,9 +29,9 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 /// One runtime for every test in this binary. `http::client()` is a process-wide `reqwest::Client`
 /// whose pooled connections each carry a dispatch task owned by the runtime that opened them. Give
 /// every test its own runtime and that task dies with the test while the idle connection stays in
-/// the pool — so when a later wiremock server binds the port the dead one released, the next test
+/// the pool, so when a later wiremock server binds the port the dead one released, the next test
 /// handed that connection fails with "dispatch task is gone: runtime dropped the dispatch task".
-/// Which test loses is a race, so it fails on one runner and passes on the others. One runtime for
+/// Which test fails is a race, so it breaks on one runner and passes on the others. One runtime for
 /// the whole binary keeps every dispatch task alive as long as the pool that refers to it, the way
 /// `e2e.rs` already shares its own.
 fn rt() -> &'static tokio::runtime::Runtime {
@@ -142,7 +142,7 @@ fn gpt_image_2_square_only_and_quality() {
 
 #[test]
 fn recraft_v4_pro_no_resolution_no_image_input() {
-    // The image should be ignored — no edit endpoint.
+    // The image should be ignored: there is no edit endpoint.
     let body = image_body("p", &img("recraft-4-pro"), &[&[0x01]], Some(AspectRatio::Standard), Some(ImageResolution::Fhd));
     assert_eq!(s(&body, "aspect_ratio"), Some("4:3"));
     assert!(body.get("resolution").is_none(), "recraft size enum doesn't map to our resolution");

@@ -1,7 +1,6 @@
-//! Detail view: carousel with fit/zoom/pan, flarly-style controls floating over a black stage,
-//! an info panel. It fills the
-//! Library window and, like Photos, grows out of the feed cell it was opened from and shrinks back
-//! into it on close (`morph.rs`).
+//! Detail view: carousel with fit/zoom/pan, flarly-style controls floating over a black stage, and
+//! an info panel. It fills the Library window and, like Photos, grows out of the feed cell it was
+//! opened from and shrinks back into it on close (`morph.rs`).
 
 use gpui::{
     prelude::*, point, px, size, App, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
@@ -76,8 +75,8 @@ fn stage_cursor(zoomed: bool, dragging: bool) -> Option<CursorStyle> {
 /// What the detail shows at an index. An asset is presented as a generation-shaped item (the
 /// stage, the chips and the export actions read those fields), with `generation` / `asset` saying
 /// what is really there: an output opened from the Assets feed is shown as the generation that made
-/// it, with everything that entails; a plain input or import has no generation, so no favourite,
-/// prompt, model, recreate or retry.
+/// it; a plain input or import has no generation, so no favourite, prompt, model, recreate or
+/// retry.
 struct Subject {
     item: Generation,
     generation: Option<GenerationId>,
@@ -170,15 +169,15 @@ pub struct DetailView {
     /// The feed cell the view was opened from, in window coordinates.
     origin: Option<Bounds<Pixels>>,
     /// The feed's cache, where the cell thumbnails are already decoded: the travelling box reads
-    /// them from there so it can draw on its first frame. Everything else — including the full
-    /// image pre-decoded during the open morph — goes through the window's default cache, which is
-    /// what the stage reads after landing.
+    /// them from there so it can draw on its first frame. Everything else, including the full
+    /// image pre-decoded during the open morph, goes through the window's default cache, which is
+    /// what the stage reads once the morph finishes.
     thumbnails: Entity<LruImageCache>,
-    /// The full-size images the stage, the compare view and the info panel draw. Its own cache, and
-    /// its own budget: one 4K image is a hundred thumbnails, so sharing the feed's would flush the
-    /// grid every time an item is opened. It dies with the view, which is what gives the memory
-    /// back on close — before this, full-size images went to the window's default cache, which
-    /// never evicts anything.
+    /// The full-size images the stage, the compare view and the info panel draw. It has its own
+    /// cache and its own budget: one 4K image is worth a hundred thumbnails, so sharing the feed's
+    /// would flush the grid every time an item is opened. It is dropped with the view, which is
+    /// what returns the memory on close. Before this, full-size images went to the window's default
+    /// cache, which never evicts anything.
     images: Entity<LruImageCache>,
     /// Emits `Close` when the close morph has played (cancel-on-drop).
     close_task: Option<Task<()>>,
@@ -296,7 +295,7 @@ impl DetailView {
 
     // ----- open / close morph ------------------------------------------------------
 
-    /// The view is growing out of, or shrinking back into, its feed cell — the owner keeps the
+    /// The view is growing out of, or shrinking back into, its feed cell; the owner keeps the
     /// feed drawn underneath meanwhile.
     pub fn is_transitioning(&self) -> bool {
         self.morph.is_some() || self.opening
@@ -345,7 +344,7 @@ impl DetailView {
     }
 
     /// Start the open morph once the stage is measured (or right away when there is no cell to
-    /// travel from) and retire it when it has landed; returns whether another frame is needed.
+    /// travel from) and retire it when it finishes; returns whether another frame is needed.
     /// Called from `render`; the notifies let the owner follow [`Self::is_transitioning`].
     fn tick_morph(&mut self, item: &Generation, clock: std::time::Instant, cx: &mut Context<Self>) -> bool {
         if let Some(morph) = &self.morph {
@@ -701,8 +700,8 @@ impl DetailView {
         }
     }
 
-    /// The preset the current zoom matches, if any: fit is 1×, and a wheel / pinch zoom that
-    /// lands between presets highlights none.
+    /// The preset the current zoom matches, if any: fit is 1×, and a wheel or pinch zoom that
+    /// ends between presets highlights none.
     fn active_zoom_preset(&self, window: &Window, cx: &App) -> Option<f32> {
         let Some(zoom) = self.zoom else { return Some(1.0) };
         let factor = zoom / self.fit_zoom(window, cx);
@@ -885,7 +884,7 @@ impl DetailView {
     }
 
     /// Delete the generation (its files stay as assets), or trash the asset when that is what is
-    /// shown — refused while a live generation references it, as in the grid.
+    /// shown. Trashing is refused while a live generation references the asset, as in the grid.
     fn delete(&mut self, _: &DeleteMedia, window: &mut Window, cx: &mut Context<Self>) {
         let Some(subject) = self.subject(cx) else { return };
         let library = self.library.clone();
@@ -1358,7 +1357,7 @@ impl Render for DetailView {
 
         // The travelling box: the cell's cover-cropped thumbnail, opening up to the image's aspect
         // as the box reaches the stage. The full-size image is decoded meanwhile (invisibly) so it
-        // is ready the moment the box lands. `frame` is in window coordinates (the cell and the
+        // is ready the moment the box arrives. `frame` is in window coordinates (the cell and the
         // stage both are), and the view sits under the window's title bar, so the box is anchored
         // to the window rather than positioned within the view.
         let travelling = frame.and_then(|frame| {
@@ -1689,7 +1688,7 @@ mod tests {
     }
 
     /// A detail that is the window's own root view, so `render` actually runs and the stage decodes
-    /// its images — the `detail_window!` above drives view logic with the feed as the root, which
+    /// its images. The `detail_window!` above drives view logic with the feed as the root, which
     /// never paints the detail.
     fn drawn_detail(cx: &mut TestAppContext, items: usize) -> (Entity<DetailView>, &mut gpui::VisualTestContext, crate::test_support::TestEnv) {
         let env = env(cx, items, "Mock");
@@ -1728,7 +1727,7 @@ mod tests {
     }
 
     /// The stage's images and the feed's thumbnails are separate caches on purpose: one 4K image is
-    /// worth a hundred thumbnails, so sharing would flush the grid every time an item is opened.
+    /// worth a hundred thumbnails, so sharing one would flush the grid every time an item is opened.
     #[gpui::test]
     fn the_stage_does_not_spend_the_feeds_thumbnail_budget(cx: &mut TestAppContext) {
         let (detail, vcx, _env) = drawn_detail(cx, 6);
@@ -2160,7 +2159,7 @@ mod tests {
             assert_eq!(d.divider, 1., "… and its right edge");
             d.drag_divider_to(px(112. + 288.), window, cx);
         });
-        // Zoomed in, a drag pans (the divider keeps its place) — and it is kept across items.
+        // Zoomed in, a drag pans and the divider keeps its place, which is also kept across items.
         detail.update_in(vcx, |d, window, cx| {
             d.set_zoom_around(2.0, None, window, cx);
             assert!(d.zoom.is_some());
@@ -2256,8 +2255,8 @@ mod tests {
         });
     }
 
-    /// A detail over `id` as the window's root — drawn and past its open morph (which hides the
-    /// chevrons and the info panel) — so `debug_bounds` and clicks work.
+    /// A detail over `id` as the window's root, drawn and past its open morph (which hides the
+    /// chevrons and the info panel), so `debug_bounds` and clicks work.
     fn rendered_detail_on<'a>(cx: &'a mut TestAppContext, env: &crate::test_support::TestEnv, id: &GenerationId) -> (Entity<DetailView>, &'a mut gpui::VisualTestContext) {
         let ids = env.library.read_with(cx, |m, _| m.lib.feed(&majik_core::FeedFilter::Library, majik_core::MediaFilter::All));
         let index = ids.iter().position(|i| i == id).expect("item is in the feed");
@@ -2438,8 +2437,8 @@ mod tests {
         assert!(vcx.debug_bounds("copy-prompt").is_some());
     }
 
-    /// The hero + transport bar over a real WAV. `majik_audio` needs an output device, so on a
-    /// machine without one the same seed must surface the error instead of a player.
+    /// The hero and transport bar over a real WAV. `majik_audio` needs an output device, so on a
+    /// machine without one the same seed must show the error instead of a player.
     #[gpui::test]
     fn audio_item_gets_a_player_and_transport_or_a_visible_error(cx: &mut TestAppContext) {
         let env = env(cx, 1, "Mock");

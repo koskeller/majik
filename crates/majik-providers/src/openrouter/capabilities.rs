@@ -1,6 +1,7 @@
 //! OpenRouter capabilities: supported models, capability tables and API slugs.
 //!
-//! Models are matched by catalog id, so the tables work for any `ImageModel` carrying one of these ids.
+//! Models are matched by catalog id, so the tables work for any `ImageModel` carrying one of these
+//! ids.
 
 use crate::models::{AspectRatio, ImageModel, ImageResolution, ModelCapabilities};
 

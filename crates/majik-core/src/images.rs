@@ -60,8 +60,8 @@ pub fn gradient_image(width: u32, height: u32, seed: u64) -> RgbImage {
                 *value += (blob.color[channel] - *value) * falloff;
             }
         }
-        // Grain: enough to stop the encoder from collapsing the whole picture into a few
-        // kilobytes, little enough that the image still reads as a smooth render.
+        // Grain: enough to stop the encoder collapsing the whole picture into a few
+        // kilobytes, little enough that the image still looks like a smooth render.
         let grain = rng.next_u64();
         let mut out = [0u8; 3];
         for (channel, value) in rgb.iter().enumerate() {

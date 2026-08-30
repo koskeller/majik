@@ -137,8 +137,9 @@ pub fn measure<V: 'static>(slot: BoundsSlot, owner: WeakEntity<V>) -> Canvas<()>
 }
 
 /// [`measure`] whose owner reacts to the new bounds itself (`on_change` must `cx.notify()` if it
-/// wants a redraw). The reaction is deferred to after the frame: a notify issued while the window
-/// is drawing only marks the view for re-render, it doesn't schedule the frame that would show it.
+/// wants a redraw). The reaction is deferred to after the frame, because a notify issued while the
+/// window is drawing only marks the view for re-render; it doesn't schedule the frame that would
+/// show it.
 pub fn measure_then<V: 'static>(slot: BoundsSlot, owner: WeakEntity<V>, on_change: impl Fn(&mut V, &mut Context<V>) + 'static) -> Canvas<()> {
     use gpui::Styled as _;
     let on_change = Rc::new(on_change);
@@ -307,7 +308,7 @@ const TOAST_BOTTOM: Pixels = px(24.);
 
 struct Toast {
     message: SharedString,
-    /// Distinguishes this toast from the one it replaced, so a stale timer can't dismiss it.
+    /// Distinguishes this toast from the one it replaced, so an old timer can't dismiss it.
     generation: u64,
     hiding: bool,
     /// Dropping the task (on replace) cancels the dismissal.

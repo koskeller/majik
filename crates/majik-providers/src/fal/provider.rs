@@ -247,7 +247,7 @@ impl FalClient {
 
         let takes_audio_input = caps::api_audio_input_param(model).is_some();
         // Audio counts as a reference only where the model has a reference audio list; on a model
-        // with neither that nor a conditioning input, "no audio input" is the honest answer.
+        // with neither that nor a conditioning input, the answer is "no audio input".
         let audio_is_reference = !references.audio.is_empty() && !takes_audio_input && caps::video_reference_params(model).is_some_and(|p| p.audio.is_some());
         if references.has_visual() || audio_is_reference {
             Self::validate_references(&references, first_frame, last_frame, settings)?;
@@ -271,9 +271,9 @@ impl FalClient {
         self.download_video_result(&result_data).await
     }
 
-    /// Everything fal will reject about a reference request, said in a sentence the user can act on.
-    /// `majik-generation`'s validation catches these before a job is ever queued; this is the guard
-    /// for anything that reaches the client another way.
+    /// Everything fal will reject about a reference request, in a sentence the user can act on.
+    /// `majik-generation`'s validation catches these before a job is ever queued; this covers
+    /// anything that reaches the client another way.
     fn validate_references(
         references: &ReferenceAssets<'_>,
         first_frame: Option<&[u8]>,
@@ -445,8 +445,8 @@ impl FalClient {
     }
 
     /// The reference endpoint's body: the settings, the prompt with its handles rewritten into this
-    /// model's dialect, and one array of data URIs per reference kind — in attach order, which is
-    /// what makes `@Image2` the second entry of `image_urls`.
+    /// model's dialect, and one array of data URIs per reference kind, in the order they were
+    /// attached, which is what makes `@Image2` the second entry of `image_urls`.
     pub fn build_video_reference_body(prompt: &str, references: &ReferenceAssets<'_>, settings: &VideoGenerationSettings) -> Map<String, Value> {
         let params = caps::video_reference_params(&settings.model);
         let style = params.map(|p| p.style).unwrap_or(ReferenceTagStyle::Prose);
@@ -489,7 +489,7 @@ impl FalClient {
     }
 }
 
-/// "480p or 720p" — for the one model whose reference endpoint is narrower than its own catalog entry.
+/// "480p or 720p", for the one model whose reference endpoint is narrower than its own catalog entry.
 fn describe_resolutions(resolutions: &[VideoResolution]) -> String {
     let names: Vec<&str> = resolutions.iter().map(|r| r.display_name()).collect();
     match names.split_last() {
