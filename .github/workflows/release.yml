@@ -103,10 +103,18 @@ jobs:
       - name: Install build dependencies
         run: |
           apt-get update
-          apt-get install -y curl git build-essential pkg-config gettext-base \
+          # jq is not in the base image, and `release.sh`'s crate_version() pipes cargo metadata
+          # through it — without it the bundle dies at exit 127 before building anything.
+          apt-get install -y curl git jq build-essential pkg-config gettext-base \
             libasound2-dev libfontconfig-dev libwayland-dev libx11-xcb-dev \
             libxkbcommon-x11-dev libssl-dev libzstd-dev clang cmake
       - uses: actions/checkout@v4
+      # The container runs as a different uid than the one that owns the checkout, so every git
+      # command in it fails as "dubious ownership" — including the `rev-parse --show-toplevel` that
+      # `release.sh`'s repo_root() runs. checkout's own safe.directory entry goes into a temporary
+      # HOME that later steps don't see.
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
         with:
