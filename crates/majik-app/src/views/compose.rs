@@ -435,7 +435,7 @@ impl ComposeView {
     }
 
     /// The button and ⌘⇧I: start a rewrite, or cancel the one running.
-    fn toggle_improve(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_improve(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.improving.is_some() {
             self.cancel_improve(cx);
         } else {
@@ -504,7 +504,7 @@ impl ComposeView {
         self.focus_prompt(window, cx);
     }
 
-    fn generate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn generate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Submitting supersedes a rewrite of the prompt being submitted.
         self.improving = None;
         self.sync_provider(window, cx);
@@ -589,7 +589,7 @@ impl ComposeView {
     }
 
     /// Paste a clipboard image as a reference asset. ⌘⇧V.
-    fn paste_image(&mut self, _: &PasteImage, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn paste_image(&mut self, _: &PasteImage, window: &mut Window, cx: &mut Context<Self>) {
         let Some(item) = cx.read_from_clipboard() else { return };
         for entry in item.into_entries() {
             if let gpui::ClipboardEntry::Image(image) = entry {
@@ -636,7 +636,7 @@ impl ComposeView {
         cx.notify();
     }
 
-    fn clear_prompt(&mut self, _: &ClearPrompt, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn clear_prompt(&mut self, _: &ClearPrompt, window: &mut Window, cx: &mut Context<Self>) {
         self.prompt.update(cx, |s, cx| s.set_value("", window, cx));
         cx.notify();
     }

@@ -19,7 +19,10 @@ use majik_core::FeedFilter;
 use std::ops::Range;
 use std::time::Duration;
 
-use crate::actions::{CloseWindow, FocusFeed, NewComposition, ToggleComposer, ToggleSidebar};
+use crate::actions::{
+    ClearPrompt, CloseWindow, FocusFeed, Generate, ImportFiles, ImprovePrompt, MenuState, NewAlbum, NewGeneration, PasteImage, ShowAssets, ShowFavorites, ShowLibrary, ToggleComposer,
+    ToggleSidebar,
+};
 use crate::config::{update_config, Config};
 use crate::state::{LibraryEvent, PendingCompose};
 use crate::ui::{button, icon};
@@ -49,6 +52,8 @@ pub struct LibraryWindow {
     /// The menus drawn in our own title bar: gpui renders a native menu bar only on macOS, and
     /// merely stores the menus on Windows and Linux (see `actions::menus`).
     menu_bar: Entity<AppMenuBar>,
+    /// What the drawn menu bar was last greyed for; `sync_menus` rebuilds it when this changes.
+    menu_state: MenuState,
 }
 
 /// The two collapsible panels around the feed. Everything that differs between them lives here;
@@ -225,6 +230,16 @@ impl LibraryWindow {
                 cx.notify();
             }
             FeedEvent::Compose(pending) => this.show_composer(Some(pending.clone()), window, cx),
+            FeedEvent::Imported => this.show_filter(FeedFilter::Assets, cx),
+        })
+        .detach();
+
+        // The feed re-renders itself; the window only needs to hear about a selection going empty
+        // or non-empty, which changes what the menu can do.
+        cx.observe(&feed, |this, feed, cx| {
+            if (feed.read(cx).selected_count() > 0) != this.menu_state.selection {
+                cx.notify();
+            }
         })
         .detach();
 
@@ -281,6 +296,7 @@ impl LibraryWindow {
             finished: (0, 0),
             notify_task: None,
             menu_bar: AppMenuBar::new(cx),
+            menu_state: MenuState::default(),
         }
     }
 
@@ -329,7 +345,7 @@ impl LibraryWindow {
 
     /// ⌘N cycles like a dock toggle: closed → open + focus the prompt; open but elsewhere → focus
     /// the prompt; already typing → put the panel away.
-    fn new_composition(&mut self, _: &NewComposition, window: &mut Window, cx: &mut Context<Self>) {
+    fn new_generation(&mut self, _: &NewGeneration, window: &mut Window, cx: &mut Context<Self>) {
         if self.panel(Side::Composer).open && self.compose.read(cx).contains_focus(window, cx) {
             self.hide_composer(window, cx);
         } else {
@@ -355,6 +371,43 @@ impl LibraryWindow {
 
     fn focus_feed(&mut self, _: &FocusFeed, window: &mut Window, cx: &mut Context<Self>) {
         self.feed.read(cx).focus_handle().focus(window, cx);
+    }
+
+    fn new_album(&mut self, _: &NewAlbum, window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.open_new_album(window, cx);
+        });
+    }
+
+    /// File → Import…: the Assets grid's own import, reachable from any feed. Imported files land
+    /// in Assets, so the feed goes there once they do (`FeedEvent::Imported`).
+    fn import_files(&mut self, _: &ImportFiles, window: &mut Window, cx: &mut Context<Self>) {
+        self.feed.update(cx, |feed, cx| feed.pick_imports(window, cx));
+    }
+
+    /// Library / Favorites / Assets. The sidebar owns which row is current, so go through it and
+    /// let its `Select` event move the feed, exactly as clicking the row does.
+    fn show_filter(&mut self, filter: FeedFilter, cx: &mut Context<Self>) {
+        self.detail = None;
+        self.sidebar.update(cx, |sidebar, cx| sidebar.select(filter, cx));
+        cx.notify();
+    }
+
+    /// Keep the menu bar we draw ourselves greyed for what the window can currently do. macOS asks
+    /// about each item instead, as the menu opens (see [`MenuState`]).
+    fn sync_menus(&mut self, cx: &mut Context<Self>) {
+        let state = MenuState {
+            library: self.onboarding.is_none(),
+            composer_open: self.panel(Side::Composer).open,
+            detail_open: self.detail.is_some(),
+            selection: self.feed.read(cx).selected_count() > 0,
+        };
+        if state == self.menu_state {
+            return;
+        }
+        self.menu_state = state;
+        crate::actions::refresh(state, cx);
+        self.menu_bar.update(cx, |bar, cx| bar.reload(cx));
     }
 
     fn note_finished(&mut self, ok: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -426,7 +479,7 @@ impl LibraryWindow {
             let button = button(id).icon(icon(icon_name)).ghost().small().selected(self.panel(side).open);
             let button = match side {
                 Side::Sidebar => button.tooltip_with_action("Show or hide the sidebar", &ToggleSidebar, Some("Library")).on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleSidebar), cx)),
-                Side::Composer => button.tooltip_with_action("Show or hide the composer", &NewComposition, None).on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleComposer), cx)),
+                Side::Composer => button.tooltip_with_action("Show or hide the composer", &NewGeneration, None).on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleComposer), cx)),
             };
             gpui::div().debug_selector(move || id.into()).child(button)
         };
@@ -449,6 +502,7 @@ impl LibraryWindow {
 impl Render for LibraryWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_onboarding(window, cx);
+        self.sync_menus(cx);
 
         let body: gpui::AnyElement = match (&self.onboarding, &self.detail) {
             (Some(onboarding), _) => onboarding.clone().into_any_element(),
@@ -480,10 +534,30 @@ impl Render for LibraryWindow {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .on_action(|_: &CloseWindow, window, _| window.remove_window())
-            .on_action(cx.listener(Self::new_composition))
-            .on_action(cx.listener(Self::toggle_composer))
-            .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::focus_feed))
+            // Onboarding covers the window and owns everything on screen; nothing below can act
+            // until it is done. Actions are installed only where they can do something, so an item
+            // that would be a no-op greys out: macOS asks gpui whether the action reaches a
+            // handler, and `MenuState` mirrors these conditions for the bar we draw ourselves.
+            .when(self.onboarding.is_none(), |this| {
+                this.on_action(cx.listener(Self::new_generation))
+                    .on_action(cx.listener(Self::toggle_composer))
+                    .on_action(cx.listener(Self::toggle_sidebar))
+                    .on_action(cx.listener(Self::new_album))
+                    .on_action(cx.listener(Self::import_files))
+                    .on_action(cx.listener(|this, _: &ShowLibrary, _, cx| this.show_filter(FeedFilter::Library, cx)))
+                    .on_action(cx.listener(|this, _: &ShowFavorites, _, cx| this.show_filter(FeedFilter::Favorites, cx)))
+                    .on_action(cx.listener(|this, _: &ShowAssets, _, cx| this.show_filter(FeedFilter::Assets, cx)))
+            })
+            // The composer's actions belong to the window while its panel is open, not just to the
+            // panel: ⌘⏎ generates while the feed has focus, and the menu items work from anywhere.
+            // The panel's own handlers take these first whenever it holds focus.
+            .when(self.panel(Side::Composer).open, |this| {
+                this.on_action(cx.listener(|this, _: &Generate, window, cx| this.compose.update(cx, |compose, cx| compose.generate(window, cx))))
+                    .on_action(cx.listener(|this, _: &ImprovePrompt, window, cx| this.compose.update(cx, |compose, cx| compose.toggle_improve(window, cx))))
+                    .on_action(cx.listener(|this, action: &ClearPrompt, window, cx| this.compose.update(cx, |compose, cx| compose.clear_prompt(action, window, cx))))
+                    .on_action(cx.listener(|this, action: &PasteImage, window, cx| this.compose.update(cx, |compose, cx| compose.paste_image(action, window, cx))))
+            })
             .child(v_flex().size_full().child(self.render_title_bar()).child(gpui::div().flex_1().min_h_0().w_full().child(body)))
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))
@@ -503,7 +577,7 @@ fn follow_system_appearance(window: &mut Window, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::Recreate;
+    use crate::actions::{Generate, NewGeneration, Recreate, SelectAll, ShowFavorites, ShowLibrary};
     use crate::composer_state::{ComposeTab, DraftAsset};
     use crate::test_support::{env, seed_asset, seed_item, seed_request, Seed, TestEnv};
     use gpui::{size, TestAppContext, VisualTestContext};
@@ -650,8 +724,10 @@ mod tests {
         view.update(vcx, |w, _| assert_eq!(w.finished, (0, 0)));
     }
 
+    /// ⌘1 means two things, told apart by which window is in front: from elsewhere it brings the
+    /// Library window back exactly as it was, and inside it, it is the sidebar's Library row.
     #[gpui::test]
-    fn cmd_1_brings_the_library_window_back_from_settings_and_keeps_the_detail(cx: &mut TestAppContext) {
+    fn cmd_1_brings_the_library_window_back_from_settings_and_navigates_inside_it(cx: &mut TestAppContext) {
         let (_e, window, vcx) = library(cx, 2);
         // Register this window as the singleton, as `open_library` does for the real one.
         let handle = vcx.update(|window, _| window.window_handle().downcast::<Root>().expect("root window"));
@@ -663,11 +739,18 @@ mod tests {
         vcx.run_until_parked();
         assert_eq!(vcx.windows().len(), 2, "settings opened");
         assert!(!vcx.update(|window, _| window.is_window_active()), "settings took the focus");
-        vcx.simulate_keystrokes("secondary-1");
+        // Settings has the focus, so this is the keystroke landing there, as the menu item would.
+        vcx.update(|_, cx| cx.dispatch_action(&ShowLibrary));
         vcx.run_until_parked();
         assert_eq!(vcx.windows().len(), 2, "no second Library window");
         assert!(vcx.update(|window, _| window.is_window_active()), "the Library window is forward again");
         assert!(vcx.debug_bounds("compose-panel").is_none(), "the detail stays where it was");
+
+        // Now that it is the front window, the same keystroke navigates it.
+        vcx.simulate_keystrokes("secondary-1");
+        draw(vcx);
+        window.read_with(vcx, |w, _| assert!(w.detail.is_none(), "the detail gives way to the feed"));
+        assert_eq!(window.read_with(vcx, |w, cx| w.feed.read(cx).filter().clone()), FeedFilter::Library);
     }
 
     #[gpui::test]
@@ -767,6 +850,121 @@ mod tests {
             let frame = cx.global::<Config>().library_frame.clone().expect("saved");
             assert_eq!((frame.width, frame.height), (900., 700.));
         });
+    }
+
+    /// Every item in the menu bar can act somewhere. macOS greys an item whose action reaches no
+    /// handler on the focus path, and `MenuState` mirrors those conditions for the bar we draw
+    /// ourselves; both are worthless if an item can act in no state at all.
+    #[gpui::test]
+    fn every_menu_action_reaches_a_handler(cx: &mut TestAppContext) {
+        fn still_unreachable(names: &mut Vec<String>, actions: &[Box<dyn gpui::Action>], vcx: &mut VisualTestContext) {
+            draw(vcx);
+            names.retain(|name| {
+                let action = actions.iter().find(|a| a.name() == name).expect("a menu action");
+                // The window's own dispatch tree, plus the app-level handlers (Quit, Settings…)
+                // that answer wherever the focus is.
+                !vcx.update(|window, cx| window.is_action_available(action.as_ref(), cx)) && !vcx.update(|_, cx| cx.is_action_available(action.as_ref()))
+            });
+        }
+
+        let (_e, window, vcx) = library(cx, 2);
+        vcx.update(|window, _| window.activate_window());
+        let actions: Vec<Box<dyn gpui::Action>> = crate::actions::menus(Default::default())
+            .into_iter()
+            .flat_map(|menu| menu.items)
+            .filter_map(|item| match item {
+                gpui::MenuItem::Action { action, .. } => Some(action),
+                _ => None,
+            })
+            .collect();
+        assert!(actions.len() > 20, "the whole menu bar, not a corner of it");
+        let mut unreachable: Vec<String> = actions.iter().map(|action| action.name().to_string()).collect();
+
+        // The three surfaces the menu is drawn over: a feed with a selection, the composer's
+        // prompt, and a detail. Between them every item has to become live.
+        vcx.dispatch_action(SelectAll);
+        still_unreachable(&mut unreachable, &actions, vcx);
+        vcx.dispatch_action(NewGeneration);
+        still_unreachable(&mut unreachable, &actions, vcx);
+        open_detail(&window, vcx, 0);
+        still_unreachable(&mut unreachable, &actions, vcx);
+
+        assert!(unreachable.is_empty(), "menu items that do nothing anywhere: {unreachable:?}");
+    }
+
+    /// ⌘⏎ and Media → Generate belong to the window while the composer is open, not only to the
+    /// panel: picking a cell and then generating shouldn't need a click back into the prompt.
+    #[gpui::test]
+    fn generate_reaches_the_composer_while_the_feed_has_focus(cx: &mut TestAppContext) {
+        let (e, window, vcx) = library(cx, 1);
+        vcx.dispatch_action(NewGeneration);
+        draw(vcx);
+        assert!(prompt_focused(&window, vcx));
+        vcx.simulate_keystrokes("c a t");
+        vcx.simulate_keystrokes("escape");
+        draw(vcx);
+        assert!(feed_focused(&window, vcx), "Escape hands the feed back its focus");
+
+        let before = e.library.read_with(vcx, |m, _| m.lib.generations().len());
+        vcx.simulate_keystrokes("secondary-enter");
+        vcx.run_until_parked();
+        assert_eq!(e.library.read_with(vcx, |m, _| m.lib.generations().len()), before + 1, "the feed's focus doesn't swallow ⌘⏎");
+
+        // Closing the panel takes the action away again: there is no prompt to generate from.
+        vcx.dispatch_action(ToggleComposer);
+        draw(vcx);
+        assert!(!vcx.update(|window, cx| window.is_action_available(&Generate, cx)), "Generate greys out with the composer closed");
+    }
+
+    #[gpui::test]
+    fn library_favorites_and_assets_actions_move_the_feed(cx: &mut TestAppContext) {
+        let (_e, window, vcx) = library(cx, 2);
+        let filter = |vcx: &mut VisualTestContext| window.read_with(vcx, |w, cx| w.feed.read(cx).filter().clone());
+        let row = |vcx: &mut VisualTestContext| window.read_with(vcx, |w, cx| w.sidebar.read(cx).selected.clone());
+
+        for (keys, expected) in [("secondary-2", FeedFilter::Favorites), ("secondary-3", FeedFilter::Assets), ("secondary-1", FeedFilter::Library)] {
+            vcx.simulate_keystrokes(keys);
+            draw(vcx);
+            assert_eq!(filter(vcx), expected, "{keys} shows {expected:?}");
+            assert_eq!(row(vcx), expected, "and moves the sidebar's highlight with it");
+        }
+
+        // From a detail, the same action puts the feed back on screen rather than doing nothing
+        // behind it.
+        open_detail(&window, vcx, 0);
+        vcx.dispatch_action(ShowFavorites);
+        draw(vcx);
+        window.read_with(vcx, |w, _| assert!(w.detail.is_none(), "navigating leaves the detail"));
+        assert_eq!(filter(vcx), FeedFilter::Favorites);
+    }
+
+    #[gpui::test]
+    fn new_album_action_opens_the_dialog(cx: &mut TestAppContext) {
+        let (e, window, vcx) = library(cx, 0);
+        vcx.simulate_keystrokes("secondary-shift-n");
+        vcx.run_until_parked();
+        assert!(vcx.update(|window, cx| window.has_active_dialog(cx)), "⌘⇧N puts the New Album dialog up");
+        vcx.simulate_keystrokes("T r i p enter");
+        vcx.run_until_parked();
+        e.library.read_with(vcx, |m, _| assert_eq!(m.lib.albums().iter().map(|a| a.name.clone()).collect::<Vec<_>>(), vec!["Trip".to_string()]));
+        assert_eq!(window.read_with(vcx, |w, cx| w.sidebar.read(cx).selected.clone()), FeedFilter::Album(e.library.read_with(vcx, |m, _| m.lib.albums()[0].id.clone())), "the new album is where you land");
+    }
+
+    /// Imports land in Assets, so the feed goes there — the Import… menu item is reachable from
+    /// every feed, and files that landed somewhere you can't see would look like nothing happened.
+    #[gpui::test]
+    fn importing_shows_the_assets_feed(cx: &mut TestAppContext) {
+        let (e, window, vcx) = library(cx, 1);
+        assert_eq!(window.read_with(vcx, |w, cx| w.feed.read(cx).filter().clone()), FeedFilter::Library);
+
+        let file = e.dir.path().join("import-me.png");
+        std::fs::write(&file, majik_core::images::solid_png(8, 8, [200, 30, 40])).expect("write the file to import");
+        let feed = window.read_with(vcx, |w, _| w.feed.clone());
+        feed.update_in(vcx, |feed, window, cx| feed.import_paths(vec![file], window, cx));
+        vcx.run_until_parked();
+
+        assert_eq!(window.read_with(vcx, |w, cx| w.feed.read(cx).filter().clone()), FeedFilter::Assets, "the feed follows the import");
+        assert_eq!(window.read_with(vcx, |w, cx| w.sidebar.read(cx).selected.clone()), FeedFilter::Assets);
     }
 
     #[gpui::test]
@@ -955,7 +1153,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn new_composition_puts_the_panel_away_when_already_typing(cx: &mut TestAppContext) {
+    fn new_generation_puts_the_panel_away_when_already_typing(cx: &mut TestAppContext) {
         let (_e, window, vcx) = library(cx, 1);
         vcx.simulate_keystrokes("secondary-n");
         assert!(prompt_focused(&window, vcx));
@@ -995,7 +1193,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn new_composition_expands_the_panel_and_focuses_the_prompt(cx: &mut TestAppContext) {
+    fn new_generation_expands_the_panel_and_focuses_the_prompt(cx: &mut TestAppContext) {
         let (_e, window, vcx) = library(cx, 1);
         vcx.dispatch_action(ToggleComposer);
         assert!(!panel_open(&window, vcx));

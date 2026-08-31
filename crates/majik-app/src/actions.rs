@@ -1,15 +1,28 @@
 //! Actions, key bindings and the native menu bar.
 
-use gpui::{actions, Action, App, KeyBinding, Keystroke, Menu, MenuItem, OsAction};
+use gpui::{actions, Action, App, KeyBinding, Keystroke, Menu, MenuItem, OsAction, SystemMenuType, Window};
+use gpui_component::input::{Cut as CutText, Paste as PasteText, Redo, Undo};
 use gpui_component::kbd::Kbd;
+
+use crate::views::settings::{SettingsPage, SettingsTarget};
 
 actions!(
     majik,
     [
+        About,
         Quit,
+        Hide,
+        HideOthers,
+        ShowAll,
+        Minimize,
+        Zoom,
         CloseWindow,
-        NewComposition,
+        NewGeneration,
+        NewAlbum,
+        ImportFiles,
         ShowLibrary,
+        ShowFavorites,
+        ShowAssets,
         OpenSelection,
         Generate,
         ImprovePrompt,
@@ -47,7 +60,7 @@ actions!(
 
 /// Keys are written with gpui's `secondary` modifier (⌘ on macOS, Ctrl on Windows and Linux),
 /// never `cmd`, which is the Windows / Super key off macOS.
-pub const NEW_COMPOSITION_KEYS: &str = "secondary-n";
+pub const NEW_GENERATION_KEYS: &str = "secondary-n";
 
 /// The platform's spelling of a binding for help text (`⌘N` on macOS, `Ctrl+N` elsewhere), the
 /// same formatting the Shortcuts page and tooltips use, so text never hard-codes a glyph.
@@ -97,14 +110,23 @@ pub fn shortcuts() -> Vec<Shortcut> {
     fn settings<A: Action + Clone>(label: &'static str, keys: &[&str], action: A, context: &str) -> Shortcut {
         shortcut("Settings", label, keys, action, &[Some(context)])
     }
+    fn library_window<A: Action + Clone>(label: &'static str, keys: &[&str], action: A) -> Shortcut {
+        shortcut("Library window", label, keys, action, &[Some("Library")])
+    }
     vec![
         app("Quit", &["secondary-q"], Quit),
         app("Close Window", &["secondary-w"], CloseWindow),
-        app("New Composition", &[NEW_COMPOSITION_KEYS], NewComposition),
+        app("Minimize", &["secondary-m"], Minimize),
+        app("New Generation", &[NEW_GENERATION_KEYS], NewGeneration),
+        // Opens the Library window when it is closed, so unlike Favorites and Assets below it is
+        // bound everywhere rather than inside the window.
         app("Library", &["secondary-1"], ShowLibrary),
         app("Settings", &["secondary-,"], OpenSettings),
+        library_window("New Album", &["secondary-shift-n"], NewAlbum),
+        library_window("Favorites", &["secondary-2"], ShowFavorites),
+        library_window("Assets", &["secondary-3"], ShowAssets),
         // ⌘⌥S is what Finder / Photos / Mail use for their sidebar.
-        shortcut("Library window", "Show / Hide Sidebar", &["secondary-alt-s"], ToggleSidebar, &[Some("Library")]),
+        library_window("Show / Hide Sidebar", &["secondary-alt-s"], ToggleSidebar),
         feed("Open", &["secondary-o", "enter"], OpenSelection),
         feed("Select All", &["secondary-a"], SelectAll),
         feed("Clear Selection", &["escape"], ClearSelection),
@@ -125,15 +147,55 @@ pub fn shortcuts() -> Vec<Shortcut> {
         detail("Next Item", &["right"], NextItem),
         detail("Back", &["escape"], Back),
         detail("Play / Pause", &["space"], TogglePlayback),
+        // Bound in the window as well as the panel: while the composer is open these work from
+        // the feed and the detail too (`LibraryWindow` hands them to the panel), so ⌘⏎ generates
+        // without clicking back into the prompt.
+        shortcut("Composer", "Generate", &["secondary-enter"], Generate, &[Some("Compose"), Some("Library")]),
+        shortcut("Composer", "Improve Prompt", &["secondary-shift-i"], ImprovePrompt, &[Some("Compose"), Some("Library")]),
+        shortcut("Composer", "Paste Image", &["secondary-shift-v"], PasteImage, &[Some("Compose"), Some("Library")]),
         // The prompt's own Escape handler propagates, so `FocusFeed` fires right after it.
-        composer("Generate", &["secondary-enter"], Generate),
-        composer("Improve Prompt", &["secondary-shift-i"], ImprovePrompt),
-        composer("Paste Image", &["secondary-shift-v"], PasteImage),
         composer("Focus Feed", &["escape"], FocusFeed),
         settings("Close Settings", &["escape"], CloseWindow, "Settings"),
         settings("Previous Page", &["up"], SelectUp, "SettingsNav"),
         settings("Next Page", &["down"], SelectDown, "SettingsNav"),
     ]
+    .into_iter()
+    // Hiding an app is a macOS idea: gpui's Linux backend logs and ignores it, and Windows has no
+    // equivalent, so the keys — and the menu items below — only exist where they do something.
+    .chain(cfg!(target_os = "macos").then(|| [app("Hide", &["secondary-h"], Hide), app("Hide Others", &["secondary-alt-h"], HideOthers)]).into_iter().flatten())
+    .collect()
+}
+
+/// What the Library window can act on right now, so the menu can grey out what would do nothing.
+///
+/// macOS greys items itself: AppKit asks `validateMenuItem:` and gpui answers with
+/// `is_action_available`, which is true exactly when the action reaches a handler on the focus
+/// path. The menu bar we draw on Windows and Linux has no such hook — it only reads the `disabled`
+/// flag baked into each item — so [`refresh`] recomputes these flags whenever the window's state
+/// changes. The conditions below therefore mirror where `LibraryWindow` and its views install
+/// their handlers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MenuState {
+    /// A Library window is showing the library (not onboarding), so its views can act at all.
+    pub library: bool,
+    /// The composer panel is open, so the prompt and its actions exist.
+    pub composer_open: bool,
+    /// The detail is covering the window; it always shows exactly one item.
+    pub detail_open: bool,
+    /// At least one cell is selected in the feed.
+    pub selection: bool,
+}
+
+impl MenuState {
+    /// The feed is the visible surface: on screen and not covered by the detail.
+    fn feed(&self) -> bool {
+        self.library && !self.detail_open
+    }
+
+    /// There is media to act on: the detail's item, or the feed's selection.
+    fn media(&self) -> bool {
+        self.detail_open || (self.feed() && self.selection)
+    }
 }
 
 pub fn init(cx: &mut App) {
@@ -142,6 +204,13 @@ pub fn init(cx: &mut App) {
         cx.quit()
     });
     cx.on_action(|_: &ShowLibrary, cx| crate::windows::open_library(cx));
+    cx.on_action(|_: &About, cx| crate::windows::open_settings(SettingsTarget { page: SettingsPage::About, ..Default::default() }, cx));
+    cx.on_action(|_: &Hide, cx| cx.hide());
+    cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
+    cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
+    // Whichever window is in front, as the Window menu means it.
+    cx.on_action(|_: &Minimize, cx| active_window(cx, |window| window.minimize_window()));
+    cx.on_action(|_: &Zoom, cx| active_window(cx, |window| window.zoom_window()));
     // App-level so it works from every window (and from the menu with none focused); the Settings
     // window itself just comes forward.
     cx.on_action(|_: &OpenSettings, cx| crate::windows::open_settings(Default::default(), cx));
@@ -149,93 +218,173 @@ pub fn init(cx: &mut App) {
 
     // gpui only *stores* the menus off macOS; the Library window draws them from `GlobalState`.
     // `Menu::owned` consumes the menu, so the list is built once for each store.
-    gpui_component::global_state::GlobalState::global_mut(cx).set_app_menus(menus().into_iter().map(Menu::owned).collect());
-    cx.set_menus(menus());
+    let state = MenuState::default();
+    gpui_component::global_state::GlobalState::global_mut(cx).set_app_menus(menus(state).into_iter().map(Menu::owned).collect());
+    cx.set_menus(menus(state));
+}
+
+fn active_window(cx: &mut App, act: impl FnOnce(&Window)) {
+    let Some(window) = cx.active_window() else { return };
+    if let Err(e) = window.update(cx, |_, window, _| act(window)) {
+        tracing::warn!(target: "majik", "the front window is gone: {e:#}");
+    }
+}
+
+/// Re-grey the menu bar we draw ourselves for `state`. The native macOS bar isn't rebuilt: it asks
+/// about each item as it opens the menu and is always current, and rebuilding `NSMenu` on every
+/// selection change would be churn for nothing.
+pub fn refresh(state: MenuState, cx: &mut App) {
+    gpui_component::global_state::GlobalState::global_mut(cx).set_app_menus(menus(state).into_iter().map(Menu::owned).collect());
 }
 
 /// The application menus, mirrored in two places: `cx.set_menus` drives the native macOS menu
 /// bar, and `GlobalState::set_app_menus` feeds the [`AppMenuBar`](gpui_component::menu::AppMenuBar)
 /// the Library window draws itself on Windows and Linux, where gpui only stores them.
-pub fn menus() -> Vec<Menu> {
+pub fn menus(state: MenuState) -> Vec<Menu> {
+    // Text editing is the composer prompt's; the settings inputs are in their own window.
+    let text = state.composer_open;
+    let (library, feed, media) = (state.library, state.feed(), state.media());
+    // The variants are built by hand rather than through `MenuItem::action`, which takes an owned
+    // `impl Action` and so can't be handed one action per call site from a shared helper.
+    let entry = |name: &str, action: &dyn Action, os_action: Option<OsAction>, enabled: bool| MenuItem::Action {
+        name: name.to_string().into(),
+        action: action.boxed_clone(),
+        os_action,
+        checked: false,
+        disabled: !enabled,
+    };
+    let item = move |name: &str, action: &dyn Action, enabled: bool| entry(name, action, None, enabled);
+    let os_item = move |name: &str, action: &dyn Action, os: OsAction, enabled: bool| entry(name, action, Some(os), enabled);
     vec![
         Menu {
             // The channel's name, so a dev build says so wherever we draw the menu ourselves. On
             // macOS the application menu's own title is AppKit's (the bundle / executable name).
             name: crate::config::app_name().into(),
             disabled: false,
-            items: vec![
-                MenuItem::action("Settings…", OpenSettings),
-                MenuItem::separator(),
-                MenuItem::action(format!("Quit {}", crate::config::app_name()), Quit),
-            ],
+            items: app_menu_items(),
         },
         Menu {
             name: "File".into(),
             disabled: false,
             items: vec![
-                MenuItem::action("New Composition", NewComposition),
+                item("New Generation", &NewGeneration, library),
+                item("New Album…", &NewAlbum, library),
                 MenuItem::action("Close Window", CloseWindow),
                 MenuItem::separator(),
-                MenuItem::action("Open", OpenSelection),
-                MenuItem::action("Save…", SaveMedia),
+                item("Open", &OpenSelection, feed && state.selection),
+                item("Import…", &ImportFiles, library),
+                item("Save…", &SaveMedia, media),
             ],
         },
         Menu {
             name: "Edit".into(),
             disabled: false,
             items: vec![
-                MenuItem::os_action("Copy", CopyMedia, OsAction::Copy),
-                MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
-                MenuItem::action("Clear Selection", ClearSelection),
+                // The text actions are gpui-component's own, the ones its inputs already bind.
+                os_item("Undo", &Undo, OsAction::Undo, text),
+                os_item("Redo", &Redo, OsAction::Redo, text),
                 MenuItem::separator(),
-                MenuItem::action("Improve Prompt", ImprovePrompt),
-                MenuItem::action("Clear Prompt", ClearPrompt),
+                os_item("Cut", &CutText, OsAction::Cut, text),
+                os_item("Copy", &CopyMedia, OsAction::Copy, media),
+                os_item("Paste", &PasteText, OsAction::Paste, text),
+                item("Paste Image", &PasteImage, text),
+                MenuItem::separator(),
+                os_item("Select All", &SelectAll, OsAction::SelectAll, feed),
+                item("Clear Selection", &ClearSelection, feed && state.selection),
+                MenuItem::separator(),
+                item("Improve Prompt", &ImprovePrompt, text),
+                item("Clear Prompt", &ClearPrompt, text),
             ],
         },
         Menu {
             name: "View".into(),
             disabled: false,
             items: vec![
-                MenuItem::action("Zoom In", ZoomIn),
-                MenuItem::action("Zoom Out", ZoomOut),
-                MenuItem::action("Actual Size", ResetZoom),
-                MenuItem::action("Square / Aspect Ratio", ToggleThumbnailShape),
+                item("Zoom In", &ZoomIn, library),
+                item("Zoom Out", &ZoomOut, library),
+                item("Actual Size", &ResetZoom, library),
+                item("Square / Aspect Ratio", &ToggleThumbnailShape, feed),
                 MenuItem::separator(),
-                MenuItem::action("Show Info", ShowInfo),
-                MenuItem::action("Play / Pause", TogglePlayback),
+                item("Show Info", &ShowInfo, state.detail_open),
+                item("Play / Pause", &TogglePlayback, state.detail_open),
+                item("Previous Item", &PrevItem, state.detail_open),
+                item("Next Item", &NextItem, state.detail_open),
+                item("Back", &Back, state.detail_open),
                 MenuItem::separator(),
-                MenuItem::action("Show / Hide Sidebar", ToggleSidebar),
-                MenuItem::action("Show / Hide Composer", ToggleComposer),
+                item("Show / Hide Sidebar", &ToggleSidebar, library),
+                item("Show / Hide Composer", &ToggleComposer, library),
+                MenuItem::separator(),
                 MenuItem::action("Library", ShowLibrary),
+                item("Favorites", &ShowFavorites, library),
+                item("Assets", &ShowAssets, library),
             ],
         },
         Menu {
             name: "Media".into(),
             disabled: false,
             items: vec![
-                MenuItem::action("Generate", Generate),
-                MenuItem::action("Recreate", Recreate),
-                MenuItem::action("Favorite", ToggleFavorite),
+                item("Generate", &Generate, state.composer_open),
+                item("Recreate", &Recreate, media),
+                item("Favorite", &ToggleFavorite, media),
                 MenuItem::separator(),
-                MenuItem::action("Upscale", Upscale),
-                MenuItem::action("Remove Background", RemoveBackground),
-                MenuItem::action("Retry", Retry),
+                item("Upscale", &Upscale, media),
+                item("Remove Background", &RemoveBackground, media),
+                item("Retry", &Retry, media),
                 MenuItem::separator(),
-                MenuItem::action("Delete", DeleteMedia),
+                item("Delete", &DeleteMedia, media),
             ],
         },
+        Menu {
+            name: "Window".into(),
+            disabled: false,
+            items: vec![MenuItem::action("Minimize", Minimize), MenuItem::action("Zoom", Zoom)],
+        },
     ]
+}
+
+/// The application menu. macOS puts the app's own commands here and expects Services and the hide
+/// commands among them; Windows and Linux have neither, so off macOS it is About, Settings and Quit.
+fn app_menu_items() -> Vec<MenuItem> {
+    let name = crate::config::app_name();
+    let mut items = vec![MenuItem::action(format!("About {name}"), About), MenuItem::separator(), MenuItem::action("Settings…", OpenSettings)];
+    if cfg!(target_os = "macos") {
+        items.push(MenuItem::separator());
+        items.push(MenuItem::os_submenu("Services", SystemMenuType::Services));
+        items.push(MenuItem::separator());
+        items.push(MenuItem::action(format!("Hide {name}"), Hide));
+        items.push(MenuItem::action("Hide Others", HideOthers));
+        items.push(MenuItem::action("Show All", ShowAll));
+    }
+    items.push(MenuItem::separator());
+    items.push(MenuItem::action(format!("Quit {name}"), Quit));
+    items
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{AsKeystroke as _, TestAppContext};
+    use gpui::{AsKeystroke as _, OwnedMenu, OwnedMenuItem, TestAppContext};
+
+    /// Whether the item called `name` is greyed out, and that there is exactly one such item.
+    fn greyed(menus: &[Menu], name: &str) -> bool {
+        let mut found: Vec<bool> = Vec::new();
+        for menu in menus {
+            for item in &menu.items {
+                if let MenuItem::Action { name: item_name, disabled, .. } = item {
+                    if item_name.as_ref() == name {
+                        found.push(*disabled);
+                    }
+                }
+            }
+        }
+        assert_eq!(found.len(), 1, "exactly one menu item is called {name:?}");
+        found[0]
+    }
 
     /// With two installs side by side, the menu is where you check which one you're driving.
     #[test]
     fn the_app_menu_carries_the_channel_name() {
-        let menus = menus();
+        let menus = menus(MenuState::default());
         let app_menu = &menus[0];
         assert_eq!(app_menu.name.as_ref(), crate::config::app_name());
         let quit = app_menu.items.last().expect("a Quit item");
@@ -246,7 +395,7 @@ mod tests {
     #[test]
     fn keystroke_label_spells_the_secondary_modifier_for_the_platform() {
         let expected = if cfg!(target_os = "macos") { "⌘N" } else { "Ctrl+N" };
-        assert_eq!(keystroke_label(NEW_COMPOSITION_KEYS), expected);
+        assert_eq!(keystroke_label(NEW_GENERATION_KEYS), expected);
     }
 
     /// `cmd-` parses to the same modifier as `secondary-` on macOS, so the keymap source is checked
@@ -308,17 +457,101 @@ mod tests {
         }
     }
 
+    /// Everything a menu item can do is greyed out when the window can't do it, so the bar we draw
+    /// ourselves says the same thing macOS says by asking `is_action_available` (which the Library
+    /// window's `every_menu_action_reaches_a_handler` checks against the real dispatch tree).
+    #[test]
+    fn menus_grey_out_what_the_window_cannot_do() {
+        // Onboarding, or no Library window at all: the library can't act on anything.
+        let none = menus(MenuState::default());
+        for name in ["New Generation", "New Album…", "Import…", "Generate", "Save…", "Show Info", "Favorites", "Show / Hide Sidebar", "Square / Aspect Ratio"] {
+            assert!(greyed(&none, name), "{name} is greyed with no library on screen");
+        }
+        let about = format!("About {}", crate::config::app_name());
+        for menus in [&none, &menus(MenuState { library: true, ..Default::default() })] {
+            for name in ["Settings…", "Close Window", "Library", "Minimize", "Zoom", &about] {
+                assert!(!greyed(menus, name), "{name} always works");
+            }
+        }
+
+        // The feed, with nothing selected: navigation and the panels work, media doesn't.
+        let feed = menus(MenuState { library: true, ..Default::default() });
+        for name in ["New Generation", "New Album…", "Import…", "Favorites", "Assets", "Square / Aspect Ratio", "Select All", "Zoom In"] {
+            assert!(!greyed(&feed, name), "{name} works on a feed");
+        }
+        for name in ["Open", "Save…", "Copy", "Delete", "Recreate", "Upscale", "Clear Selection", "Show Info", "Play / Pause", "Generate", "Paste", "Improve Prompt"] {
+            assert!(greyed(&feed, name), "{name} needs more than an empty feed");
+        }
+
+        // A selection makes the media items work; they act on the detail's item just as well.
+        let selected = menus(MenuState { library: true, selection: true, ..Default::default() });
+        let detail = menus(MenuState { library: true, detail_open: true, ..Default::default() });
+        for name in ["Open", "Save…", "Copy", "Delete", "Recreate", "Upscale", "Remove Background", "Retry", "Favorite"] {
+            assert!(!greyed(&selected, name), "{name} acts on the selection");
+        }
+        for name in ["Save…", "Copy", "Delete", "Recreate", "Show Info", "Play / Pause", "Next Item", "Previous Item", "Back"] {
+            assert!(!greyed(&detail, name), "{name} acts on the detail's item");
+        }
+        for name in ["Show Info", "Play / Pause", "Next Item", "Previous Item", "Back"] {
+            assert!(greyed(&selected, name), "{name} needs a detail, not a selection");
+        }
+        for name in ["Open", "Select All", "Square / Aspect Ratio"] {
+            assert!(greyed(&detail, name), "{name} belongs to the feed, which the detail covers");
+        }
+
+        // The prompt only exists while the composer is open, and so do its actions.
+        let composer = menus(MenuState { library: true, composer_open: true, ..Default::default() });
+        for name in ["Generate", "Improve Prompt", "Clear Prompt", "Paste Image", "Undo", "Redo", "Cut", "Paste"] {
+            assert!(greyed(&feed, name) && !greyed(&composer, name), "{name} needs the composer");
+        }
+    }
+
     #[gpui::test]
     fn init_feeds_the_native_and_the_drawn_menu_bar_the_same_menus(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
             init(cx);
             let drawn = gpui_component::global_state::GlobalState::global(cx).app_menus().to_vec();
-            let expected: Vec<String> = menus().into_iter().map(|menu| menu.name.to_string()).collect();
-            assert_eq!(drawn.iter().map(|menu| menu.name.to_string()).collect::<Vec<_>>(), expected, "every menu is drawn off macOS");
+            let names = |menu: &OwnedMenu| menu.items.iter().filter_map(|item| match item {
+                OwnedMenuItem::Action { name, .. } => Some(name.to_string()),
+                OwnedMenuItem::Separator => Some("-".into()),
+                _ => None,
+            }).collect::<Vec<_>>();
+            let expected: Vec<OwnedMenu> = menus(MenuState::default()).into_iter().map(Menu::owned).collect();
             assert!(!expected.is_empty(), "there are menus to draw");
-            let items: usize = drawn.iter().map(|menu| menu.items.len()).sum();
-            assert_eq!(items, menus().iter().map(|menu| menu.items.len()).sum::<usize>(), "with all of their items");
+            assert_eq!(drawn.len(), expected.len(), "every menu is drawn off macOS");
+            for (drawn, expected) in drawn.iter().zip(&expected) {
+                assert_eq!(drawn.name, expected.name);
+                assert_eq!(names(drawn), names(expected), "{} has the same items in the same order", expected.name);
+            }
+        });
+    }
+
+    /// The drawn bar has no way to ask whether an action would do anything (macOS does, and greys
+    /// the item itself), so the flags it draws from are recomputed as the window's state changes.
+    #[gpui::test]
+    fn refresh_regreys_the_drawn_menu_bar(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            init(cx);
+            let disabled = |cx: &App, name: &str| {
+                gpui_component::global_state::GlobalState::global(cx)
+                    .app_menus()
+                    .iter()
+                    .flat_map(|menu| menu.items.iter())
+                    .find_map(|item| match item {
+                        OwnedMenuItem::Action { name: item, disabled, .. } if item.as_str() == name => Some(*disabled),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("{name} is in the drawn menus"))
+            };
+            assert!(disabled(cx, "Generate"), "no window yet");
+            refresh(MenuState { library: true, composer_open: true, ..Default::default() }, cx);
+            assert!(!disabled(cx, "Generate"), "the composer is open");
+            assert!(disabled(cx, "Save…"), "nothing is selected");
+            refresh(MenuState { library: true, selection: true, ..Default::default() }, cx);
+            assert!(!disabled(cx, "Save…"));
+            assert!(disabled(cx, "Generate"), "the composer closed again");
         });
     }
 

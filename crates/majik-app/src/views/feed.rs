@@ -86,6 +86,8 @@ pub enum FeedEvent {
     Open { ids: Vec<EntryId>, index: usize, origin: Option<Bounds<Pixels>> },
     /// Hand the selection to the composer panel (Recreate / Use Image); the owner shows the panel.
     Compose(PendingCompose),
+    /// Files were just imported as assets; the owner shows the Assets feed, where they landed.
+    Imported,
 }
 
 
@@ -338,7 +340,7 @@ impl FeedView {
         self.selection.ids.iter().filter_map(|id| id.media().cloned()).collect()
     }
 
-    #[cfg(test)]
+    /// How many cells are selected; what the menu greys its media items on.
     pub(crate) fn selected_count(&self) -> usize {
         self.selection.ids.len()
     }
@@ -396,7 +398,7 @@ impl FeedView {
 
     /// Import files as assets (Import… and drops on the Assets grid); the user hears about every
     /// file that couldn't be, or how many were.
-    fn import_paths(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn import_paths(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
         if paths.is_empty() {
             return;
         }
@@ -406,9 +408,12 @@ impl FeedView {
         } else {
             crate::ui::toast(window, format!("Imported {} asset(s)", ids.len()), cx);
         }
+        if !ids.is_empty() {
+            cx.emit(FeedEvent::Imported);
+        }
     }
 
-    fn pick_imports(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn pick_imports(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some("Import".into()) });
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(paths))) = rx.await {
@@ -722,7 +727,7 @@ impl FeedView {
     /// The per-filter empty state: (icon, title, hint).
     fn empty_state(&self, cx: &App) -> (&'static str, &'static str, SharedString) {
         match &self.filter {
-            FeedFilter::Library => ("images", "Nothing Here Yet", format!("Press {} to open the composer", crate::actions::keystroke_label(crate::actions::NEW_COMPOSITION_KEYS)).into()),
+            FeedFilter::Library => ("images", "Nothing Here Yet", format!("Press {} to open the composer", crate::actions::keystroke_label(crate::actions::NEW_GENERATION_KEYS)).into()),
             FeedFilter::Favorites => ("heart", "No Favorites Yet", "Click the heart on an item to add it to your favorites".into()),
             FeedFilter::Album(id) if self.library.read(cx).lib.album(id).is_some() => ("layers", "Empty Album", "Add items from the library using the context menu".into()),
             FeedFilter::Album(_) => ("layers", "Album Unavailable", "This album has been deleted".into()),

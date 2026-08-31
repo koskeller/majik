@@ -20,7 +20,8 @@ pub enum SidebarEvent {
 }
 
 pub struct SidebarView {
-    selected: FeedFilter,
+    /// The row drawn as current; the window moves it with the feed (Library / Favorites / Assets).
+    pub(crate) selected: FeedFilter,
     library: Entity<LibraryModel>,
 }
 

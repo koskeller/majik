@@ -180,7 +180,17 @@ Dependency direction (never reversed): `app → {generation, video, audio, platf
   with the key contexts `"Library"` (window root), `"Feed"`, `"Detail"`, `"Compose"` (the panel),
   `"Settings"` / `"SettingsNav"`, and the actions are mirrored in the native menu bar. Views set `key_context` and handle actions with
   `.on_action(cx.listener(...))`; bindings resolve along the focus path, so feed shortcuts don't fire
-  while the prompt is focused.
+  while the prompt is focused. The composer's own actions (Generate, Improve Prompt, Paste Image) are
+  the exception: `LibraryWindow` installs them too while the panel is open and hands them to the
+  panel, so ⌘⏎ generates from the feed or a detail.
+- **A menu item that can't act is greyed, on every platform.** macOS asks gpui whether the action
+  reaches a handler (`validateMenuItem:` → `is_action_available`), so installing an action only where
+  it can act — `LibraryWindow` gates its handlers on `.when(…)` — is what greys it. The menu bar we
+  draw on Windows and Linux (gpui-component's `AppMenuBar`, since gpui only *stores* the menus off
+  macOS) has no such hook and reads a `disabled` flag per item, so `actions::MenuState` mirrors those
+  same conditions and `LibraryWindow::sync_menus` rebuilds the drawn menus when they change. Adding a
+  menu item means giving it both: a handler where it belongs, and a condition in `MenuState`.
+  `every_menu_action_reaches_a_handler` fails on an item that can act in no state at all.
 - **Never write `cmd-` in a keystroke — always `secondary-`.** This holds everywhere, in production
   bindings *and* in test keystrokes (`simulate_keystrokes`). `secondary-` is ⌘ on macOS and Ctrl
   elsewhere; a literal `cmd-` is the Windows / Super key off macOS, bound to nothing, so the
