@@ -4,7 +4,11 @@
 ; upgrades an existing install or sits beside it. Changing it orphans every install that came
 ; before, which is why config::tests::the_installer_app_id_is_never_changed pins this literal —
 ; the Windows counterpart of stable_dirs_are_exactly_the_shipped_ones.
-#define AppId "{92561171-E8BA-4C40-BC5E-9A8C3191D8D3}"
+;
+; The doubled leading brace is Inno's escape for a literal "{": without it the [Setup] parser reads
+; the expanded GUID as a constant and aborts with `Unknown constant "92561171-..."`. The value the
+; installer ends up with is the single-braced GUID, which is what must never change.
+#define AppId "{{92561171-E8BA-4C40-BC5E-9A8C3191D8D3}"
 
 #ifndef Version
   #define Version "0.0.0"

@@ -495,8 +495,10 @@ mod tests {
         // Windows decides whether an installer upgrades an existing install or sits beside it by
         // this GUID. Changing it orphans every install that came before. This is the Windows
         // counterpart of `stable_dirs_are_exactly_the_shipped_ones`.
+        // The leading brace is doubled because that is Inno's escape for a literal "{"; the
+        // identity it defines is the single-braced GUID.
         let iss = include_str!("../../../packaging/majik.iss");
-        assert!(iss.contains("#define AppId \"{92561171-E8BA-4C40-BC5E-9A8C3191D8D3}\""));
+        assert!(iss.contains("#define AppId \"{{92561171-E8BA-4C40-BC5E-9A8C3191D8D3}\""));
         assert!(iss.contains("OutputBaseFilename=MajikSetup-{#Arch}"));
     }
 
