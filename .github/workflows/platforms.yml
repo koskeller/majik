@@ -88,10 +88,11 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         run: ./script/bundle-mac
 
-  # The GPUI app on the other two desktops. Never run on a real machine yet: this is the smoke test
-  # that turns "never compiled for Windows/Linux" into a concrete error list. Share, the
-  # multi-flavour clipboard and drag-out (Windows / X11) degrade behind `SUPPORTED` gates; the menu
-  # bar is not drawn there at all yet.
+  # The GPUI app on the other two desktops. Linux has now been run for real (Ubuntu 26.04 aarch64
+  # in a local VM, software Vulkan via lavapipe): it builds clean and the app renders, menu bar
+  # included. Windows has still only ever been compiled, never launched, so that job remains the
+  # smoke test that turns "never run on Windows" into a concrete error list. Share, the
+  # multi-flavour clipboard and drag-out (Windows / X11) degrade behind `SUPPORTED` gates.
   linux-app:
     name: Linux app (full)
     if: ${{ inputs.app }}
