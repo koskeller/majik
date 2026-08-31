@@ -167,6 +167,10 @@ jobs:
       - name: Upload to the release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # This job only downloads artifacts, so there is no checkout for gh to infer the repository
+          # from and it exits with "fatal: not a git repository". Naming it is cheaper than checking
+          # out the source purely to give gh a .git directory.
+          GH_REPO: ${{ github.repository }}
         run: gh release upload "$GITHUB_REF_NAME" release-artifacts/* --clobber
 
   # A bundle job that silently produced nothing would otherwise leave a draft that looks complete.
@@ -178,6 +182,8 @@ jobs:
       - name: Every expected asset is present
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # No checkout here either — see the upload job.
+          GH_REPO: ${{ github.repository }}
         run: |
           expected='["Majik-aarch64.dmg", "Majik-x86_64.dmg", "majik-linux-x86_64.tar.gz", "MajikSetup-x86_64.exe", "SHA256SUMS"]'
           actual="$(gh release view "$GITHUB_REF_NAME" --json assets -q '[.assets[].name]')"
