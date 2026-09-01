@@ -298,6 +298,7 @@ pub fn video_capabilities(model: &VideoModel) -> Option<VideoModelCapabilities> 
             1,
         )
         .with_asset_constraints(AssetConstraints::first_last_frame())
+        .with_references(VideoReferences::images(9).with_videos(3).with_audio(3).with_combined_max(12))
         .with_max_prompt_characters(50_000),
         // FLUX 3 also offers 2:1, which we have no enum for.
         FLUX_3 => VideoModelCapabilities::new(
@@ -508,6 +509,7 @@ pub fn video_reference_endpoint(model: &VideoModel) -> Option<&'static str> {
         GROK_IMAGINE_VIDEO_15 => "xai/grok-imagine-video/v1.5/reference-to-video",
         GEMINI_OMNI_FLASH_11 => "google/gemini-omni-flash/v1.1/reference-to-video",
         MINIMAX_H3 => "minimax/h3/reference-to-video",
+        MINIMAX_H3_MAX => "minimax/h3-max/reference-to-video",
         _ => return None,
     })
 }
@@ -561,7 +563,7 @@ pub fn video_reference_params(model: &VideoModel) -> Option<ReferenceParams> {
         GROK_IMAGINE_VIDEO => ReferenceParams::new("reference_image_urls", At),
         GROK_IMAGINE_VIDEO_15 => ReferenceParams::new("reference_image_urls", AngleZeroBased),
         GEMINI_OMNI_FLASH_11 => ReferenceParams::new("image_urls", Prose).with_videos("reference_video_urls"),
-        MINIMAX_H3 => ReferenceParams::new("reference_image_urls", Prose)
+        MINIMAX_H3 | MINIMAX_H3_MAX => ReferenceParams::new("reference_image_urls", Prose)
             .with_videos("reference_video_urls")
             .with_audio("reference_audio_urls"),
         _ => return None,

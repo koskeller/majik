@@ -222,8 +222,10 @@ fn video(settings: &VideoGenerationSettings) -> Estimate {
             ((Some(V4K), false), 160_000),
             ((Some(V4K), true), 160_000),
         ],
-        // H3 Max's list price. fal is running it at half rate until 2026-09-01; the promo is
-        // deliberately not encoded, so the estimate is never lower than the bill.
+        // H3 Max's list price, now that fal's half-rate launch promo has ended. The reference
+        // endpoint bills a flat $0.08/s at both tiers, so a 480p reference run is under-estimated;
+        // the table has no endpoint dimension and t2v/i2v are the common path. Its per-reference
+        // token charge above fal's included 4096 tokens is not encoded, as with H3 and Seedance.
         MINIMAX_H3_MAX => &[
             ((Some(V480), false), 50_000),
             ((Some(V480), true), 50_000),

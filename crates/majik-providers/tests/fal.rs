@@ -852,6 +852,7 @@ fn reference_bodies_speak_each_models_dialect() {
         (ids::GROK_IMAGINE_VIDEO_15, "<IMAGE_0> meets <IMAGE_1>", "reference_image_urls"),
         (ids::VEO_31, "Image 1 meets Image 2", "image_urls"),
         (ids::MINIMAX_H3, "Image 1 meets Image 2", "reference_image_urls"),
+        (ids::MINIMAX_H3_MAX, "Image 1 meets Image 2", "reference_image_urls"),
         (ids::GROK_IMAGINE_VIDEO, "@Image1 meets @Image2", "reference_image_urls"),
     ] {
         let settings = video_settings(model, None, Some(VideoResolution::Hd), 5, false);
@@ -861,13 +862,34 @@ fn reference_bodies_speak_each_models_dialect() {
     }
 }
 
+/// H3 Max carries all three reference kinds, each in its own array, alongside the
+/// `prompt_expansion_mode` its schema requires and the resolution tier it spells its own way.
+#[test]
+fn minimax_h3_max_reference_body_carries_every_kind() {
+    let settings = video_settings(ids::MINIMAX_H3_MAX, None, Some(VideoResolution::Hd), 5, false);
+    let image = reference_of(AssetRole::ReferenceImage);
+    let video = reference_of(AssetRole::ReferenceVideo);
+    let audio = ProviderAsset::new(AssetRole::Audio, "audio/mpeg", vec![9, 9]);
+    let assets = [image, video, audio];
+    let references = ReferenceAssets::from_assets(&assets);
+
+    let body = FalClient::build_video_reference_body("@Image1 dances to @Audio1 like @Video1", &references, &settings);
+    assert_eq!(body["prompt"], json!("Image 1 dances to Audio 1 like Video 1"));
+    assert!(body["reference_image_urls"][0].as_str().unwrap().starts_with("data:image/png;base64,"));
+    assert!(body["reference_video_urls"][0].as_str().unwrap().starts_with("data:video/mp4;base64,"));
+    assert!(body["reference_audio_urls"][0].as_str().unwrap().starts_with("data:audio/mpeg;base64,"));
+    assert_eq!(body["prompt_expansion_mode"], json!("balanced"));
+    assert_eq!(body["resolution"], json!("768P"));
+    assert!(body.get("image_url").is_none() && body.get("end_image_url").is_none(), "no frame keys on the reference endpoint");
+}
+
 /// Grok 1.5 renders references at 720p at most, where its text-to-video endpoint also sells 1080p.
 #[test]
 fn grok_15_references_are_capped_at_720p() {
     let references = caps::video_capabilities(&vid(ids::GROK_IMAGINE_VIDEO_15)).unwrap().references.unwrap();
     assert_eq!(references.resolutions, Some(&[VideoResolution::Sd, VideoResolution::Hd][..]));
     assert!(!references.allows_resolution(VideoResolution::Fhd) && references.allows_resolution(VideoResolution::Hd));
-    for id in [ids::SEEDANCE_25, ids::VEO_31, ids::MINIMAX_H3] {
+    for id in [ids::SEEDANCE_25, ids::VEO_31, ids::MINIMAX_H3, ids::MINIMAX_H3_MAX] {
         let references = caps::video_capabilities(&vid(id)).unwrap().references.unwrap();
         assert_eq!(references.resolutions, None, "{id}");
         assert!(references.allows_resolution(VideoResolution::Fhd), "{id}");

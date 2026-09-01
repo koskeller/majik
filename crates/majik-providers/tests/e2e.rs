@@ -446,6 +446,7 @@ mod fal {
                 happyhorse_1_0 => "happyhorse-1.0",
                 happyhorse_1_1 => "happyhorse-1.1",
                 minimax_h3 => "minimax-h3",
+                minimax_h3_max => "minimax-h3-max",
                 seedance_2 => "seedance-2",
                 seedance_2_fast => "seedance-2-fast",
                 seedance_2_5 => "seedance-2.5",
