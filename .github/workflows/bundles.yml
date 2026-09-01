@@ -1,0 +1,131 @@
+name: Bundles
+# The packaging jobs for all three desktops. `release.yml` runs them to produce the assets it
+# uploads, and `platforms.yml` runs them on a manual check so a packaging break surfaces before a
+# tag instead of an hour into a release.
+#
+# They live here rather than in either caller because the ways packaging breaks are environmental —
+# a tool missing from the Linux container, an installer script no test compiles — so a check that
+# doesn't run these exact scripts in these exact environments proves nothing, and two copies of the
+# jobs would drift apart precisely where the difference matters. This is the same reason `tests` is
+# `platforms.yml` called from `release.yml` rather than a second copy of the matrix.
+on:
+  workflow_call:
+    secrets:
+      # Signing is all-or-nothing and optional (see `have_macos_signing`): without these the macOS
+      # bundle comes out ad-hoc signed and unnotarized and everything else is identical, which is
+      # what a pre-release check wants — `platforms.yml` deliberately passes none of them.
+      MACOS_CERTIFICATE:
+        required: false
+      MACOS_CERTIFICATE_PASSWORD:
+        required: false
+      APPLE_SIGNING_IDENTITY:
+        required: false
+      APPLE_NOTARIZATION_KEY:
+        required: false
+      APPLE_NOTARIZATION_KEY_ID:
+        required: false
+      APPLE_NOTARIZATION_ISSUER_ID:
+        required: false
+
+# Deliberately no `concurrency` here: the group would be shared by a release and a manual check on
+# the same ref, and cancelling half a release's bundles is exactly what release.yml's own
+# `cancel-in-progress: false` exists to prevent.
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # MAJIK_CHANNEL is deliberately absent, here and in every job. It is stamped inside the bundle
+  # scripts, in their own process. Setting it at workflow or job level would leak it into the test
+  # steps, where `config::tests::channel_defaults_to_dev` legitimately fails under a stable stamp —
+  # and writing it to $GITHUB_ENV would leak it the same way.
+
+jobs:
+  macos:
+    name: macOS (${{ matrix.arch }})
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, arch: aarch64 }
+          - { target: x86_64-apple-darwin, arch: x86_64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The release build is the expensive part and is valid whether or not the packaging steps
+          # that follow it succeed: without this a failed bundle saves nothing and the re-run after
+          # the fix starts cold again.
+          cache-on-failure: true
+          shared-key: release-${{ matrix.target }}
+      - name: Bundle
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_NOTARIZATION_KEY: ${{ secrets.APPLE_NOTARIZATION_KEY }}
+          APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
+          APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
+        run: script/bundle-mac ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Majik-${{ matrix.arch }}.dmg
+          path: target/${{ matrix.target }}/release/Majik-${{ matrix.arch }}.dmg
+          if-no-files-found: error
+
+  linux:
+    name: Linux (x86_64)
+    runs-on: ubuntu-latest
+    # Built against Ubuntu 22.04's glibc (2.35) rather than the runner's, since that is the
+    # tarball's compatibility floor. The container is also why this cannot be a step bolted onto
+    # `platforms.yml`'s linux-app job, which runs on the runner itself: the two environments differ
+    # in exactly the ways that break packaging.
+    container: ubuntu:22.04
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          # jq is not in the base image, and `release.sh`'s crate_version() pipes cargo metadata
+          # through it — without it the bundle dies at exit 127 before building anything.
+          apt-get install -y curl git jq build-essential pkg-config gettext-base \
+            libasound2-dev libfontconfig-dev libwayland-dev libx11-xcb-dev \
+            libxkbcommon-x11-dev libssl-dev libzstd-dev clang cmake
+      - uses: actions/checkout@v4
+      # The container runs as a different uid than the one that owns the checkout, so every git
+      # command in it fails as "dubious ownership" — including the `rev-parse --show-toplevel` that
+      # `release.sh`'s repo_root() runs. checkout's own safe.directory entry goes into a temporary
+      # HOME that later steps don't see.
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: release-linux
+      - name: Bundle
+        run: script/bundle-linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: majik-linux-x86_64.tar.gz
+          path: target/majik-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  windows:
+    name: Windows (x86_64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: release-windows
+      - name: Bundle
+        shell: pwsh
+        run: script/bundle-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MajikSetup-x86_64.exe
+          path: target/MajikSetup-x86_64.exe
+          if-no-files-found: error

@@ -3,12 +3,12 @@ name: Platforms
 # and Windows at 2x, so this is triggered manually before a release or after platform-sensitive
 # changes:
 #   gh workflow run platforms.yml                # everything
-#   gh workflow run platforms.yml -f app=false   # portable crates only; skip the three full-app jobs
+#   gh workflow run platforms.yml -f app=false   # portable crates only; skip the full-app jobs and the bundles
 on:
   workflow_dispatch:
     inputs:
       app:
-        description: 'Also build and test the full app (workspace) on all three OSes, and bundle it on macOS'
+        description: 'Also build and test the full app (workspace) on all three OSes, and bundle it for all three'
         type: boolean
         default: true
   # `release.yml` calls this, so the check you run by hand before tagging and the gate the release
@@ -16,7 +16,7 @@ on:
   workflow_call:
     inputs:
       app:
-        description: 'Also build and test the full app (workspace) on all three OSes, and bundle it on macOS'
+        description: 'Also build and test the full app (workspace) on all three OSes, and bundle it for all three'
         type: boolean
         default: true
         required: false
@@ -82,11 +82,6 @@ jobs:
         run: cargo build --workspace
       - name: Test
         run: cargo test --workspace
-      # Only when run by hand: release.yml has its own signing bundle jobs, and a second unsigned
-      # bundle there would burn 10x-billed macOS minutes to produce something it throws away.
-      - name: Bundle
-        if: github.event_name == 'workflow_dispatch'
-        run: ./script/bundle-mac
 
   # The GPUI app on the other two desktops. Linux has now been run for real (Ubuntu 26.04 aarch64
   # in a local VM, software Vulkan via lavapipe): it builds clean and the app renders, menu bar
@@ -141,3 +136,16 @@ jobs:
         run: cargo test --workspace
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # Packaging, run against the real scripts in the real environments — the Ubuntu 22.04 container and
+  # a Windows runner with Inno Setup — because that is the only place packaging breaks show up. Both
+  # of the failures that cost the 0.1.0 release two full runs (jq missing from the container, an
+  # unescaped brace in the .iss) were invisible to every job above and would have failed here.
+  #
+  # Only on a manual run: `release.yml` calls `bundles.yml` itself, so doing it here too would build
+  # every bundle twice per release and burn 10x-billed macOS minutes on a DMG it throws away. No
+  # secrets are passed, so the macOS bundle is ad-hoc signed and skips notarization.
+  bundles:
+    name: Bundles
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.app }}
+    uses: ./.github/workflows/bundles.yml
