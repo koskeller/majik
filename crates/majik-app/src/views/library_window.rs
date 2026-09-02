@@ -9,7 +9,7 @@
 //! events and actions handled here, never through a window handle, which can't re-enter the
 //! window that is dispatching the action.
 
-use gpui::{prelude::*, px, App, Context, Entity, FocusHandle, Pixels, Size, Task, Window};
+use gpui::{prelude::*, px, App, Context, Entity, Pixels, Size, Task, Window};
 use gpui_component::notification::Notification;
 use gpui_component::resizable::{h_resizable, resizable_panel, ResizablePanel, ResizablePanelEvent, ResizableState};
 use gpui_component::button::{ButtonVariants as _};
@@ -38,7 +38,6 @@ pub struct LibraryWindow {
     compose: Entity<ComposeView>,
     detail: Option<Entity<DetailView>>,
     resizable: Entity<ResizableState>,
-    focus: FocusHandle,
     /// Present while onboarding hasn't been completed; created/dropped in `render` from `Config`.
     onboarding: Option<Entity<OnboardingView>>,
     /// The collapsible panels either side of the feed, indexed by `Side`.
@@ -282,14 +281,12 @@ impl LibraryWindow {
 
         window.set_window_title("Library");
         crate::windows::track_frame(crate::windows::Singleton::Library, window, cx);
-        let focus = cx.focus_handle();
         Self {
             sidebar,
             feed,
             compose,
             detail: None,
             resizable,
-            focus,
             onboarding: None,
             panels,
             detail_viewport: Size::default(),
@@ -528,8 +525,12 @@ impl Render for LibraryWindow {
 
         gpui::div()
             .id("library-window")
+            // No focus handle of its own: gpui moves focus to the nearest focusable ancestor of a
+            // click, so a root that had one took the focus on every click on chrome (the toolbar,
+            // the title bar, the click that brings the window forward) and the grid's shortcuts
+            // went dead until something focused the feed again. The "Library" actions need only
+            // the key context, which every focused child dispatches through.
             .key_context("Library")
-            .track_focus(&self.focus)
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
@@ -1052,6 +1053,45 @@ mod tests {
         vcx.update(|_, cx| update_config(cx, |c| c.onboarding_completed = false));
         draw(vcx);
         assert!(vcx.debug_bounds("title-sidebar").is_none() && vcx.debug_bounds("title-composer").is_none(), "nothing to toggle under onboarding");
+    }
+
+    /// Switching to another app and back must leave the grid's shortcuts working: the feed keeps
+    /// its focus across the deactivation, and a click on a cell hands it back if anything took it.
+    #[gpui::test]
+    fn the_feed_keeps_focus_across_a_window_deactivation(cx: &mut TestAppContext) {
+        let (_e, window, vcx) = library(cx, 4);
+        assert!(feed_focused(&window, vcx));
+        vcx.deactivate_window();
+        draw(vcx);
+        vcx.update(|window, _| window.activate_window());
+        draw(vcx);
+        assert!(vcx.update(|window, _| window.is_window_active()));
+        assert!(feed_focused(&window, vcx), "focus survived the round trip");
+        vcx.simulate_keystrokes("right");
+        let selected = window.read_with(vcx, |w, cx| w.feed.read(cx).selected_count());
+        assert_eq!(selected, 1, "arrow keys reach the grid again");
+    }
+
+    /// A click on chrome — the title bar, the toolbar, the click that brings the window forward —
+    /// moves focus nowhere, so the grid's shortcuts keep working; while typing, the prompt keeps
+    /// its focus the same way.
+    #[gpui::test]
+    fn a_click_on_the_chrome_does_not_take_focus(cx: &mut TestAppContext) {
+        let (_e, window, vcx) = library(cx, 2);
+        assert!(feed_focused(&window, vcx));
+        let bar = vcx.debug_bounds("title-bar").expect("the title bar is drawn").center();
+        vcx.simulate_mouse_down(bar, gpui::MouseButton::Left, gpui::Modifiers::default());
+        vcx.simulate_mouse_up(bar, gpui::MouseButton::Left, gpui::Modifiers::default());
+        draw(vcx);
+        assert!(feed_focused(&window, vcx), "the feed still has focus");
+        vcx.simulate_keystrokes("right");
+        assert_eq!(window.read_with(vcx, |w, cx| w.feed.read(cx).selected_count()), 1, "and the grid's keys work");
+
+        window.update_in(vcx, |w, window, cx| w.compose.update(cx, |c, cx| c.focus_prompt(window, cx)));
+        vcx.simulate_mouse_down(bar, gpui::MouseButton::Left, gpui::Modifiers::default());
+        vcx.simulate_mouse_up(bar, gpui::MouseButton::Left, gpui::Modifiers::default());
+        draw(vcx);
+        assert!(prompt_focused(&window, vcx), "nor does it interrupt typing");
     }
 
     #[gpui::test]

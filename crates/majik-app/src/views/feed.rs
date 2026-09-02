@@ -949,10 +949,15 @@ impl FeedView {
                     Some(ExternalDragPayload::Files(FileDragPaths::new(dragged.paths().into_iter().map(|p| (p, false)))))
                 })
             })
+            // Stopping propagation keeps the feed's own mouse-down (which clears the selection)
+            // out of a cell click, but it also stops gpui's focus-on-click from reaching the
+            // feed's `track_focus`, so the click focuses the grid itself: a user who clicks a
+            // thumbnail expects the arrow keys to move from it.
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
+                    this.focus.focus(window, cx);
                     this.cell_mouse_down(ix, &id, ev, cx);
                 }),
             )
@@ -1744,6 +1749,28 @@ mod tests {
             // drag_items therefore carries the whole set.
             assert_eq!(f.drag_paths(&ids[1], cx).len(), 4);
         });
+    }
+
+    /// Focus can be anywhere when the user clicks a thumbnail (the composer, the window chrome
+    /// after the click that brought the app forward); the click brings it to the grid so the
+    /// arrow keys and shortcuts work from what was just selected.
+    #[gpui::test]
+    fn clicking_a_cell_focuses_the_grid(cx: &mut TestAppContext) {
+        let (view, vcx, _env) = feed_window!(cx, 4);
+        vcx.simulate_resize(gpui::size(px(800.), px(600.)));
+        vcx.run_until_parked();
+        let cells: Vec<_> = view.update(vcx, |f, _| f.ids.iter().map(|id| f.cell_bounds(id).expect("cell drawn")).collect());
+        vcx.update(|window, cx| window.blur(cx));
+        view.update_in(vcx, |f, window, _| assert!(!f.focus.is_focused(window)));
+        vcx.simulate_mouse_down(cells[1].center(), MouseButton::Left, GModifiers::default());
+        vcx.simulate_mouse_up(cells[1].center(), MouseButton::Left, GModifiers::default());
+        vcx.run_until_parked();
+        view.update_in(vcx, |f, window, _| {
+            assert!(f.focus.is_focused(window), "the click focused the grid");
+            assert_eq!(f.selection.len(), 1, "and selected the cell");
+        });
+        vcx.simulate_keystrokes("right");
+        view.update(vcx, |f, _| assert!(f.selection.contains(&f.ids[2]), "the arrow moved on from the clicked cell"));
     }
 
     /// Pressing a cell and moving past GPUI's drag threshold starts a drag-out of that cell.
