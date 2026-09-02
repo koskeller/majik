@@ -2,7 +2,7 @@
 //! assets, prompt, Generate — a [`crate::composer_state::ComposerState`] on top of
 //! provider descriptors.
 
-use gpui::{prelude::*, px, relative, App, Context, DragMoveEvent, Entity, EventEmitter, ExternalPaths, FocusHandle, ObjectFit, PathPromptOptions, Pixels, SharedString, Task, WeakEntity, Window};
+use gpui::{prelude::*, px, relative, App, Context, DragMoveEvent, Entity, EventEmitter, ExternalPaths, FocusHandle, PathPromptOptions, Pixels, SharedString, Task, WeakEntity, Window};
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{InputEvent, Textarea, TextareaState};
 use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
@@ -883,7 +883,7 @@ impl ComposeView {
                     .child(gpui::div().text_xs().child(a.path.extension().and_then(|e| e.to_str()).unwrap_or("audio").to_uppercase()))
                     .into_any_element(),
                 // Round the image itself so its corners match the card (parent clip alone doesn't).
-                Some(a) => gpui::img(a.thumbnail.clone().unwrap_or(a.path)).size_full().rounded_lg().object_fit(ObjectFit::Cover).into_any_element(),
+                Some(a) => crate::ui::cover_image(a.thumbnail.clone().unwrap_or(a.path)).rounded_lg().into_any_element(),
                 // The asset's file is gone (or the asset itself): the card stays so it can be removed.
                 None => v_flex().size_full().items_center().justify_center().child(icon("file-x").size_5()).into_any_element(),
             })

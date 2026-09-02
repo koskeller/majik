@@ -274,6 +274,15 @@ pub fn logo(name: &str, dark: bool, cx: &mut App) -> Option<gpui::AnyElement> {
     None
 }
 
+/// A picture filling its frame edge to edge, cropped to it from the centre. gpui's image element
+/// gives itself the picture's aspect ratio when its box is not pinned, so a `size_full()` picture in
+/// a square frame came out as tall as the scaled picture and the clipped frame showed its top.
+/// Positioned absolutely, the box is the nearest positioned ancestor's, which callers make the frame
+/// (`.relative()` on it).
+pub fn cover_image(source: impl Into<gpui::ImageSource>) -> gpui::Img {
+    gpui::img(source).absolute().inset_0().size_full().object_fit(gpui::ObjectFit::Cover)
+}
+
 /// Rounded logo tile with initials fallback (port of `ModelLogoView`).
 pub fn logo_tile(name: &str, fallback_label: &str, size: f32, cx: &mut App) -> gpui::AnyElement {
     use gpui::ParentElement as _;

@@ -1264,7 +1264,7 @@ impl DetailView {
                 };
                 let card = gpui::div().id(("info-asset", k)).relative().flex_none().size(px(96.)).rounded_lg().overflow_hidden().bg(theme.muted);
                 let card = match &asset.picture {
-                    Some(picture) => card.child(gpui::img(picture.clone()).image_cache(&self.images).size_full().rounded_lg().object_fit(ObjectFit::Cover)),
+                    Some(picture) => card.child(crate::ui::cover_image(picture.clone()).image_cache(&self.images).rounded_lg()),
                     None => {
                         let glyph = match asset.kind {
                             MediaType::Audio => "audio-lines",
@@ -1299,7 +1299,7 @@ impl DetailView {
             .when(!self.info_uses.is_empty(), |d| {
                 // A plain asset: the generations it went into, as their thumbnails.
                 let uses = self.info_uses.iter().enumerate().map(|(k, path)| {
-                    gpui::div().id(("info-use", k)).flex_none().size(px(96.)).rounded_lg().overflow_hidden().bg(theme.muted).child(gpui::img(path.clone()).image_cache(&self.images).size_full().rounded_lg().object_fit(ObjectFit::Cover)).into_any_element()
+                    gpui::div().id(("info-use", k)).relative().flex_none().size(px(96.)).rounded_lg().overflow_hidden().bg(theme.muted).child(crate::ui::cover_image(path.clone()).image_cache(&self.images).rounded_lg()).into_any_element()
                 });
                 d.child(
                     v_flex()
@@ -1407,12 +1407,13 @@ impl Render for DetailView {
             let radius = px(4. * (1.0 - progress));
             let prewarm = item.file().map(std::path::Path::to_path_buf).filter(|_| item.media_type == MediaType::Image);
             let card = gpui::div()
+                .relative()
                 .w(frame.size.width)
                 .h(frame.size.height)
                 .overflow_hidden()
                 .rounded(radius)
                 .bg(muted)
-                .child(gpui::img(thumbnail).image_cache(&self.thumbnails).size_full().object_fit(ObjectFit::Cover))
+                .child(crate::ui::cover_image(thumbnail).image_cache(&self.thumbnails))
                 .when_some(prewarm, |d, path| d.child(gpui::img(path).image_cache(&self.images).absolute().top_0().left_0().w(px(1.)).h(px(1.)).opacity(0.)));
             Some(gpui::anchored().snap_to_window().position(frame.origin).child(card))
         });

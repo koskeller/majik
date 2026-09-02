@@ -2,7 +2,7 @@
 
 use gpui::{
     prelude::*, point, px, App, Bounds, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Image, ImageFormat, MouseButton, Point,
-    ExternalDragPayload, ExternalPaths, FileDragPaths, MouseDownEvent, ObjectFit, PathPromptOptions, Pixels, PromptLevel, ScrollHandle, SharedString, Task, Window, relative,
+    ExternalDragPayload, ExternalPaths, FileDragPaths, MouseDownEvent, PathPromptOptions, Pixels, PromptLevel, ScrollHandle, SharedString, Task, Window, relative,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -20,7 +20,7 @@ use crate::config::{update_config, Config, ThumbnailShape};
 use crate::grid_motion::{CellStyle, Change, Ghost, GridMotion, Place, Visual};
 use crate::image_cache::LruImageCache;
 use crate::state::{self, DraggedAsset, DraggedAssets, LibraryModel, PendingCompose};
-use crate::ui::{BoundsSlot, bounds_slot, button, format_duration, icon, measure_then, now, record_bounds, slot_size, spin, toolbar};
+use crate::ui::{BoundsSlot, bounds_slot, button, cover_image, format_duration, icon, measure_then, now, record_bounds, slot_size, spin, toolbar};
 
 /// The floating thumbnail that follows the pointer while cells are dragged out (in-app and
 /// promoted native drags). GPUI anchors the drag view where the pressed cell's top-left was
@@ -56,7 +56,7 @@ impl Render for DragPreview {
             .rounded_md()
             .overflow_hidden()
             .bg(gpui::black().opacity(0.25))
-            .when_some(self.image.clone(), |d, path| d.child(gpui::img(path).size_full().object_fit(ObjectFit::Cover)))
+            .when_some(self.image.clone(), |d, path| d.child(cover_image(path)))
             .when(self.count > 1, |d| {
                 d.child(
                     gpui::div()
@@ -836,7 +836,8 @@ impl FeedView {
             (_, _, MediaType::Audio) => v_flex().size_full().items_center().justify_center().child(icon("audio-lines").size_8().text_color(muted_fg)).into_any_element(),
             (_, Some(thumb), _) => {
                 let thumb = self.thumbnail_for_cell(thumb, cx);
-                gpui::div().size_full().opacity(thumbnail_opacity).child(gpui::img(thumb).size_full().object_fit(ObjectFit::Cover)).into_any_element()
+                let selector = format!("thumb-{}", item.id);
+                gpui::div().size_full().opacity(thumbnail_opacity).child(cover_image(thumb).debug_selector(move || selector.clone())).into_any_element()
             }
             (_, None, _) => v_flex().size_full().items_center().justify_center().child(icon("image").size_6().text_color(muted_fg)).into_any_element(),
         };
@@ -874,7 +875,7 @@ impl FeedView {
             (_, _, MediaType::Audio) => v_flex().size_full().items_center().justify_center().child(icon("audio-lines").size_8().text_color(muted_fg)).into_any_element(),
             (_, Some(thumb), _) => {
                 let thumb = self.thumbnail_for_cell(thumb, cx);
-                gpui::div().size_full().opacity(thumbnail_opacity).child(gpui::img(thumb).size_full().object_fit(ObjectFit::Cover)).into_any_element()
+                gpui::div().size_full().opacity(thumbnail_opacity).child(cover_image(thumb)).into_any_element()
             }
             (_, None, _) => v_flex().size_full().items_center().justify_center().child(icon("image").size_6().text_color(muted_fg)).into_any_element(),
         };
@@ -1790,6 +1791,48 @@ mod tests {
         });
         vcx.simulate_keystrokes("right");
         view.update(vcx, |f, _| assert!(f.selection.contains(&f.ids[2]), "the arrow moved on from the clicked cell"));
+    }
+
+    /// A square cell shows the middle of a tall or wide picture. gpui's image element gives itself
+    /// the picture's aspect ratio when its box is not pinned, which made the frame as tall as the
+    /// scaled picture and the clipped cell show its top; the frame has to be the cell's own size.
+    #[gpui::test]
+    fn a_square_cell_frames_a_tall_picture_to_the_cell(cx: &mut TestAppContext) {
+        let (view, vcx, env) = feed_window!(cx, 3);
+        env.library.update(vcx, |m, cx| m.start_thumbnails(cx));
+        vcx.run_until_parked();
+        vcx.simulate_resize(gpui::size(px(800.), px(600.)));
+        vcx.run_until_parked();
+        // Two frames: the first asks the cache for the pictures, the second draws them decoded,
+        // which is when gpui knows their aspect.
+        for _ in 0..2 {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            vcx.run_until_parked();
+        }
+        let (ids, side) = view.update(vcx, |f, _| (f.ids.clone(), f.cell_px));
+        view.update(vcx, |f, _| assert_eq!(f.shape, ThumbnailShape::Square));
+        // Seeded as 64×64, 96×48 and 48×96.
+        for id in &ids {
+            let frame = view.update(vcx, |f, _| f.cell_bounds(id).expect("cell drawn"));
+            assert!((frame.size.width - side).abs() < px(1.) && (frame.size.height - side).abs() < px(1.), "{id}: {:?} in a {side:?} cell", frame.size);
+            // `debug_bounds` wants a static selector; a leaked string per cell is fine in a test.
+            let selector: &'static str = Box::leak(format!("thumb-{}", id.media().expect("a generation")).into_boxed_str());
+            let picture = vcx.debug_bounds(selector).expect("the thumbnail is drawn");
+            assert_eq!(picture, frame, "{id}: the picture element is the frame, not its own aspect");
+        }
+
+        // Full-aspect frames: the picture is still exactly its frame.
+        vcx.dispatch_action(ToggleThumbnailShape);
+        for _ in 0..2 {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            vcx.run_until_parked();
+        }
+        view.update(vcx, |f, _| assert_eq!(f.shape, ThumbnailShape::AspectRatio));
+        for id in &ids {
+            let frame = view.update(vcx, |f, _| f.cell_bounds(id).expect("cell drawn"));
+            let selector: &'static str = Box::leak(format!("thumb-{}", id.media().expect("a generation")).into_boxed_str());
+            assert_eq!(vcx.debug_bounds(selector).expect("the thumbnail is drawn"), frame, "{id}");
+        }
     }
 
     /// Pressing a cell and moving past GPUI's drag threshold starts a drag-out of that cell.
