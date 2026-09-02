@@ -3,10 +3,37 @@
 use gpui::prelude::*;
 use gpui::{canvas, fill, percentage, px, Animation, AnimationElement, AnimationExt as _, App, Bounds, Canvas, Context, Hsla, Pixels, Size, Transformation, WeakEntity, Window};
 use gpui_component::button::{Button, Toggle, ToggleGroup, ToggleVariants as _};
-use gpui_component::{Icon, Sizable as _};
+use gpui_component::{ActiveTheme as _, Icon, Sizable as _, Theme, ThemeRegistry};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
+
+/// Majik's own dark palette (`assets/themes/majik.json`): charcoal, not black. gpui-component's
+/// stock dark theme is shadcn's web palette on a `#0a0a0a` ground; media tools (Lightroom,
+/// Ableton, Blender, Unity) sit three to five stops lighter so a dark image keeps its edge and
+/// the chrome can step below the canvas. Keys the file leaves out keep the stock dark values.
+const THEME: &str = include_str!("../assets/themes/majik.json");
+const DARK_THEME: &str = "Majik Dark";
+
+/// Register the Majik palette and make it the dark theme, leaving the light theme stock. Call
+/// once right after `gpui_component::init`, before the first `Theme::change`; any later
+/// `Theme::change` / `sync_system_appearance` then resolves dark to it.
+pub fn install_theme(cx: &mut App) {
+    let registry = ThemeRegistry::global_mut(cx);
+    if let Err(e) = registry.load_themes_from_str(THEME) {
+        tracing::warn!(target: "majik", "loading the Majik theme, keeping the stock dark theme: {e:#}");
+        return;
+    }
+    let Some(dark) = registry.themes().get(DARK_THEME).cloned() else {
+        tracing::warn!(target: "majik", "the Majik theme file does not define {DARK_THEME:?}");
+        return;
+    };
+    Theme::global_mut(cx).dark_theme = dark;
+    // gpui-component's init already applied a mode; re-apply it so an app that starts dark picks
+    // the palette up without waiting for a change of appearance.
+    let mode = cx.theme().mode;
+    Theme::change(mode, None, cx);
+}
 
 /// HugeIcons icon from the embedded asset bundle (`packaging/icons.json` maps the name to its export).
 pub fn icon(name: &'static str) -> Icon {
@@ -303,7 +330,6 @@ pub fn logo_tile(name: &str, fallback_label: &str, size: f32, cx: &mut App) -> g
 // ----- toast ------------------------------------------------------------------------------------
 
 use gpui::{sampled_easing, SharedString, SpringConfig, Task, WindowId};
-use gpui_component::ActiveTheme as _;
 
 /// The save-status pill: a capsule at the bottom of the window that springs up, stays for exactly
 /// 2 s and slides back down. A new toast replaces the current one and restarts the clock.
@@ -481,5 +507,70 @@ mod tests {
         vcx.background_executor.advance_clock(TOAST_EXIT);
         vcx.run_until_parked();
         assert_eq!(current(vcx), None);
+    }
+}
+
+#[cfg(test)]
+mod theme_tests {
+    use super::*;
+    use gpui::TestAppContext;
+    use gpui_component::ThemeMode;
+
+    fn install(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install_theme(cx);
+        });
+    }
+
+    /// The point of the palette: a charcoal ground instead of shadcn's near-black.
+    #[gpui::test]
+    fn dark_mode_is_charcoal_not_black(cx: &mut TestAppContext) {
+        install(cx);
+        cx.update(|cx| {
+            Theme::change(ThemeMode::Dark, None, cx);
+            let theme = cx.theme();
+            assert_eq!(theme.background, gpui::rgb(0x2a2a2a).into(), "feed ground");
+            assert_eq!(theme.sidebar, gpui::rgb(0x232323).into(), "chrome a step below the feed");
+            assert_eq!(theme.foreground, gpui::rgb(0xd9d9d9).into(), "grey text, not white");
+            assert_eq!(theme.border, gpui::rgb(0x1c1c1c).into(), "seams darker than the surface");
+        });
+    }
+
+    /// The light theme stays gpui-component's stock one.
+    #[gpui::test]
+    fn light_mode_is_untouched(cx: &mut TestAppContext) {
+        install(cx);
+        cx.update(|cx| {
+            Theme::change(ThemeMode::Light, None, cx);
+            assert_eq!(cx.theme().background, gpui::white(), "stock light ground");
+            assert_eq!(cx.theme().dark_theme.name.as_ref(), DARK_THEME, "the dark slot still points at Majik Dark");
+        });
+    }
+
+    /// Switching modes back and forth keeps resolving dark to the Majik palette.
+    #[gpui::test]
+    fn dark_palette_survives_a_round_trip_through_light(cx: &mut TestAppContext) {
+        install(cx);
+        cx.update(|cx| {
+            Theme::change(ThemeMode::Light, None, cx);
+            Theme::change(ThemeMode::Dark, None, cx);
+            assert_eq!(cx.theme().background, gpui::rgb(0x2a2a2a).into());
+            assert_eq!(cx.theme().theme_name().as_ref(), DARK_THEME);
+        });
+    }
+
+    /// Every key in the file is one gpui-component knows; a typo would otherwise be dropped
+    /// silently by serde and the stock colour would show through.
+    #[test]
+    fn every_theme_key_is_recognised() {
+        let raw: serde_json::Value = serde_json::from_str(THEME).unwrap();
+        let file_keys: Vec<String> = raw["themes"][0]["colors"].as_object().unwrap().keys().cloned().collect();
+        let parsed: gpui_component::ThemeSet = serde_json::from_str(THEME).unwrap();
+        let known = serde_json::to_value(&parsed.themes[0].colors).unwrap();
+        let known = known.as_object().unwrap();
+        for key in file_keys {
+            assert!(known.get(&key).is_some_and(|v| !v.is_null()), "{key} is not a gpui-component theme key");
+        }
     }
 }

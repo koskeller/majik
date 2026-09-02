@@ -74,6 +74,7 @@ fn main() {
 
     gpui_platform::application().with_assets(assets::Assets).run(move |cx: &mut App| {
         gpui_component::init(cx);
+        ui::install_theme(cx);
         match config.appearance.as_str() {
             "light" => Theme::change(ThemeMode::Light, None, cx),
             "dark" => Theme::change(ThemeMode::Dark, None, cx),

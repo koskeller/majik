@@ -59,6 +59,7 @@ pub fn setup_with_keys(cx: &mut App, images: usize, provider: &str, keys: ApiKey
 
 fn setup_inner(cx: &mut App, images: usize, provider: &str, keys: ApiKeys, runner: Option<Box<dyn JobRunner>>) -> TestEnv {
     gpui_component::init(cx);
+    crate::ui::install_theme(cx);
     // Installs the keymap so `simulate_keystrokes` reaches the views' action handlers.
     crate::actions::init(cx);
     let dir = tempfile::tempdir().unwrap();
