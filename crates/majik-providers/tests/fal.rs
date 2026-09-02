@@ -518,6 +518,67 @@ fn kling_turbo_i2v_uses_tail_image_url() {
     assert!(body.get("generate_audio").is_none());
 }
 
+/// Kling O3 keeps the family's string duration and `generate_audio`, but its image-to-video
+/// endpoint spells the frames `image_url` / `end_image_url` where Kling 3.0 says `start_image_url`.
+#[test]
+fn kling_o3_endpoints_and_body_keys() {
+    let model = vid(ids::KLING_O3_PRO);
+    let (t2v, _) = FalClient::resolve_video_endpoint(&model, None, None).unwrap();
+    assert_eq!(t2v, "fal-ai/kling-video/o3/pro/text-to-video");
+    let (i2v, variant) = FalClient::resolve_video_endpoint(&model, Some(FRAME), Some(FRAME)).unwrap();
+    assert_eq!((i2v, variant), ("fal-ai/kling-video/o3/pro/image-to-video", VideoEndpointVariant::I2v));
+    assert_eq!(caps::video_reference_endpoint(&model), Some("fal-ai/kling-video/o3/pro/reference-to-video"));
+
+    let settings = video_settings(ids::KLING_O3_PRO, Some(VideoAspectRatio::Square), None, 7, true);
+    let body = FalClient::build_video_request_body("p", Some(FRAME), Some(FRAME), None, VideoEndpointVariant::I2v, &settings);
+    assert!(body["image_url"].is_string());
+    assert!(body["end_image_url"].is_string());
+    assert!(body.get("start_image_url").is_none());
+    assert_eq!(body["duration"], json!("7"));
+    assert_eq!(body["aspect_ratio"], json!("1:1"));
+    assert_eq!(body["generate_audio"], json!(true));
+    assert!(body.get("resolution").is_none());
+}
+
+/// Kling O3's reference endpoint addresses images the way Majik does, up to four of them, and takes
+/// no clips or audio.
+#[test]
+fn kling_o3_reference_body_keeps_the_handles() {
+    let declared = caps::video_capabilities(&vid(ids::KLING_O3_PRO)).unwrap().references.unwrap();
+    assert_eq!((declared.images, declared.videos, declared.audio), (4, 0, 0));
+    let assets = [reference_of(AssetRole::ReferenceImage), reference_of(AssetRole::ReferenceImage)];
+    let references = ReferenceAssets::from_assets(&assets);
+    let settings = video_settings(ids::KLING_O3_PRO, Some(VideoAspectRatio::Landscape), None, 5, false);
+    let body = FalClient::build_video_reference_body("@Image1 hands @Image2 a ball", &references, &settings);
+    assert_eq!(body["prompt"], json!("@Image1 hands @Image2 a ball"));
+    assert_eq!(body["image_urls"].as_array().unwrap().len(), 2);
+    assert_eq!(body["duration"], json!("5"));
+    assert_eq!(body["generate_audio"], json!(false));
+    assert!(body.get("image_url").is_none() && body.get("start_image_url").is_none(), "no frame keys on the reference endpoint");
+}
+
+/// Gemini Omni Flash takes reference clips of three seconds at most; fal fails a longer one with a
+/// 422, so the client measures the clip and refuses it before anything is submitted.
+#[test]
+fn gemini_omni_flash_refuses_a_reference_clip_over_three_seconds() {
+    crate::rt().block_on(gemini_omni_flash_refuses_a_reference_clip_over_three_seconds_inner());
+}
+
+async fn gemini_omni_flash_refuses_a_reference_clip_over_three_seconds_inner() {
+    let declared = caps::video_capabilities(&vid(ids::GEMINI_OMNI_FLASH_11)).unwrap().references.unwrap();
+    assert_eq!(declared.max_video_secs, Some(3));
+    assert!(declared.allows_video_duration(3.0) && !declared.allows_video_duration(3.5));
+    for id in [ids::SEEDANCE_25, ids::MINIMAX_H3, ids::WAN_30] {
+        assert_eq!(caps::video_capabilities(&vid(id)).unwrap().references.unwrap().max_video_secs, None, "{id}");
+    }
+
+    let clip = majik_providers::mock::video_renderer::render_blocking(64, 64, 4, [0, 0, 255]).unwrap();
+    let reference = ProviderAsset::new(AssetRole::ReferenceVideo, "video/mp4", clip);
+    let settings = video_settings(ids::GEMINI_OMNI_FLASH_11, Some(VideoAspectRatio::Landscape), Some(VideoResolution::Hd), 5, false);
+    let err = client().generate_video("p", &[reference], &settings).await.unwrap_err();
+    assert_eq!(err, GenerationError::InvalidRequest("Gemini Omni Flash 1.1 takes reference videos of 3 seconds or shorter".into()));
+}
+
 #[test]
 fn wan27_includes_audio_url() {
     let settings = video_settings(ids::WAN_27, Some(VideoAspectRatio::Landscape), Some(VideoResolution::Hd), 5, true);
@@ -754,7 +815,7 @@ fn i2v_end_frame_mappings() {
     for model in [ids::VEO_31, ids::VEO_31_FAST, ids::VEO_31_LITE, ids::SORA_2, ids::SORA_2_PRO, ids::HAPPY_HORSE_10, ids::PIXVERSE_V6, ids::GROK_IMAGINE_VIDEO] {
         assert_eq!(caps::api_end_frame_param(&vid(model), VideoEndpointVariant::I2v), None, "{model}");
     }
-    for model in [ids::KLING_30_PRO, ids::KLING_30_STANDARD, ids::KLING_26_PRO, ids::SEEDANCE_15_PRO, ids::SEEDANCE_20, ids::SEEDANCE_20_FAST, ids::WAN_27] {
+    for model in [ids::KLING_O3_PRO, ids::KLING_30_PRO, ids::KLING_30_STANDARD, ids::KLING_26_PRO, ids::SEEDANCE_15_PRO, ids::SEEDANCE_20, ids::SEEDANCE_20_FAST, ids::WAN_27] {
         assert_eq!(caps::api_end_frame_param(&vid(model), VideoEndpointVariant::I2v), Some("end_image_url"), "{model}");
     }
     assert_eq!(caps::api_end_frame_param(&vid(ids::KLING_25_TURBO_PRO), VideoEndpointVariant::I2v), Some("tail_image_url"));
@@ -1349,7 +1410,7 @@ fn descriptor_shape() {
     assert!(d.requires_api_key);
     assert!(d.is_user_selectable);
     assert_eq!(d.supported_image_models.len(), 20);
-    assert_eq!(d.supported_video_models.len(), 25);
+    assert_eq!(d.supported_video_models.len(), 26);
     assert_eq!(d.supported_audio_models.len(), 2);
     assert_eq!(d.supported_image_models[0].id, ids::GEMINI_3_PRO);
     assert_eq!(d.supported_video_models[0].id, ids::VEO_31);

@@ -183,6 +183,9 @@ fn video(settings: &VideoGenerationSettings) -> Estimate {
         ],
         // The Kling family declares no resolutions; audio roughly doubles the rate. (Kling also
         // sells a dearer "voice control" tier, which we never request.)
+        // Kling O3 Pro, checked 2026-09-02: $0.112/s, $0.14/s with audio ("a 5 second video with
+        // audio costs $0.70").
+        KLING_O3_PRO => &[((None, false), 112_000), ((None, true), 140_000)],
         KLING_30_PRO => &[((None, false), 112_000), ((None, true), 168_000)],
         KLING_30_STANDARD => &[((None, false), 84_000), ((None, true), 126_000)],
         KLING_26_PRO => &[((None, false), 70_000), ((None, true), 140_000)],
@@ -379,6 +382,8 @@ mod tests {
         assert_eq!(dollars(video_price("kling-2.6-pro", None, 5, false)), "$0.35");
         assert_eq!(dollars(video_price("kling-2.6-pro", None, 10, true)), "$1.40");
         assert_eq!(dollars(video_price("kling-3-pro", None, 5, false)), "$0.56");
+        assert_eq!(dollars(video_price("kling-o3-pro", None, 5, false)), "$0.56");
+        assert_eq!(dollars(video_price("kling-o3-pro", None, 5, true)), "$0.70", "fal's own worked example");
         assert_eq!(dollars(video_price("kling-2.5-turbo-pro", None, 5, false)), "$0.35");
     }
 

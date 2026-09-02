@@ -445,6 +445,10 @@ pub struct VideoReferences {
     /// Resolutions the reference path offers, where they are narrower than the model's own
     /// (Grok Imagine Video 1.5 renders references at 720p at most).
     pub resolutions: Option<&'static [VideoResolution]>,
+    /// The longest reference clip the provider takes, in seconds, where it states one (Gemini Omni
+    /// Flash 1.1 takes three). A longer clip is refused before it is sent, because the provider
+    /// rejects the whole request over it.
+    pub max_video_secs: Option<u32>,
 }
 
 impl VideoReferences {
@@ -473,9 +477,19 @@ impl VideoReferences {
         self
     }
 
+    pub fn with_max_video_secs(mut self, max_video_secs: u32) -> Self {
+        self.max_video_secs = Some(max_video_secs);
+        self
+    }
+
     /// Whether the reference path renders at `resolution`.
     pub fn allows_resolution(&self, resolution: VideoResolution) -> bool {
         self.resolutions.is_none_or(|allowed| allowed.contains(&resolution))
+    }
+
+    /// Whether a reference clip `duration_secs` long is within the provider's cap.
+    pub fn allows_video_duration(&self, duration_secs: f64) -> bool {
+        self.max_video_secs.is_none_or(|max| duration_secs <= f64::from(max))
     }
 
     pub fn max_for(&self, role: crate::AssetRole) -> usize {

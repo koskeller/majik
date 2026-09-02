@@ -18,6 +18,7 @@ mod defs {
     pub const SORA_2: VideoModel = VideoModel::new("sora-2", "Sora 2", "OpenAI", logo::OPEN_AI, "TBD");
     pub const SORA_2_PRO: VideoModel = VideoModel::new("sora-2-pro", "Sora 2 Pro", "OpenAI", logo::OPEN_AI, "TBD");
     // Kuaishou
+    pub const KLING_O3_PRO: VideoModel = VideoModel::new("kling-o3-pro", "Kling O3 Pro", "Kuaishou", logo::KLING, "TBD");
     pub const KLING_30_PRO: VideoModel = VideoModel::new("kling-3-pro", "Kling 3.0 Pro", "Kuaishou", logo::KLING, "TBD");
     pub const KLING_30_STANDARD: VideoModel = VideoModel::new("kling-3-standard", "Kling 3.0 Standard", "Kuaishou", logo::KLING, "TBD");
     pub const KLING_25_TURBO_PRO: VideoModel = VideoModel::new("kling-2.5-turbo-pro", "Kling 2.5 Turbo Pro", "Kuaishou", logo::KLING, "TBD");
@@ -60,6 +61,7 @@ pub static SORA_2_PRO: VideoModel = defs::SORA_2_PRO;
 
 // ----- Kuaishou -----------------------------------------------------------------------------------
 
+pub static KLING_O3_PRO: VideoModel = defs::KLING_O3_PRO;
 pub static KLING_30_PRO: VideoModel = defs::KLING_30_PRO;
 pub static KLING_30_STANDARD: VideoModel = defs::KLING_30_STANDARD;
 pub static KLING_25_TURBO_PRO: VideoModel = defs::KLING_25_TURBO_PRO;
@@ -108,6 +110,7 @@ pub static ALL: &[VideoModel] = &[
     defs::GEMINI_OMNI_FLASH_11,
     defs::SORA_2_PRO,
     defs::SORA_2,
+    defs::KLING_O3_PRO,
     defs::KLING_30_PRO,
     defs::KLING_30_STANDARD,
     defs::KLING_26_PRO,

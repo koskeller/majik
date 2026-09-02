@@ -72,6 +72,8 @@ pub enum ValidationError {
     UnknownHandle { handle: String, role: AssetRole, attached: usize },
     #[error("{model} renders references at {allowed} only.")]
     ReferenceResolution { model: String, allowed: String },
+    #[error("{model} takes reference videos of {max_secs} seconds or shorter. Trim the clip, or pick a model that takes longer ones.")]
+    ReferenceVideoTooLong { model: String, max_secs: u32 },
 }
 
 /// Mirrors `ByteCountFormatter` output for the limits we use ("10 MB", "15 MB").
@@ -149,6 +151,17 @@ fn validate_references(request: &Request, settings: &VideoGenerationSettings, pr
     if let Some(max) = references.combined_max {
         if counts.total() > max {
             return Err(ValidationError::TooManyReferencesTotal { model, max });
+        }
+    }
+    // The cap is on the clip the provider will measure, so the bytes are probed rather than trusted;
+    // a clip that can't be read is refused the way a non-MP4 is.
+    if let Some(max_secs) = references.max_video_secs {
+        for clip in request.assets.iter().filter(|a| a.role == AssetRole::ReferenceVideo) {
+            let info = majik_core::video::probe_bytes(&clip.data)
+                .map_err(|_| ValidationError::UnsupportedFormat { media_kind: MediaKind::Video, allowed_formats: "MP4" })?;
+            if !references.allows_video_duration(info.duration_secs.unwrap_or(0.0)) {
+                return Err(ValidationError::ReferenceVideoTooLong { model, max_secs });
+            }
         }
     }
     if counts.audio > 0 && counts.images == 0 && counts.videos == 0 {
@@ -378,6 +391,25 @@ mod tests {
         let GenerationType::Video(settings) = &mut request.generation_type else { panic!("a video request") };
         settings.resolution = Some(VideoResolution::Hd);
         assert_eq!(check(&request), Ok(()));
+    }
+
+    /// Gemini Omni Flash takes reference clips of three seconds at most, and fal fails the whole
+    /// request over a longer one.
+    #[test]
+    fn a_reference_clip_longer_than_the_model_takes_is_refused() {
+        let clip = |seconds| AssetInput::new(AssetRole::ReferenceVideo, "video/mp4", majik_core::video::encode_solid_clip(64, 64, seconds, [0, 0, 255]).unwrap());
+        assert_eq!(
+            check(&video_request("gemini-omni-flash-1.1", vec![clip(4)])),
+            Err(ValidationError::ReferenceVideoTooLong { model: "Gemini Omni Flash 1.1".into(), max_secs: 3 })
+        );
+        assert_eq!(check(&video_request("gemini-omni-flash-1.1", vec![clip(3)])), Ok(()));
+        // A model that states no cap takes the same clip without opening it.
+        assert_eq!(check(&video_request("seedance-2.5", vec![clip(4)])), Ok(()));
+        // A capped model has to read the clip, so one that only looks like an MP4 is refused as such.
+        assert_eq!(
+            check(&video_request("gemini-omni-flash-1.1", vec![mp4()])),
+            Err(ValidationError::UnsupportedFormat { media_kind: MediaKind::Video, allowed_formats: "MP4" })
+        );
     }
 
     /// Nothing about references applies to a request that has none.

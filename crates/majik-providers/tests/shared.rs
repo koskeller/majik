@@ -499,6 +499,7 @@ fn video_catalog_order_and_ids() {
             "gemini-omni-flash-1.1",
             "sora-2-pro",
             "sora-2",
+            "kling-o3-pro",
             "kling-3-pro",
             "kling-3-standard",
             "kling-2.6-pro",
@@ -524,13 +525,14 @@ fn video_catalog_order_and_ids() {
 
 #[test]
 fn video_catalog_named_statics_match_catalog_entries() {
-    let named: [&VideoModel; 25] = [
+    let named: [&VideoModel; 26] = [
         &video::VEO_31,
         &video::VEO_31_FAST,
         &video::VEO_31_LITE,
         &video::GEMINI_OMNI_FLASH_11,
         &video::SORA_2,
         &video::SORA_2_PRO,
+        &video::KLING_O3_PRO,
         &video::KLING_30_PRO,
         &video::KLING_30_STANDARD,
         &video::KLING_25_TURBO_PRO,

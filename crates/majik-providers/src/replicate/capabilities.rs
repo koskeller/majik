@@ -108,6 +108,9 @@ pub const SUPPORTED_VIDEO_MODEL_IDS: &[&str] = &[
     // geminiOmniFlash11 intentionally excluded — fal-only; Replicate has no Gemini Omni slug.
     SORA_2_PRO,
     SORA_2,
+    // klingO3Pro intentionally excluded for now — Replicate's `kwaivgi/kling-v3-omni-video` slug
+    // picks its tier with a `mode` field, addresses references as `<<<image_1>>>`, takes one
+    // reference clip of 3–10 s, and publishes no price we could check; wiring it is its own change.
     KLING_30_PRO,
     // kling30Standard intentionally excluded — Replicate has no equivalent SKU.
     KLING_26_PRO,

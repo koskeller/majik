@@ -114,7 +114,10 @@ struct Demuxed {
 fn demux(path: &Path) -> Result<(BufReader<File>, Demuxed), VideoError> {
     let file = File::open(path)?;
     let len = file.metadata()?.len();
-    let mut reader = BufReader::new(file);
+    demux_reader(BufReader::new(file), len)
+}
+
+fn demux_reader<R: Read + Seek>(mut reader: R, len: u64) -> Result<(R, Demuxed), VideoError> {
     let mp4 = re_mp4::Mp4::read(&mut reader, len)?;
     if !mp4.moofs.is_empty() {
         return Err(VideoError::Container("fragmented MP4 is not supported".into()));
@@ -202,12 +205,25 @@ fn stsd_fourcc(content: &StsdBoxContent) -> String {
 /// Container facts only; never decodes, so it is cheap enough to run when a generation completes.
 pub fn probe(path: &Path) -> Result<VideoInfo, VideoError> {
     let (_, d) = demux(path)?;
-    Ok(VideoInfo {
-        width: (d.width > 0).then_some(d.width),
-        height: (d.height > 0).then_some(d.height),
-        duration_secs: (d.duration_secs > 0.0).then_some(d.duration_secs),
-        has_audio: d.has_audio,
-    })
+    Ok(d.info())
+}
+
+/// [`probe`] for an MP4 held in memory: a clip about to be sent to a provider has no file of its
+/// own, and what the provider will measure is these bytes.
+pub fn probe_bytes(bytes: &[u8]) -> Result<VideoInfo, VideoError> {
+    let (_, d) = demux_reader(Cursor::new(bytes), bytes.len() as u64)?;
+    Ok(d.info())
+}
+
+impl Demuxed {
+    fn info(&self) -> VideoInfo {
+        VideoInfo {
+            width: (self.width > 0).then_some(self.width),
+            height: (self.height > 0).then_some(self.height),
+            duration_secs: (self.duration_secs > 0.0).then_some(self.duration_secs),
+            has_audio: self.has_audio,
+        }
+    }
 }
 
 /// The frame at ≈0.1 s (or the last one for shorter clips) fitted inside `max_dim`, never upscaled.
@@ -967,6 +983,15 @@ mod tests {
         let path = clip_file(&dir, "a.mp4", &encode_solid_clip(96, 64, 3, RGB).unwrap());
         let info = probe(&path).unwrap();
         assert_eq!(info, VideoInfo { width: Some(96), height: Some(64), duration_secs: Some(3.0), has_audio: false });
+    }
+
+    #[test]
+    fn probe_bytes_reads_a_clip_that_has_no_file() {
+        let clip = encode_solid_clip(96, 64, 4, RGB).unwrap();
+        let info = probe_bytes(&clip).unwrap();
+        assert_eq!(info, VideoInfo { width: Some(96), height: Some(64), duration_secs: Some(4.0), has_audio: false });
+        assert!(probe_bytes(&clip[..clip.len() / 2]).is_err(), "cut before the moov, like a truncated file");
+        assert!(matches!(probe_bytes(&crate::images::solid_png(8, 8, RGB)), Err(VideoError::Container(_))));
     }
 
     #[test]

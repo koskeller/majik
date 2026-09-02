@@ -364,6 +364,14 @@ impl FalClient {
                 return Err(FalError::BadRequest(format!("{} takes at most {combined} references in total (got {total})", model.name)));
             }
         }
+        if let Some(max) = declared.max_video_secs {
+            for clip in &references.videos {
+                let info = majik_core::video::probe_bytes(&clip.data).map_err(|e| FalError::BadRequest(format!("Reference video could not be read: {e}")))?;
+                if !declared.allows_video_duration(info.duration_secs.unwrap_or(0.0)) {
+                    return Err(FalError::BadRequest(format!("{} takes reference videos of {max} seconds or shorter", model.name)));
+                }
+            }
+        }
         if !references.audio.is_empty() && !references.has_visual() {
             return Err(FalError::BadRequest("An audio reference needs at least one image or video reference".into()));
         }

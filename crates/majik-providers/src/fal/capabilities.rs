@@ -45,6 +45,7 @@ pub mod ids {
     pub const VEO_31_LITE: &str = "veo-3.1-lite";
     pub const SORA_2_PRO: &str = "sora-2-pro";
     pub const SORA_2: &str = "sora-2";
+    pub const KLING_O3_PRO: &str = "kling-o3-pro";
     pub const KLING_30_PRO: &str = "kling-3-pro";
     pub const KLING_30_STANDARD: &str = "kling-3-standard";
     pub const KLING_26_PRO: &str = "kling-2.6-pro";
@@ -107,6 +108,7 @@ pub const SUPPORTED_VIDEO_MODEL_IDS: &[&str] = &[
     GEMINI_OMNI_FLASH_11,
     SORA_2_PRO,
     SORA_2,
+    KLING_O3_PRO,
     KLING_30_PRO,
     KLING_30_STANDARD,
     KLING_26_PRO,
@@ -207,6 +209,14 @@ pub fn video_capabilities(model: &VideoModel) -> Option<VideoModelCapabilities> 
             .with_audio(true, false),
         SORA_2 => VideoModelCapabilities::new(VideoDurationRange::new(4, 20, Some(vec![4, 8, 12, 16, 20])), [Tall, Landscape], [Hd], 1),
         SORA_2_PRO => VideoModelCapabilities::new(VideoDurationRange::new(4, 20, Some(vec![4, 8, 12, 16, 20])), [Tall, Landscape], [Fhd, Hd], 1),
+        // Kling O3 (Kuaishou's "Kling Omni"), checked 2026-09-02: the 3.0 Pro shape plus a reference
+        // endpoint that takes up to four images, addressed as `@Image1`. Its `elements`,
+        // `multi_prompt` and `shot_type` inputs have no composer equivalent and are not sent.
+        KLING_O3_PRO => VideoModelCapabilities::new(VideoDurationRange::new(3, 15, None), [Landscape, Tall, Square], [], 1)
+            .with_asset_constraints(AssetConstraints::first_last_frame())
+            .with_references(VideoReferences::images(4))
+            .with_audio(true, false)
+            .with_max_prompt_characters(2500),
         KLING_30_PRO => VideoModelCapabilities::new(VideoDurationRange::new(3, 15, None), [Landscape, Tall, Square], [], 1)
             .with_asset_constraints(AssetConstraints::first_last_frame())
             .with_audio(true, false)
@@ -268,10 +278,11 @@ pub fn video_capabilities(model: &VideoModel) -> Option<VideoModelCapabilities> 
         )
         .with_audio(true, false),
         // Gemini Omni Flash offers only 16:9 / 9:16, and its 360p tier has no enum of ours — the
-        // three we can name start at 720p.
+        // three we can name start at 720p. Its reference clips are at most three seconds each; a
+        // longer one fails the whole request with a 422 (`video_duration_too_long`).
         GEMINI_OMNI_FLASH_11 => VideoModelCapabilities::new(VideoDurationRange::new(3, 10, None), [Landscape, Tall], [Hd, Fhd, Uhd], 1)
             .with_asset_constraints(AssetConstraints::first_last_frame())
-            .with_references(VideoReferences::images(10).with_videos(3)),
+            .with_references(VideoReferences::images(10).with_videos(3).with_max_video_secs(3)),
         SEEDANCE_25 => VideoModelCapabilities::new(
             VideoDurationRange::new(4, 30, None),
             [Auto, Wide, Landscape, Standard, Square, Portrait, Tall],
@@ -495,6 +506,7 @@ pub fn video_endpoint(model: &VideoModel) -> Option<&'static str> {
         VEO_31_LITE => "fal-ai/veo3.1/lite",
         SORA_2 => "fal-ai/sora-2/text-to-video",
         SORA_2_PRO => "fal-ai/sora-2/text-to-video/pro",
+        KLING_O3_PRO => "fal-ai/kling-video/o3/pro/text-to-video",
         KLING_30_PRO => "fal-ai/kling-video/v3/pro/text-to-video",
         KLING_30_STANDARD => "fal-ai/kling-video/v3/standard/text-to-video",
         KLING_25_TURBO_PRO => "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
@@ -527,6 +539,7 @@ pub fn video_i2v_endpoint(model: &VideoModel) -> Option<&'static str> {
         VEO_31_LITE => "fal-ai/veo3.1/lite/image-to-video",
         SORA_2 => "fal-ai/sora-2/image-to-video",
         SORA_2_PRO => "fal-ai/sora-2/image-to-video/pro",
+        KLING_O3_PRO => "fal-ai/kling-video/o3/pro/image-to-video",
         KLING_30_PRO => "fal-ai/kling-video/v3/pro/image-to-video",
         KLING_30_STANDARD => "fal-ai/kling-video/v3/standard/image-to-video",
         KLING_25_TURBO_PRO => "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
@@ -572,6 +585,7 @@ pub fn video_reference_endpoint(model: &VideoModel) -> Option<&'static str> {
     Some(match model.id {
         VEO_31 => "fal-ai/veo3.1/reference-to-video",
         VEO_31_FAST => "fal-ai/veo3.1/fast/reference-to-video",
+        KLING_O3_PRO => "fal-ai/kling-video/o3/pro/reference-to-video",
         SEEDANCE_20 => "bytedance/seedance-2.0/reference-to-video",
         SEEDANCE_20_FAST => "bytedance/seedance-2.0/fast/reference-to-video",
         SEEDANCE_25 => "bytedance/seedance-2.5/reference-to-video",
@@ -629,6 +643,8 @@ pub fn video_reference_params(model: &VideoModel) -> Option<ReferenceParams> {
     use ReferenceTagStyle::*;
     Some(match model.id {
         VEO_31 | VEO_31_FAST => ReferenceParams::new("image_urls", Prose),
+        // Checked 2026-09-02; its schema's own example is "@Element1 and @Element2 enters the scene".
+        KLING_O3_PRO => ReferenceParams::new("image_urls", At),
         SEEDANCE_20 | SEEDANCE_20_FAST | SEEDANCE_25 => ReferenceParams::new("image_urls", At).with_videos("video_urls").with_audio("audio_urls"),
         HAPPY_HORSE_10 | HAPPY_HORSE_11 => ReferenceParams::new("image_urls", Character),
         WAN_27 => ReferenceParams::new("reference_image_urls", Prose).with_videos("reference_video_urls"),
@@ -840,7 +856,7 @@ pub fn api_duration(model: &VideoModel, duration: u32) -> Option<Value> {
     Some(match model.id {
         VEO_31 | VEO_31_FAST | VEO_31_LITE => Value::String(format!("{duration}s")),
         SORA_2 | SORA_2_PRO => Value::from(duration),
-        KLING_30_PRO | KLING_30_STANDARD | KLING_25_TURBO_PRO | KLING_26_PRO => Value::String(duration.to_string()),
+        KLING_O3_PRO | KLING_30_PRO | KLING_30_STANDARD | KLING_25_TURBO_PRO | KLING_26_PRO => Value::String(duration.to_string()),
         SEEDANCE_15_PRO | SEEDANCE_20 | SEEDANCE_20_FAST | SEEDANCE_25 => Value::String(duration.to_string()),
         // FLUX 3's duration enum mixes the string "auto" with integers; a number goes as a number.
         FLUX_3 => Value::from(duration),
@@ -888,6 +904,8 @@ fn api_i2v_start_frame_param(model: &VideoModel) -> Option<&'static str> {
         VEO_31_LITE => "image_url",
         SORA_2 => "image_url",
         SORA_2_PRO => "image_url",
+        // O3's image-to-video endpoint went back to `image_url`, where 3.0 says `start_image_url`.
+        KLING_O3_PRO => "image_url",
         KLING_30_PRO => "start_image_url",
         KLING_30_STANDARD => "start_image_url",
         KLING_25_TURBO_PRO => "image_url",
@@ -915,6 +933,7 @@ fn api_i2v_end_frame_param(model: &VideoModel) -> Option<&'static str> {
     match model.id {
         VEO_31 | VEO_31_FAST | VEO_31_LITE => None,
         SORA_2 | SORA_2_PRO => None,
+        KLING_O3_PRO => Some("end_image_url"),
         KLING_30_PRO => Some("end_image_url"),
         KLING_30_STANDARD => Some("end_image_url"),
         KLING_25_TURBO_PRO => Some("tail_image_url"),
@@ -944,7 +963,7 @@ pub fn api_audio_param(model: &VideoModel) -> Option<&'static str> {
     match model.id {
         VEO_31 | VEO_31_FAST | VEO_31_LITE => Some("generate_audio"),
         SORA_2 | SORA_2_PRO => None,
-        KLING_30_PRO | KLING_30_STANDARD => Some("generate_audio"),
+        KLING_O3_PRO | KLING_30_PRO | KLING_30_STANDARD => Some("generate_audio"),
         KLING_25_TURBO_PRO => None,
         KLING_26_PRO => Some("generate_audio"),
         SEEDANCE_15_PRO | SEEDANCE_20 | SEEDANCE_20_FAST => Some("generate_audio"),
