@@ -1417,10 +1417,6 @@ impl Render for FeedView {
             }
         });
 
-        let assets_feed = self.filter == FeedFilter::Assets;
-        // The panel toggles are the Library window's, in its title bar.
-        let toolbar = toolbar(cx)
-            .child(gpui::div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD).child(title))
         let favorites_button = button("favorites-only")
             .icon(icon(if self.favorites_only { "heart-filled" } else { "heart" }))
             .ghost()
@@ -1429,16 +1425,20 @@ impl Render for FeedView {
             .tooltip("Favorites only")
             .on_click(cx.listener(|this, _, _, cx| this.set_favorites_only(!this.favorites_only, cx)));
 
+        let assets_feed = self.filter == FeedFilter::Assets;
+        // The panel toggles are the Library window's, in its title bar.
+        let toolbar = toolbar(cx)
+            .child(gpui::div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD).child(title))
             .child(gpui::div().text_xs().text_color(muted_fg).child(format!("{count} items")))
             .child(gpui::div().flex_1())
             .when(assets_feed, |t| {
                 t.child(button("import").icon(icon("upload")).ghost().small().tooltip("Import files as assets").on_click(cx.listener(|this, _, window, cx| this.pick_imports(window, cx))))
             })
+            .when(self.shows_favorites_toggle(), |t| t.child(favorites_button))
             .child(filter_button)
             .child(
                 button("shape")
                     .icon(icon(match self.shape {
-            .when(self.shows_favorites_toggle(), |t| t.child(favorites_button))
                         ThumbnailShape::Square => "square",
                         ThumbnailShape::AspectRatio => "ratio",
                     }))
@@ -1769,10 +1769,6 @@ mod tests {
     }
 
     #[gpui::test]
-    fn selection_click_cmd_shift_and_right_click(cx: &mut TestAppContext) {
-        let (view, vcx, _env) = feed_window!(cx, 5);
-        view.update(vcx, |f, cx| {
-    #[gpui::test]
     fn favorites_only_lists_only_favorited_items(cx: &mut TestAppContext) {
         let (view, vcx, env) = feed_window!(cx, 3);
         let favorite = seed_item(&env.library, vcx, Seed { favorite: true, ..Seed::default() });
@@ -1853,6 +1849,10 @@ mod tests {
         });
     }
 
+    #[gpui::test]
+    fn selection_click_cmd_shift_and_right_click(cx: &mut TestAppContext) {
+        let (view, vcx, _env) = feed_window!(cx, 5);
+        view.update(vcx, |f, cx| {
             let ids = f.ids.clone();
             // Plain click selects one.
             f.cell_mouse_down(0, &ids[0], &down(0., false, false, 1), cx);
