@@ -2000,8 +2000,9 @@ mod tests {
         // A second press while the panel is up is ignored (the button is disabled anyway).
         detail.update_in(vcx, |d, w, cx| d.save(&SaveMedia, w, cx));
         let chosen = dest.clone();
+        let home = directories::BaseDirs::new().unwrap().home_dir().to_path_buf();
         vcx.simulate_new_path_selection(move |directory| {
-            assert_eq!(directory, crate::views::feed::save_panel_directory(), "the panel opens in the home folder");
+            assert_eq!(directory, home, "nothing saved yet, so the panel opens in the home folder");
             assert!(directory.is_absolute(), "resolved on this platform, not from $HOME");
             Some(chosen)
         });

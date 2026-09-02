@@ -10,7 +10,7 @@ use gpui_component::button::{ButtonVariants as _};
 use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _};
 use majik_core::model::{Asset, AssetId, Entry, EntryId, GenerationId, Generation, MediaType, Status};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use majik_core::{feed, thumbnails, FeedFilter, MediaFilter, Modifiers, Selection};
 use std::collections::HashMap;
 use std::time::Instant;
@@ -1259,20 +1259,38 @@ pub enum SaveOutcome {
     Failed(String),
 }
 
-/// Where the save panel opens: the user's home folder, resolved per platform (`$HOME` is unset on
-/// Windows, where it is `%USERPROFILE%`).
-pub fn save_panel_directory() -> PathBuf {
-    directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()).unwrap_or_default()
+/// Where the save panel opens: the folder the last save went to, while it still exists, else the
+/// user's home folder, resolved per platform (`$HOME` is unset on Windows, where it is
+/// `%USERPROFILE%`).
+pub fn save_panel_directory(cx: &App) -> PathBuf {
+    let remembered = cx.global::<Config>().save_directory.as_deref().filter(|dir| dir.is_dir());
+    match remembered {
+        Some(dir) => dir.to_path_buf(),
+        None => directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()).unwrap_or_default(),
+    }
+}
+
+/// Remember `dir` as where saves go, so the next save panel opens there.
+fn remember_save_directory(dir: &Path, cx: &mut App) {
+    if cx.global::<Config>().save_directory.as_deref() != Some(dir) {
+        update_config(cx, |config| config.save_directory = Some(dir.to_path_buf()));
+    }
 }
 
 /// Save `item` via the save panel; resolves when the copy finished or the panel was dismissed.
 pub fn save_item(item: Exportable, window: &mut Window, cx: &mut App) -> Task<SaveOutcome> {
     let source = item.path.clone();
-    let rx = cx.prompt_for_new_path(&save_panel_directory(), Some(&item.name));
+    let rx = cx.prompt_for_new_path(&save_panel_directory(cx), Some(&item.name));
     window.spawn(cx, async move |cx| {
         let Ok(Ok(Some(dest))) = rx.await else { return SaveOutcome::Cancelled };
-        match cx.background_spawn(async move { std::fs::copy(&source, &dest) }).await {
-            Ok(_) => SaveOutcome::Saved,
+        let copied = cx.background_spawn(async move { std::fs::copy(&source, &dest).map(|_| dest) }).await;
+        match copied {
+            Ok(dest) => {
+                if let Some(dir) = dest.parent() {
+                    cx.update(|_, cx| remember_save_directory(dir, cx)).ok();
+                }
+                SaveOutcome::Saved
+            }
             Err(e) => SaveOutcome::Failed(e.to_string()),
         }
     })
@@ -1305,6 +1323,7 @@ pub fn save_items(items: Vec<Exportable>, window: &mut Window, cx: &mut App) {
                             }
                         }
                         cx.update(|window, cx| {
+                            remember_save_directory(dir, cx);
                             let msg = if failed == 0 { format!("Saved {} files", items.len()) } else { format!("Saved with {failed} failure(s)") };
                             crate::ui::toast(window, msg, cx)
                         })
@@ -2822,6 +2841,103 @@ mod tests {
             item.entries().iter().any(|entry| matches!(entry, gpui::ClipboardEntry::Image(_))),
             "an image entry, not a path"
         );
+    }
+
+    fn select_first(view: &Entity<FeedView>, vcx: &mut VisualTestContext, count: usize) {
+        view.update(vcx, |f, _| {
+            f.selection.click(&f.ids[0], 0, Modifiers::default(), &f.ids);
+            for ix in 1..count {
+                f.selection.click(&f.ids[ix], ix, Modifiers { shift: true, ..Modifiers::default() }, &f.ids);
+            }
+        });
+    }
+
+    /// The save panel opens where the last save went, not in the home folder every time.
+    #[gpui::test]
+    fn save_panel_reopens_in_the_last_saved_folder(cx: &mut TestAppContext) {
+        let (view, vcx, _e) = feed_window!(cx, 2);
+        let dir = tempfile::tempdir().unwrap();
+        let home = directories::BaseDirs::new().unwrap().home_dir().to_path_buf();
+        select_first(&view, vcx, 1);
+        vcx.dispatch_action(SaveMedia);
+        let dest = dir.path().join("first.png");
+        vcx.simulate_new_path_selection(move |directory| {
+            assert_eq!(directory, home, "nothing remembered yet");
+            Some(dest)
+        });
+        vcx.run_until_parked();
+        assert!(dir.path().join("first.png").exists());
+        vcx.read(|cx| assert_eq!(cx.global::<Config>().save_directory.as_deref(), Some(dir.path())));
+
+        vcx.dispatch_action(SaveMedia);
+        let expected = dir.path().to_path_buf();
+        vcx.simulate_new_path_selection(move |directory| {
+            assert_eq!(directory, expected, "the panel opens where the last save went");
+            None
+        });
+        vcx.run_until_parked();
+    }
+
+    /// A dismissed panel or a failed copy leaves the remembered folder alone.
+    #[gpui::test]
+    fn cancelled_and_failed_saves_do_not_move_the_save_folder(cx: &mut TestAppContext) {
+        let (view, vcx, _e) = feed_window!(cx, 2);
+        let dir = tempfile::tempdir().unwrap();
+        vcx.update(|_, cx| update_config(cx, |c| c.save_directory = Some(dir.path().to_path_buf())));
+        select_first(&view, vcx, 1);
+        vcx.dispatch_action(SaveMedia);
+        vcx.simulate_new_path_selection(|_| None);
+        vcx.run_until_parked();
+        vcx.dispatch_action(SaveMedia);
+        let elsewhere = tempfile::tempdir().unwrap();
+        let dest = elsewhere.path().join("missing").join("out.png");
+        vcx.simulate_new_path_selection(move |_| Some(dest));
+        vcx.run_until_parked();
+        vcx.read(|cx| assert_eq!(cx.global::<Config>().save_directory.as_deref(), Some(dir.path())));
+    }
+
+    /// A remembered folder that no longer exists is not offered; the panel goes back to home.
+    #[gpui::test]
+    fn save_panel_falls_back_to_home_when_the_remembered_folder_is_gone(cx: &mut TestAppContext) {
+        let (view, vcx, _e) = feed_window!(cx, 1);
+        let dir = tempfile::tempdir().unwrap();
+        let gone = dir.path().to_path_buf();
+        drop(dir);
+        vcx.update(|_, cx| update_config(cx, |c| c.save_directory = Some(gone)));
+        let home = directories::BaseDirs::new().unwrap().home_dir().to_path_buf();
+        select_first(&view, vcx, 1);
+        vcx.dispatch_action(SaveMedia);
+        vcx.simulate_new_path_selection(move |directory| {
+            assert_eq!(directory, home);
+            None
+        });
+        vcx.run_until_parked();
+    }
+
+    /// Saving several items asks for a folder; that folder is remembered for the next single save.
+    #[gpui::test]
+    fn saving_several_items_remembers_the_chosen_folder(cx: &mut TestAppContext) {
+        let (view, vcx, _e) = feed_window!(cx, 3);
+        let dir = tempfile::tempdir().unwrap();
+        select_first(&view, vcx, 2);
+        vcx.dispatch_action(SaveMedia);
+        let chosen = dir.path().to_path_buf();
+        vcx.simulate_path_prompt_response(move |options| {
+            assert!(options.directories && !options.files);
+            Some(vec![chosen])
+        });
+        vcx.run_until_parked();
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2, "both files copied");
+        vcx.read(|cx| assert_eq!(cx.global::<Config>().save_directory.as_deref(), Some(dir.path())));
+
+        select_first(&view, vcx, 1);
+        vcx.dispatch_action(SaveMedia);
+        let expected = dir.path().to_path_buf();
+        vcx.simulate_new_path_selection(move |directory| {
+            assert_eq!(directory, expected);
+            None
+        });
+        vcx.run_until_parked();
     }
 
     /// A video carries no bitmap gpui can hold, so the portable path leaves its path as text.

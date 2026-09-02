@@ -213,6 +213,10 @@ pub struct Config {
     pub compose_panel_open: bool,
     #[serde(default)]
     pub compose_panel_width: Option<f32>,
+    /// The folder the last Save wrote to; the next save panel opens there (falling back to the
+    /// home folder while unset or once the folder is gone).
+    #[serde(default)]
+    pub save_directory: Option<PathBuf>,
 }
 
 /// How the feed fits a thumbnail into its square cell.
@@ -279,6 +283,7 @@ impl Default for Config {
             sidebar_width: None,
             compose_panel_open: true,
             compose_panel_width: None,
+            save_directory: None,
         }
     }
 }
