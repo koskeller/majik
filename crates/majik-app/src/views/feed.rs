@@ -306,10 +306,6 @@ impl FeedView {
         self.refresh(Change::Filter, cx);
     }
 
-    pub fn favorites_only(&self) -> bool {
-        self.favorites_only
-    }
-
     pub fn set_favorites_only(&mut self, favorites_only: bool, cx: &mut Context<Self>) {
         if self.favorites_only == favorites_only {
             return;
@@ -1774,7 +1770,7 @@ mod tests {
         let favorite = seed_item(&env.library, vcx, Seed { favorite: true, ..Seed::default() });
         vcx.run_until_parked();
         view.update(vcx, |f, cx| {
-            assert!(!f.favorites_only(), "off by default");
+            assert!(!f.favorites_only, "off by default");
             assert_eq!(f.ids.len(), 4);
             f.set_favorites_only(true, cx);
             assert_eq!(f.ids, vec![EntryId::Generation(favorite.clone())]);
@@ -1806,7 +1802,7 @@ mod tests {
             f.selection.select_all(&[EntryId::Generation(all[0].clone())]);
             // …and the toggle applies to albums too, keeping its state across feeds.
             f.set_filter(FeedFilter::Album(album.clone()), cx);
-            assert!(f.favorites_only());
+            assert!(f.favorites_only);
             assert_eq!(f.ids, vec![EntryId::Generation(all[0].clone())]);
             f.set_filter(FeedFilter::Library, cx);
             f.selection.select_all(&[EntryId::Generation(all[0].clone())]);
