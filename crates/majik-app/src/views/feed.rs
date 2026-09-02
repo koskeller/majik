@@ -867,13 +867,12 @@ impl FeedView {
             .w(relative(frame_w))
             .h(relative(frame_h))
             .relative()
-            .rounded_sm()
             .overflow_hidden()
             .bg(muted)
             .child(content)
             .when(item.is_favorite, |d| d.child(cell_badges().left_1().child(cell_badge().child(icon("heart").size_3()))))
             .when(!badges.is_empty(), |d| d.child(cell_badges().right_1().children(badges.into_iter().map(|badge| cell_badge().child(badge)))))
-            .when(selected, |d| d.child(gpui::div().absolute().inset_0().rounded_sm().border_3().border_color(accent)))
+            .when(selected, |d| d.child(gpui::div().absolute().inset_0().border_3().border_color(accent)))
     }
 
     /// An asset's cell: its thumbnail (audio: an icon; a file that went missing: an error), a
@@ -904,12 +903,11 @@ impl FeedView {
             .w(relative(frame_w))
             .h(relative(frame_h))
             .relative()
-            .rounded_sm()
             .overflow_hidden()
             .bg(muted)
             .child(content)
             .when(!badges.is_empty(), |d| d.child(cell_badges().right_1().children(badges.into_iter().map(|badge| cell_badge().child(badge)))))
-            .when(selected, |d| d.child(gpui::div().absolute().inset_0().rounded_sm().border_3().border_color(accent)))
+            .when(selected, |d| d.child(gpui::div().absolute().inset_0().border_3().border_color(accent)))
     }
 
     fn render_snapshot_body(&self, snapshot: &CellSnapshot, thumbnail_opacity: f32, cx: &mut Context<Self>) -> gpui::Div {

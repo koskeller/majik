@@ -1404,14 +1404,12 @@ impl Render for DetailView {
         // to the window rather than positioned within the view.
         let travelling = frame.and_then(|frame| {
             let thumbnail = item.thumbnail.clone()?;
-            let radius = px(4. * (1.0 - progress));
             let prewarm = item.file().map(std::path::Path::to_path_buf).filter(|_| item.media_type == MediaType::Image);
             let card = gpui::div()
                 .relative()
                 .w(frame.size.width)
                 .h(frame.size.height)
                 .overflow_hidden()
-                .rounded(radius)
                 .bg(muted)
                 .child(crate::ui::cover_image(thumbnail).image_cache(&self.thumbnails))
                 .when_some(prewarm, |d, path| d.child(gpui::img(path).image_cache(&self.images).absolute().top_0().left_0().w(px(1.)).h(px(1.)).opacity(0.)));
