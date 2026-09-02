@@ -1813,10 +1813,10 @@ async fn upscale_video_uploads_the_clip_and_queues_h264_inner() {
         .mount(&server)
         .await;
     Mock::given(method("POST"))
-        .and(path("/fal-ai/topaz/upscale/video"))
+        .and(path("/fal-ai/topaz/upscale/video/generative"))
         .and(body_partial_json(json!({
             "video_url": format!("{}/cdn/input.mp4", server.uri()),
-            "model": "Proteus",
+            "model": "Starlight Precise 2.6",
             "upscale_factor": 4,
             "H264_output": true,
         })))
@@ -1825,12 +1825,12 @@ async fn upscale_video_uploads_the_clip_and_queues_h264_inner() {
         .mount(&server)
         .await;
     Mock::given(method("GET"))
-        .and(path("/fal-ai/topaz/upscale/video/requests/vid-1/status"))
+        .and(path("/fal-ai/topaz/upscale/video/generative/requests/vid-1/status"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "status": "COMPLETED" })))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
-        .and(path("/fal-ai/topaz/upscale/video/requests/vid-1"))
+        .and(path("/fal-ai/topaz/upscale/video/generative/requests/vid-1"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "video": { "url": format!("{}/cdn/out.mp4", server.uri()) } })))
         .mount(&server)
         .await;
@@ -1852,17 +1852,17 @@ async fn upscale_video_reports_its_queue_handle_inner() {
     let server = MockServer::start().await;
     mount_upload(&server).await;
     Mock::given(method("POST"))
-        .and(path("/fal-ai/topaz/upscale/video"))
+        .and(path("/fal-ai/topaz/upscale/video/generative"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "request_id": "vid-2" })))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
-        .and(path("/fal-ai/topaz/upscale/video/requests/vid-2/status"))
+        .and(path("/fal-ai/topaz/upscale/video/generative/requests/vid-2/status"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "status": "COMPLETED" })))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
-        .and(path("/fal-ai/topaz/upscale/video/requests/vid-2"))
+        .and(path("/fal-ai/topaz/upscale/video/generative/requests/vid-2"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "video": { "url": format!("{}/cdn/out.mp4", server.uri()) } })))
         .mount(&server)
         .await;

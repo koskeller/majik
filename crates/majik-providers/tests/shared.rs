@@ -1168,7 +1168,7 @@ fn tool_settings_fill_in_defaults_for_a_request_stored_without_them() {
     assert_eq!(settings.upscale_factor, DEFAULT_UPSCALE_FACTOR);
     assert_eq!(settings.variant, None);
 
-    let full = ToolSettings::new(tool::TOPAZ_UPSCALE_VIDEO.clone()).with_factor(4).with_variant("gaia-hq");
+    let full = ToolSettings::new(tool::TOPAZ_UPSCALE_VIDEO.clone()).with_factor(4).with_variant("starlight-hq");
     let round_tripped: ToolSettings = serde_json::from_str(&serde_json::to_string(&full).unwrap()).unwrap();
     assert_eq!(round_tripped, full);
 }

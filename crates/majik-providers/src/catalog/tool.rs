@@ -23,7 +23,7 @@ mod defs {
         "Topaz Video Upscale",
         "Topaz Labs",
         logo::FAL,
-        "Upscale a clip with Topaz Video AI",
+        "Generative upscale with Topaz Starlight",
     );
     pub const BRIA_BACKGROUND_REMOVE: ToolModel = ToolModel::new(
         "bria-background-remove",

@@ -13,7 +13,7 @@ use crate::pricing::{flat, per_character, per_megapixel, per_second, rate, Estim
 use crate::settings::{ImageGenerationSettings, ToolSettings, VideoGenerationSettings};
 
 use super::capabilities::ids::*;
-use super::capabilities::tool_ids;
+use super::capabilities::{tool_ids, tool_variant, TOPAZ_STARLIGHT_FAST_2};
 use ImageResolution::{Fhd as I2K, Hd as I1K, Sd as I05K, Uhd as I4K};
 use VideoResolution::{Fhd as V1080, Hd as V720, Sd as V480, Uhd as V4K};
 
@@ -44,8 +44,9 @@ fn tool(settings: &ToolSettings, input: ToolInput) -> Estimate {
     }
 }
 
-/// Per second of video, at a rate set by the *output* resolution: $0.01 up to 720p, $0.02 from
-/// there to 1080p, $0.08 above. fal doubles this for 60 fps output, which we never ask for — the
+/// Per second of video, at a rate set by the *output* resolution and the Starlight variant: fal
+/// quotes 10 s at 30 fps as $1.20 up to 1080p and $2.60 at 4K for Precise 2.6 / HQ / Mini / Sharp,
+/// and $0.60 / $1.30 for Fast 2. fal doubles this for 60 fps output, which we never ask for — the
 /// client sends no `target_fps`, so there is no interpolation to pay for.
 ///
 /// A clip we have never probed (no dimensions, no duration) prices as unknown rather than as free.
@@ -54,12 +55,12 @@ fn topaz_video(settings: &ToolSettings, input: ToolInput) -> Estimate {
     if lines == 0 || input.duration_secs == 0 {
         return Estimate::Unknown;
     }
-    let micros_per_second = if lines <= 720 {
-        10_000
-    } else if lines <= 1080 {
-        20_000
-    } else {
-        80_000
+    let fast = tool_variant(&settings.model, settings.variant.as_deref()).is_some_and(|v| v.id == TOPAZ_STARLIGHT_FAST_2);
+    let micros_per_second = match (lines <= 1080, fast) {
+        (true, false) => 120_000,
+        (false, false) => 260_000,
+        (true, true) => 60_000,
+        (false, true) => 130_000,
     };
     per_second(micros_per_second, input.duration_secs)
 }
@@ -425,19 +426,33 @@ mod tests {
     }
 
     /// Per second, at the rate the *output* resolution falls in — so the factor moves a clip
-    /// between tiers. A 720p clip at 2× is 1440 lines, which is the top tier, not the bottom one.
+    /// between tiers. A 720p clip at 2× is 1440 lines, which is the 4K tier, not the 1080p one.
     #[test]
     fn topaz_video_bills_per_second_of_output_resolution() {
         let video = &catalog::tool::TOPAZ_UPSCALE_VIDEO;
-        // 360p → 720p at 2×: $0.01 a second.
-        assert_eq!(dollars(tool(video, 2, ToolInput::video(640, 360, 5))), "$0.05");
-        // 540p → 1080p at 2×: $0.02 a second.
-        assert_eq!(dollars(tool(video, 2, ToolInput::video(960, 540, 10))), "$0.20");
-        // 1080p → 2160p at 2×: $0.08 a second.
-        assert_eq!(dollars(tool(video, 2, ToolInput::video(1920, 1080, 4))), "$0.32");
-        // The factor is what moves a clip between tiers: the same 360p source at 4× lands on 1440
-        // lines, two tiers up, so it costs eight times the 2× run rather than twice.
-        assert_eq!(dollars(tool(video, 4, ToolInput::video(640, 360, 5))), "$0.40");
+        // 540p → 1080p at 2×: $0.12 a second, fal's "$1.20 per 10 seconds up to 1080p".
+        assert_eq!(dollars(tool(video, 2, ToolInput::video(960, 540, 10))), "$1.20");
+        // 1080p → 2160p at 2×: $0.26 a second.
+        assert_eq!(dollars(tool(video, 2, ToolInput::video(1920, 1080, 10))), "$2.60");
+        // The factor is what moves a clip between tiers: the same 360p source is 720 lines at 2×
+        // but 1440 at 4×, which is billed as 4K.
+        assert_eq!(dollars(tool(video, 2, ToolInput::video(640, 360, 5))), "$0.60");
+        assert_eq!(dollars(tool(video, 4, ToolInput::video(640, 360, 5))), "$1.30");
+    }
+
+    /// Starlight Fast 2 is billed at half the rate of the other Starlight models; an unknown
+    /// variant runs (and is priced) as the default, which is a quality model.
+    #[test]
+    fn topaz_video_fast_2_costs_half() {
+        let video = &catalog::tool::TOPAZ_UPSCALE_VIDEO;
+        let priced = |variant: &str, input| {
+            let settings = ToolSettings::new(video.clone()).with_factor(2).with_variant(variant);
+            dollars(pricing(&PricedJob::Tool { settings: &settings, input }))
+        };
+        assert_eq!(priced("starlight-fast-2", ToolInput::video(960, 540, 10)), "$0.60");
+        assert_eq!(priced("starlight-fast-2", ToolInput::video(1920, 1080, 10)), "$1.30");
+        assert_eq!(priced("starlight-hq", ToolInput::video(960, 540, 10)), "$1.20");
+        assert_eq!(priced("proteus", ToolInput::video(960, 540, 10)), "$1.20", "a dropped variant falls back to the default");
     }
 
     /// A clip the library never probed has no duration to bill, and a made-up number would be worse

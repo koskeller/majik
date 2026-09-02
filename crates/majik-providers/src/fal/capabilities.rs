@@ -412,7 +412,7 @@ pub fn edit_endpoint(model: &ImageModel) -> Option<&'static str> {
 
 // ----- Tools --------------------------------------------------------------------------------------
 //
-// Checked 2026-09-02 against `fal.ai/models/fal-ai/topaz/upscale/{image,video}/api` and
+// Checked 2026-09-02 against `fal.ai/models/fal-ai/topaz/upscale/{image,video/generative}/api` and
 // `fal.ai/models/fal-ai/bria/background/remove/api`.
 
 /// Catalog ids of the tool models fal routes.
@@ -425,7 +425,7 @@ pub mod tool_ids {
 pub fn tool_endpoint(model: &ToolModel) -> Option<&'static str> {
     Some(match model.id {
         tool_ids::TOPAZ_UPSCALE => "fal-ai/topaz/upscale/image",
-        tool_ids::TOPAZ_UPSCALE_VIDEO => "fal-ai/topaz/upscale/video",
+        tool_ids::TOPAZ_UPSCALE_VIDEO => "fal-ai/topaz/upscale/video/generative",
         tool_ids::BRIA_BACKGROUND_REMOVE => "fal-ai/bria/background/remove",
         _ => return None,
     })
@@ -443,8 +443,19 @@ const TOPAZ_IMAGE_VARIANTS: &[ToolVariant] = &[
     ToolVariant::new("recovery-v2", "Recovery V2"),
 ];
 
-const TOPAZ_VIDEO_VARIANTS: &[ToolVariant] =
-    &[ToolVariant::new("proteus", "Proteus"), ToolVariant::new("artemis-hq", "Artemis HQ"), ToolVariant::new("gaia-hq", "Gaia HQ"), ToolVariant::new("nyx", "Nyx")];
+/// Topaz's Starlight family, the diffusion upscalers behind `topaz/upscale/video/generative`.
+/// Precise 2.6 is Topaz's own default and the one meant for AI-generated video, which is what a
+/// library clip is. Fast 2 is the one that is billed at half the rate.
+const TOPAZ_VIDEO_VARIANTS: &[ToolVariant] = &[
+    ToolVariant::new("starlight-precise-2.6", "Starlight Precise 2.6"),
+    ToolVariant::new("starlight-hq", "Starlight HQ"),
+    ToolVariant::new("starlight-mini", "Starlight Mini"),
+    ToolVariant::new("starlight-sharp", "Starlight Sharp"),
+    ToolVariant::new(TOPAZ_STARLIGHT_FAST_2, "Starlight Fast 2"),
+];
+
+/// The one Starlight variant fal prices differently, so `pricing` can tell it apart.
+pub const TOPAZ_STARLIGHT_FAST_2: &str = "starlight-fast-2";
 
 pub fn tool_capabilities(model: &ToolModel) -> Option<ToolModelCapabilities> {
     Some(match model.id {
@@ -457,16 +468,21 @@ pub fn tool_capabilities(model: &ToolModel) -> Option<ToolModelCapabilities> {
     })
 }
 
-/// The wire string fal wants for a `ToolVariant::id`. Falls back to the model's default variant, so
-/// a request naming a variant we have since dropped still runs rather than failing at the provider.
-pub fn api_tool_variant(model: &ToolModel, variant: Option<&str>) -> Option<&'static str> {
+/// The variant a request will actually run with. Falls back to the model's default variant, so a
+/// request naming a variant we have since dropped still runs rather than failing at the provider.
+pub fn tool_variant(model: &ToolModel, variant: Option<&str>) -> Option<&'static ToolVariant> {
     let table = match model.id {
         tool_ids::TOPAZ_UPSCALE => TOPAZ_IMAGE_VARIANTS,
         tool_ids::TOPAZ_UPSCALE_VIDEO => TOPAZ_VIDEO_VARIANTS,
         _ => return None,
     };
     let wanted = variant.and_then(|v| table.iter().find(|t| t.id == v));
-    wanted.or_else(|| table.first()).map(|t| t.name)
+    wanted.or_else(|| table.first())
+}
+
+/// The wire string fal wants for a `ToolVariant::id`, with [`tool_variant`]'s fallback.
+pub fn api_tool_variant(model: &ToolModel, variant: Option<&str>) -> Option<&'static str> {
+    tool_variant(model, variant).map(|t| t.name)
 }
 
 // ----- Video endpoints ----------------------------------------------------------------------------

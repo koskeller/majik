@@ -278,7 +278,7 @@ impl ToolModel {
     }
 }
 
-/// One of the provider's own enhancement models for a tool (Topaz's "Standard V2", "Proteus", …).
+/// One of the provider's own enhancement models for a tool (Topaz's "Standard V2", "Starlight HQ", …).
 /// `id` is a stable slug that goes into the stored request; the provider's wire string comes from
 /// its own `api_*` mapper, so renaming one upstream never invalidates a saved row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
