@@ -7,7 +7,7 @@
 use gpui::{prelude::*, px, App, Entity, ScrollStrategy, Task, WeakEntity, Window};
 use gpui_component::list::{List, ListDelegate, ListItem, ListState};
 use gpui_component::{h_flex, v_flex, ActiveTheme as _, IndexPath, Selectable, WindowExt as _};
-use majik_core::model::MediaType;
+use majik_core::model::{MediaType, ToolId};
 use majik_providers::{ImageResolution, ProviderDescriptor, VideoResolution};
 
 use crate::ui::{icon, logo_tile};
@@ -25,6 +25,11 @@ pub struct ModelRow {
 }
 
 impl ModelRow {
+    /// Whether the row draws a description line. `"TBD"` is a catalog placeholder, not a blurb.
+    pub fn has_description(&self) -> bool {
+        !self.description.is_empty() && self.description != "TBD"
+    }
+
     /// Case-insensitive match: every whitespace-separated term of `query` must occur in the name,
     /// the manufacturer or the description. An empty query matches everything.
     pub fn matches(&self, query: &str) -> bool {
@@ -61,7 +66,10 @@ pub fn rows(provider: &'static ProviderDescriptor, tab: ComposeTab) -> Vec<Model
                         chips.push(c.upscale_factors.iter().map(|f| format!("{f}×")).collect::<Vec<_>>().join(" / "));
                     }
                 }
-                ModelRow { index: i, name: m.name, manufacturer: m.manufacturer, logo: m.logo, description: m.short_description, chips }
+                // An upscaler's description only restates the chips beside it, so its rows are
+                // the name, the maker and the chips.
+                let description = if tool == ToolId::Upscale { "" } else { m.short_description };
+                ModelRow { index: i, name: m.name, manufacturer: m.manufacturer, logo: m.logo, description, chips }
             })
             .collect(),
         ComposeTab::Media(MediaType::Image) => provider
@@ -125,9 +133,9 @@ pub fn rows(provider: &'static ProviderDescriptor, tab: ComposeTab) -> Vec<Model
     }
 }
 
-/// Row height without and with a chips line. Every row gets the same explicit height because the
-/// list is virtualised and measures a single row for all of them: a name line plus a description,
-/// or plus a chip row when any model in the list has chips.
+/// Row height for two lines and for three. Every row gets the same explicit height because the
+/// list is virtualised and measures a single row for all of them: the name line plus whichever of
+/// the description and the chip row the models in the list carry.
 const ROW_HEIGHT: f32 = 52.;
 const ROW_HEIGHT_WITH_CHIPS: f32 = 64.;
 /// Air between the cards. The list can't space items itself (it lays them out by the measured
@@ -141,14 +149,17 @@ pub struct ModelPickerDelegate {
     /// Index into `all` of the model the composer currently uses.
     current: usize,
     selected: Option<IndexPath>,
-    /// Whether any row of this tab has chips; decides the (uniform) row height.
+    /// Whether any row of this tab has chips / a description; together they decide the (uniform)
+    /// row height.
     has_chips: bool,
+    has_description: bool,
 }
 
 impl ModelPickerDelegate {
     fn new(compose: WeakEntity<ComposeView>, all: Vec<ModelRow>, current: usize) -> Self {
         let has_chips = all.iter().any(|row| !row.chips.is_empty());
-        Self { compose, matched: all.clone(), all, current, selected: None, has_chips }
+        let has_description = all.iter().any(|row| row.has_description());
+        Self { compose, matched: all.clone(), all, current, selected: None, has_chips, has_description }
     }
 
     /// Names of the rows currently shown, in order.
@@ -173,7 +184,7 @@ impl ListDelegate for ModelPickerDelegate {
     fn render_item(&mut self, ix: IndexPath, _window: &mut Window, _cx: &mut Context<ListState<Self>>) -> Option<Self::Item> {
         let row = self.matched.get(ix.row)?.clone();
         let current = row.index == self.current;
-        Some(ModelListItem { base: ListItem::new(ix), row, current, selected: false, has_chips: self.has_chips })
+        Some(ModelListItem { base: ListItem::new(ix), row, current, selected: false, has_chips: self.has_chips, has_description: self.has_description })
     }
 
     fn render_empty(&mut self, _window: &mut Window, cx: &mut Context<ListState<Self>>) -> impl IntoElement {
@@ -202,6 +213,7 @@ pub struct ModelListItem {
     current: bool,
     selected: bool,
     has_chips: bool,
+    has_description: bool,
 }
 
 impl Selectable for ModelListItem {
@@ -222,11 +234,12 @@ impl RenderOnce for ModelListItem {
         let (muted, muted_fg, primary) = (theme.muted, theme.muted_foreground, theme.primary);
         let tile = logo_tile(self.row.logo, self.row.manufacturer, 36., cx);
         let description = self.row.description;
+        let has_description = self.row.has_description();
         let mut chips = h_flex().gap_1().flex_nowrap().overflow_hidden();
         for chip in &self.row.chips {
             chips = chips.child(gpui::div().flex_none().px_1p5().py_0p5().rounded_full().bg(muted).text_xs().whitespace_nowrap().text_color(muted_fg).child(chip.clone()));
         }
-        let card_height = if self.has_chips { ROW_HEIGHT_WITH_CHIPS } else { ROW_HEIGHT };
+        let card_height = if self.has_chips && self.has_description { ROW_HEIGHT_WITH_CHIPS } else { ROW_HEIGHT };
         let card = self
             .base
             .h_full()
@@ -253,7 +266,7 @@ impl RenderOnce for ModelListItem {
                                     .child(gpui::div().font_weight(gpui::FontWeight::SEMIBOLD).whitespace_nowrap().child(self.row.name))
                                     .child(gpui::div().text_xs().text_color(muted_fg).whitespace_nowrap().child(self.row.manufacturer)),
                             )
-                            .when(!description.is_empty() && description != "TBD", |d| d.child(gpui::div().text_sm().text_color(muted_fg).whitespace_nowrap().text_ellipsis().overflow_hidden().child(description)))
+                            .when(has_description, |d| d.child(gpui::div().text_sm().text_color(muted_fg).whitespace_nowrap().text_ellipsis().overflow_hidden().child(description)))
                             .when(!self.row.chips.is_empty(), |d| d.child(chips)),
                     )
                     .when(self.current, |d| d.child(icon("check").size_4().flex_none().text_color(primary))),
@@ -477,6 +490,21 @@ mod tests {
 
         let remove_bg = rows(provider, ComposeTab::Tool(majik_core::model::ToolId::RemoveBackground));
         assert!(remove_bg.iter().all(|row| row.chips == vec!["Image".to_string()]), "background removal has no factors: {remove_bg:?}");
+    }
+
+    /// Upscalers are picked by their maker and their factors, not by a blurb that repeats the
+    /// chips, so their rows carry no description line. Background removal keeps its own.
+    #[gpui::test]
+    fn upscale_rows_have_no_description(cx: &mut TestAppContext) {
+        let (view, vcx) = compose_window(cx);
+        let provider = view.read_with(vcx, |view, _| view.composer_state().provider);
+
+        let upscalers = rows(provider, ComposeTab::Tool(ToolId::Upscale));
+        assert!(!upscalers.is_empty());
+        assert!(upscalers.iter().all(|row| !row.has_description()), "{upscalers:?}");
+
+        let remove_bg = rows(provider, ComposeTab::Tool(ToolId::RemoveBackground));
+        assert!(remove_bg.iter().all(|row| row.has_description()), "{remove_bg:?}");
     }
 
     /// The models added in the 2026-08 catalog sweep have to reach the picker, with the capability
