@@ -449,6 +449,11 @@ pub struct VideoReferences {
     /// Flash 1.1 takes three). A longer clip is refused before it is sent, because the provider
     /// rejects the whole request over it.
     pub max_video_secs: Option<u32>,
+    /// The shortest clip it takes, where it states a floor as well (Kling O3 Pro: 3–15 s).
+    pub min_video_secs: Option<u32>,
+    /// Whether the reference path is a video-to-video one that has no images-only form: Kling O3
+    /// Pro's `video_url` is required, and its images ride along with the clip.
+    pub requires_video: bool,
 }
 
 impl VideoReferences {
@@ -482,14 +487,31 @@ impl VideoReferences {
         self
     }
 
+    /// Both ends of the clip length the provider takes.
+    pub fn with_video_secs(mut self, min_video_secs: u32, max_video_secs: u32) -> Self {
+        self.min_video_secs = Some(min_video_secs);
+        self.max_video_secs = Some(max_video_secs);
+        self
+    }
+
+    pub fn with_required_video(mut self) -> Self {
+        self.requires_video = true;
+        self
+    }
+
     /// Whether the reference path renders at `resolution`.
     pub fn allows_resolution(&self, resolution: VideoResolution) -> bool {
         self.resolutions.is_none_or(|allowed| allowed.contains(&resolution))
     }
 
-    /// Whether a reference clip `duration_secs` long is within the provider's cap.
+    /// Whether a reference clip `duration_secs` long is within the provider's cap and floor.
     pub fn allows_video_duration(&self, duration_secs: f64) -> bool {
-        self.max_video_secs.is_none_or(|max| duration_secs <= f64::from(max))
+        self.max_video_secs.is_none_or(|max| duration_secs <= f64::from(max)) && self.min_video_secs.is_none_or(|min| duration_secs >= f64::from(min))
+    }
+
+    /// Whether the provider measures reference clips at all.
+    pub fn limits_video_duration(&self) -> bool {
+        self.max_video_secs.is_some() || self.min_video_secs.is_some()
     }
 
     pub fn max_for(&self, role: crate::AssetRole) -> usize {

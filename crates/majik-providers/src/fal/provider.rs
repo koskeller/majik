@@ -364,11 +364,20 @@ impl FalClient {
                 return Err(FalError::BadRequest(format!("{} takes at most {combined} references in total (got {total})", model.name)));
             }
         }
-        if let Some(max) = declared.max_video_secs {
+        if declared.requires_video && references.videos.is_empty() {
+            return Err(FalError::BadRequest(format!("{} needs a reference video to go with reference images", model.name)));
+        }
+        if declared.limits_video_duration() {
             for clip in &references.videos {
                 let info = majik_core::video::probe_bytes(&clip.data).map_err(|e| FalError::BadRequest(format!("Reference video could not be read: {e}")))?;
                 if !declared.allows_video_duration(info.duration_secs.unwrap_or(0.0)) {
-                    return Err(FalError::BadRequest(format!("{} takes reference videos of {max} seconds or shorter", model.name)));
+                    let range = match (declared.min_video_secs, declared.max_video_secs) {
+                        (Some(min), Some(max)) => format!("between {min} and {max} seconds"),
+                        (None, Some(max)) => format!("of {max} seconds or shorter"),
+                        (Some(min), None) => format!("of {min} seconds or longer"),
+                        (None, None) => String::new(),
+                    };
+                    return Err(FalError::BadRequest(format!("{} takes reference videos {range}", model.name)));
                 }
             }
         }
@@ -514,13 +523,25 @@ impl FalClient {
         let style = params.map(|p| p.style).unwrap_or(ReferenceTagStyle::Prose);
         let prompt = rewrite_handles(prompt, references.counts(), style);
         let mut body = Self::build_video_settings_body(&prompt, settings);
+        if let Some(toggle) = params.and_then(|p| p.audio_toggle) {
+            if let Some(key) = caps::api_audio_param(&settings.model) {
+                body.remove(key);
+            }
+            body.insert(toggle.into(), Value::Bool(settings.audio_enabled));
+        }
         for (role, list) in references.lists() {
             let Some(key) = params.and_then(|p| p.param_for(role)) else { continue };
             if list.is_empty() {
                 continue;
             }
-            let urls: Vec<Value> = list.iter().map(|a| Value::String(to_data_uri(&a.data, &a.mime_type()))).collect();
-            body.insert(key.into(), Value::Array(urls));
+            let mut urls = list.iter().map(|a| Value::String(to_data_uri(&a.data, &a.mime_type())));
+            let single = role == AssetRole::ReferenceVideo && params.is_some_and(|p| p.single_video);
+            let value = match (single, urls.next()) {
+                (true, Some(first)) => first,
+                (true, None) => continue,
+                (false, first) => Value::Array(first.into_iter().chain(urls).collect()),
+            };
+            body.insert(key.into(), value);
         }
         body
     }

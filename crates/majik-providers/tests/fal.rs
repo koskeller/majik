@@ -527,7 +527,7 @@ fn kling_o3_endpoints_and_body_keys() {
     assert_eq!(t2v, "fal-ai/kling-video/o3/pro/text-to-video");
     let (i2v, variant) = FalClient::resolve_video_endpoint(&model, Some(FRAME), Some(FRAME)).unwrap();
     assert_eq!((i2v, variant), ("fal-ai/kling-video/o3/pro/image-to-video", VideoEndpointVariant::I2v));
-    assert_eq!(caps::video_reference_endpoint(&model), Some("fal-ai/kling-video/o3/pro/reference-to-video"));
+    assert_eq!(caps::video_reference_endpoint(&model), Some("fal-ai/kling-video/o3/pro/video-to-video/reference"));
 
     let settings = video_settings(ids::KLING_O3_PRO, Some(VideoAspectRatio::Square), None, 7, true);
     let body = FalClient::build_video_request_body("p", Some(FRAME), Some(FRAME), None, VideoEndpointVariant::I2v, &settings);
@@ -540,21 +540,53 @@ fn kling_o3_endpoints_and_body_keys() {
     assert!(body.get("resolution").is_none());
 }
 
-/// Kling O3's reference endpoint addresses images the way Majik does, up to four of them, and takes
-/// no clips or audio.
+/// Kling O3's reference path is its video-to-video endpoint: one required clip under a singular
+/// `video_url`, up to four images addressed the way Majik does, and `keep_audio` in place of the
+/// family's `generate_audio`.
 #[test]
-fn kling_o3_reference_body_keeps_the_handles() {
+fn kling_o3_reference_body_sends_one_clip_and_keeps_the_handles() {
     let declared = caps::video_capabilities(&vid(ids::KLING_O3_PRO)).unwrap().references.unwrap();
-    assert_eq!((declared.images, declared.videos, declared.audio), (4, 0, 0));
-    let assets = [reference_of(AssetRole::ReferenceImage), reference_of(AssetRole::ReferenceImage)];
+    assert_eq!((declared.images, declared.videos, declared.audio), (4, 1, 0));
+    assert!(declared.requires_video);
+    assert_eq!((declared.min_video_secs, declared.max_video_secs), (Some(3), Some(15)));
+    assert!(declared.allows_video_duration(3.0) && declared.allows_video_duration(15.0));
+    assert!(!declared.allows_video_duration(2.5) && !declared.allows_video_duration(15.5));
+
+    let assets = [reference_of(AssetRole::ReferenceImage), reference_of(AssetRole::ReferenceVideo)];
     let references = ReferenceAssets::from_assets(&assets);
-    let settings = video_settings(ids::KLING_O3_PRO, Some(VideoAspectRatio::Landscape), None, 5, false);
-    let body = FalClient::build_video_reference_body("@Image1 hands @Image2 a ball", &references, &settings);
-    assert_eq!(body["prompt"], json!("@Image1 hands @Image2 a ball"));
-    assert_eq!(body["image_urls"].as_array().unwrap().len(), 2);
+    let settings = video_settings(ids::KLING_O3_PRO, Some(VideoAspectRatio::Landscape), None, 5, true);
+    let body = FalClient::build_video_reference_body("@Video1 continues while @Image1 watches", &references, &settings);
+    assert_eq!(body["prompt"], json!("@Video1 continues while @Image1 watches"));
+    assert!(body["video_url"].as_str().unwrap().starts_with("data:video/mp4;base64,"), "one clip, as a string");
+    assert_eq!(body["image_urls"].as_array().unwrap().len(), 1);
     assert_eq!(body["duration"], json!("5"));
-    assert_eq!(body["generate_audio"], json!(false));
+    assert_eq!(body["aspect_ratio"], json!("16:9"));
+    assert_eq!(body["keep_audio"], json!(true));
+    assert!(body.get("generate_audio").is_none(), "the video-to-video endpoint has no generate_audio");
     assert!(body.get("image_url").is_none() && body.get("start_image_url").is_none(), "no frame keys on the reference endpoint");
+
+    let settings = video_settings(ids::KLING_O3_PRO, Some(VideoAspectRatio::Landscape), None, 5, false);
+    let body = FalClient::build_video_reference_body("p", &references, &settings);
+    assert_eq!(body["keep_audio"], json!(false));
+}
+
+/// fal requires the clip on that endpoint and takes 3–15 s of it, so the client refuses an
+/// images-only request and a clip outside the range before anything is submitted.
+#[test]
+fn kling_o3_refuses_references_without_a_clip_in_range() {
+    crate::rt().block_on(kling_o3_refuses_references_without_a_clip_in_range_inner());
+}
+
+async fn kling_o3_refuses_references_without_a_clip_in_range_inner() {
+    let settings = video_settings(ids::KLING_O3_PRO, Some(VideoAspectRatio::Landscape), None, 5, false);
+    let images = [reference_of(AssetRole::ReferenceImage)];
+    let err = client().generate_video("@Image1 waves", &images, &settings).await.unwrap_err();
+    assert_eq!(err, GenerationError::InvalidRequest("Kling O3 Pro needs a reference video to go with reference images".into()));
+
+    let clip = majik_providers::mock::video_renderer::render_blocking(64, 64, 2, [0, 0, 255]).unwrap();
+    let reference = ProviderAsset::new(AssetRole::ReferenceVideo, "video/mp4", clip);
+    let err = client().generate_video("@Video1 keeps going", &[reference], &settings).await.unwrap_err();
+    assert_eq!(err, GenerationError::InvalidRequest("Kling O3 Pro takes reference videos between 3 and 15 seconds".into()));
 }
 
 /// Gemini Omni Flash takes reference clips of three seconds at most; fal fails a longer one with a

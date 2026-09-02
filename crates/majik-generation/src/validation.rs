@@ -74,6 +74,10 @@ pub enum ValidationError {
     ReferenceResolution { model: String, allowed: String },
     #[error("{model} takes reference videos of {max_secs} seconds or shorter. Trim the clip, or pick a model that takes longer ones.")]
     ReferenceVideoTooLong { model: String, max_secs: u32 },
+    #[error("{model} takes reference videos of {min_secs} seconds or longer. Attach a longer clip, or pick a model that takes shorter ones.")]
+    ReferenceVideoTooShort { model: String, min_secs: u32 },
+    #[error("{model} needs a reference video to go with reference images. Attach a clip, or use the images as a start or end frame.")]
+    ReferenceNeedsVideo { model: String },
 }
 
 /// Mirrors `ByteCountFormatter` output for the limits we use ("10 MB", "15 MB").
@@ -155,12 +159,21 @@ fn validate_references(request: &Request, settings: &VideoGenerationSettings, pr
     }
     // The cap is on the clip the provider will measure, so the bytes are probed rather than trusted;
     // a clip that can't be read is refused the way a non-MP4 is.
-    if let Some(max_secs) = references.max_video_secs {
+    if references.requires_video && counts.videos == 0 {
+        return Err(ValidationError::ReferenceNeedsVideo { model });
+    }
+    if references.limits_video_duration() {
         for clip in request.assets.iter().filter(|a| a.role == AssetRole::ReferenceVideo) {
             let info = majik_core::video::probe_bytes(&clip.data)
                 .map_err(|_| ValidationError::UnsupportedFormat { media_kind: MediaKind::Video, allowed_formats: "MP4" })?;
-            if !references.allows_video_duration(info.duration_secs.unwrap_or(0.0)) {
-                return Err(ValidationError::ReferenceVideoTooLong { model, max_secs });
+            let duration = info.duration_secs.unwrap_or(0.0);
+            if !references.allows_video_duration(duration) {
+                let too_short = references.min_video_secs.filter(|min| duration < f64::from(*min));
+                return Err(match (too_short, references.max_video_secs) {
+                    (Some(min_secs), _) => ValidationError::ReferenceVideoTooShort { model, min_secs },
+                    (None, Some(max_secs)) => ValidationError::ReferenceVideoTooLong { model, max_secs },
+                    (None, None) => continue,
+                });
             }
         }
     }
@@ -409,6 +422,27 @@ mod tests {
         assert_eq!(
             check(&video_request("gemini-omni-flash-1.1", vec![mp4()])),
             Err(ValidationError::UnsupportedFormat { media_kind: MediaKind::Video, allowed_formats: "MP4" })
+        );
+    }
+
+    /// Kling O3 Pro's reference path is its video-to-video endpoint: the clip is required, and has
+    /// to be between three and fifteen seconds long.
+    #[test]
+    fn a_video_to_video_reference_path_needs_its_clip_in_range() {
+        let clip = |seconds| AssetInput::new(AssetRole::ReferenceVideo, "video/mp4", majik_core::video::encode_solid_clip(64, 64, seconds, [0, 0, 255]).unwrap());
+        assert_eq!(
+            check(&video_request("kling-o3-pro", vec![png(AssetRole::ReferenceImage)])),
+            Err(ValidationError::ReferenceNeedsVideo { model: "Kling O3 Pro".into() })
+        );
+        assert_eq!(
+            check(&video_request("kling-o3-pro", vec![clip(2)])),
+            Err(ValidationError::ReferenceVideoTooShort { model: "Kling O3 Pro".into(), min_secs: 3 })
+        );
+        assert_eq!(check(&video_request("kling-o3-pro", vec![png(AssetRole::ReferenceImage), clip(3)])), Ok(()));
+        assert_eq!(check(&video_request("kling-o3-pro", vec![clip(3)])), Ok(()), "the clip alone is enough");
+        assert_eq!(
+            check(&video_request("kling-o3-pro", vec![clip(3), clip(3)])),
+            Err(ValidationError::TooManyReferences { model: "Kling O3 Pro".into(), role: AssetRole::ReferenceVideo, max: 1 })
         );
     }
 

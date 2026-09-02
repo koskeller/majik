@@ -184,7 +184,9 @@ fn video(settings: &VideoGenerationSettings) -> Estimate {
         // The Kling family declares no resolutions; audio roughly doubles the rate. (Kling also
         // sells a dearer "voice control" tier, which we never request.)
         // Kling O3 Pro, checked 2026-09-02: $0.112/s, $0.14/s with audio ("a 5 second video with
-        // audio costs $0.70").
+        // audio costs $0.70"). Its reference path (the video-to-video endpoint) bills a flat
+        // $0.168/s, so a reference run is under-estimated; the table has no endpoint dimension,
+        // as with H3 Max.
         KLING_O3_PRO => &[((None, false), 112_000), ((None, true), 140_000)],
         KLING_30_PRO => &[((None, false), 112_000), ((None, true), 168_000)],
         KLING_30_STANDARD => &[((None, false), 84_000), ((None, true), 126_000)],

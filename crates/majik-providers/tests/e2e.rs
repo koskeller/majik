@@ -175,12 +175,20 @@ async fn image_to_video(descriptor: &'static ProviderDescriptor, key: &str, id: 
 /// model's own dialect, so a failure here means a dialect has changed.
 async fn reference_to_video(descriptor: &'static ProviderDescriptor, key: &str, id: &str) {
     let settings = cheapest_video(descriptor, video_model(id));
-    let assets = [
+    let references = descriptor.video_capabilities(video_model(id)).and_then(|caps| caps.references).unwrap_or_default();
+    let mut assets = vec![
         ProviderAsset::new(AssetRole::ReferenceImage, "image/png", reference_png()),
         ProviderAsset::new(AssetRole::ReferenceImage, "image/png", reference_png()),
     ];
+    let mut prompt = "@Image1 slowly pulses beside @Image2";
+    if references.requires_video {
+        // A video-to-video reference path (Kling O3 Pro) needs the clip, at least 3 s and 720 px of it.
+        let clip = majik_providers::mock::video_renderer::render_blocking(720, 720, 3, [0, 0, 255]).expect("render a clip");
+        assets.push(ProviderAsset::new(AssetRole::ReferenceVideo, "video/mp4", clip));
+        prompt = "@Video1 plays on while @Image1 slowly pulses beside @Image2";
+    }
     let bytes = client(descriptor, key)
-        .generate_video("@Image1 slowly pulses beside @Image2", &assets, &settings)
+        .generate_video(prompt, &assets, &settings)
         .await
         .unwrap_or_else(|e| panic!("{}/{id} reference-to-video: {e}", descriptor.display_name));
     assert_video(id, &bytes);

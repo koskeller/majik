@@ -209,12 +209,14 @@ pub fn video_capabilities(model: &VideoModel) -> Option<VideoModelCapabilities> 
             .with_audio(true, false),
         SORA_2 => VideoModelCapabilities::new(VideoDurationRange::new(4, 20, Some(vec![4, 8, 12, 16, 20])), [Tall, Landscape], [Hd], 1),
         SORA_2_PRO => VideoModelCapabilities::new(VideoDurationRange::new(4, 20, Some(vec![4, 8, 12, 16, 20])), [Tall, Landscape], [Fhd, Hd], 1),
-        // Kling O3 (Kuaishou's "Kling Omni"), checked 2026-09-02: the 3.0 Pro shape plus a reference
-        // endpoint that takes up to four images, addressed as `@Image1`. Its `elements`,
-        // `multi_prompt` and `shot_type` inputs have no composer equivalent and are not sent.
+        // Kling O3 (Kuaishou's "Kling Omni"), checked 2026-09-02: the 3.0 Pro shape, and for
+        // references its video-to-video endpoint rather than the images-only `reference-to-video`
+        // one: a required clip of 3–15 s (720–3840 px, 200 MB) addressed as `@Video1`, plus up to
+        // four images as `@Image1`. Its `elements`, `multi_prompt` and `shot_type` inputs have no
+        // composer equivalent and are not sent.
         KLING_O3_PRO => VideoModelCapabilities::new(VideoDurationRange::new(3, 15, None), [Landscape, Tall, Square], [], 1)
             .with_asset_constraints(AssetConstraints::first_last_frame())
-            .with_references(VideoReferences::images(4))
+            .with_references(VideoReferences::images(4).with_videos(1).with_video_secs(3, 15).with_required_video())
             .with_audio(true, false)
             .with_max_prompt_characters(2500),
         KLING_30_PRO => VideoModelCapabilities::new(VideoDurationRange::new(3, 15, None), [Landscape, Tall, Square], [], 1)
@@ -585,7 +587,7 @@ pub fn video_reference_endpoint(model: &VideoModel) -> Option<&'static str> {
     Some(match model.id {
         VEO_31 => "fal-ai/veo3.1/reference-to-video",
         VEO_31_FAST => "fal-ai/veo3.1/fast/reference-to-video",
-        KLING_O3_PRO => "fal-ai/kling-video/o3/pro/reference-to-video",
+        KLING_O3_PRO => "fal-ai/kling-video/o3/pro/video-to-video/reference",
         SEEDANCE_20 => "bytedance/seedance-2.0/reference-to-video",
         SEEDANCE_20_FAST => "bytedance/seedance-2.0/fast/reference-to-video",
         SEEDANCE_25 => "bytedance/seedance-2.5/reference-to-video",
@@ -612,15 +614,31 @@ pub struct ReferenceParams {
     pub videos: Option<&'static str>,
     pub audio: Option<&'static str>,
     pub style: ReferenceTagStyle,
+    /// `videos` is one URL string rather than a list (Kling O3 Pro's `video_url`).
+    pub single_video: bool,
+    /// The key the reference endpoint spells the audio switch under, where it differs from the
+    /// model's other endpoints; it replaces `api_audio_param`'s key in the reference body.
+    pub audio_toggle: Option<&'static str>,
 }
 
 impl ReferenceParams {
     const fn new(images: &'static str, style: ReferenceTagStyle) -> Self {
-        Self { images: Some(images), videos: None, audio: None, style }
+        Self { images: Some(images), videos: None, audio: None, style, single_video: false, audio_toggle: None }
     }
 
     const fn with_videos(mut self, videos: &'static str) -> Self {
         self.videos = Some(videos);
+        self
+    }
+
+    const fn with_single_video(mut self, video: &'static str) -> Self {
+        self.videos = Some(video);
+        self.single_video = true;
+        self
+    }
+
+    const fn with_audio_toggle(mut self, audio_toggle: &'static str) -> Self {
+        self.audio_toggle = Some(audio_toggle);
         self
     }
 
@@ -643,8 +661,10 @@ pub fn video_reference_params(model: &VideoModel) -> Option<ReferenceParams> {
     use ReferenceTagStyle::*;
     Some(match model.id {
         VEO_31 | VEO_31_FAST => ReferenceParams::new("image_urls", Prose),
-        // Checked 2026-09-02; its schema's own example is "@Element1 and @Element2 enters the scene".
-        KLING_O3_PRO => ReferenceParams::new("image_urls", At),
+        // Checked 2026-09-02; the video-to-video endpoint takes one clip under a singular key and
+        // spells its audio switch `keep_audio` (the reference clip's own track) where the
+        // family's other endpoints say `generate_audio`.
+        KLING_O3_PRO => ReferenceParams::new("image_urls", At).with_single_video("video_url").with_audio_toggle("keep_audio"),
         SEEDANCE_20 | SEEDANCE_20_FAST | SEEDANCE_25 => ReferenceParams::new("image_urls", At).with_videos("video_urls").with_audio("audio_urls"),
         HAPPY_HORSE_10 | HAPPY_HORSE_11 => ReferenceParams::new("image_urls", Character),
         WAN_27 => ReferenceParams::new("reference_image_urls", Prose).with_videos("reference_video_urls"),
