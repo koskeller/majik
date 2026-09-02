@@ -41,6 +41,8 @@ pub enum FalError {
     VideoDownloadFailed(String),
     #[error("Failed to download audio: {0}")]
     AudioDownloadFailed(String),
+    #[error("Failed to upload the input: {0}")]
+    UploadFailed(String),
     #[error("Video generation timed out. Please try again.")]
     QueueTimeout,
     #[error("Video generation failed: {0}")]
@@ -78,6 +80,7 @@ impl FalError {
             FalError::DecodingError(reason) => GenerationError::Unknown(format!("Failed to decode response: {reason}")),
             FalError::VideoDownloadFailed(reason) => GenerationError::Unknown(format!("Failed to download video: {reason}")),
             FalError::AudioDownloadFailed(reason) => GenerationError::Unknown(format!("Failed to download audio: {reason}")),
+            FalError::UploadFailed(reason) => GenerationError::Unknown(format!("Failed to upload the input: {reason}")),
             FalError::HttpError { status_code, message } => GenerationError::Unknown(format!("HTTP {status_code}: {message}")),
             FalError::Transport(err) => err,
         }

@@ -9,7 +9,7 @@ pub mod provider;
 
 use std::sync::{Arc, OnceLock};
 
-use crate::client::{AudioProviderClient, ClientOptions, ImageProviderClient, ResumableClient, TextProviderClient, VideoProviderClient};
+use crate::client::{AudioProviderClient, ClientOptions, ImageProviderClient, ResumableClient, TextProviderClient, ToolProviderClient, VideoProviderClient};
 use crate::descriptor::ProviderDescriptor;
 use crate::ProviderId;
 
@@ -30,6 +30,10 @@ fn make_audio_client(options: &ClientOptions) -> Option<Arc<dyn AudioProviderCli
 }
 
 fn make_text_client(options: &ClientOptions) -> Option<Arc<dyn TextProviderClient>> {
+    Some(Arc::new(ReplicateClient::from_options(options)))
+}
+
+fn make_tool_client(options: &ClientOptions) -> Option<Arc<dyn ToolProviderClient>> {
     Some(Arc::new(ReplicateClient::from_options(options)))
 }
 
@@ -59,12 +63,14 @@ pub fn descriptor() -> &'static ProviderDescriptor {
         image_capabilities: capabilities::image_capabilities,
         video_capabilities: capabilities::video_capabilities,
         audio_capabilities: audio::audio_capabilities,
+        tool_capabilities: capabilities::tool_capabilities,
         pricing: pricing::pricing,
         supported_tool_models: vec![crate::catalog::tool::CLARITY_UPSCALER.clone(), crate::catalog::tool::REMBG.clone()],
         make_image_client,
         make_video_client,
         make_audio_client,
         make_text_client,
+        make_tool_client,
         make_resume_client,
     })
 }

@@ -3,8 +3,8 @@
 pub mod fal {
     pub const BASE_URL: &str = "https://fal.run";
     pub const QUEUE_BASE_URL: &str = "https://queue.fal.run";
-    pub const UPSCALE_ENDPOINT: &str = "fal-ai/topaz/upscale/image";
-    pub const REMOVE_BACKGROUND_ENDPOINT: &str = "fal-ai/bria/background/remove";
+    /// fal's file storage, for inputs too big to inline as a data URI (a whole video).
+    pub const REST_BASE_URL: &str = "https://rest.fal.ai";
     pub const ELEVENLABS_V3_MONOLOGUE_ENDPOINT: &str = "fal-ai/elevenlabs/tts/eleven-v3";
     pub const ELEVENLABS_V3_DIALOGUE_ENDPOINT: &str = "fal-ai/elevenlabs/text-to-dialogue/eleven-v3";
     pub const GEMINI_TTS_ENDPOINT: &str = "fal-ai/gemini-tts";

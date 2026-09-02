@@ -6,6 +6,7 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::asset::AssetConstraints;
 use crate::catalog;
+use majik_core::model::MediaType;
 
 // ----- aspect ratios / resolutions ----------------------------------------------------------
 
@@ -246,6 +247,9 @@ pub use majik_core::model::ToolId;
 pub struct ToolModel {
     pub id: &'static str,
     pub kind: ToolId,
+    /// What the model consumes and produces. An upscaler is either an image one or a video one, and
+    /// this is what the composer's tool tab reads to decide which role card to draw.
+    pub media: MediaType,
     pub name: &'static str,
     pub manufacturer: &'static str,
     pub logo: &'static str,
@@ -253,8 +257,73 @@ pub struct ToolModel {
 }
 
 impl ToolModel {
-    pub const fn new(id: &'static str, kind: ToolId, name: &'static str, manufacturer: &'static str, logo: &'static str, short_description: &'static str) -> Self {
-        Self { id, kind, name, manufacturer, logo, short_description }
+    pub const fn new(
+        id: &'static str,
+        kind: ToolId,
+        media: MediaType,
+        name: &'static str,
+        manufacturer: &'static str,
+        logo: &'static str,
+        short_description: &'static str,
+    ) -> Self {
+        Self { id, kind, media, name, manufacturer, logo, short_description }
+    }
+
+    /// The role a run of this model takes its one input in.
+    pub fn input_role(&self) -> crate::asset::AssetRole {
+        match self.media {
+            MediaType::Video => crate::asset::AssetRole::ReferenceVideo,
+            _ => crate::asset::AssetRole::ReferenceImage,
+        }
+    }
+}
+
+/// One of the provider's own enhancement models for a tool (Topaz's "Standard V2", "Proteus", …).
+/// `id` is a stable slug that goes into the stored request; the provider's wire string comes from
+/// its own `api_*` mapper, so renaming one upstream never invalidates a saved row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ToolVariant {
+    pub id: &'static str,
+    pub name: &'static str,
+}
+
+impl ToolVariant {
+    pub const fn new(id: &'static str, name: &'static str) -> Self {
+        Self { id, name }
+    }
+}
+
+/// What a tool model lets the composer choose. The first entry of each list is the default, the
+/// same way [`ModelCapabilities`] treats its resolutions; an empty list draws no capsule at all.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ToolModelCapabilities {
+    pub upscale_factors: Vec<u32>,
+    pub variants: Vec<ToolVariant>,
+    /// How many inputs one run may take: several images, but only one video.
+    pub max_inputs: usize,
+}
+
+impl ToolModelCapabilities {
+    pub fn new(max_inputs: usize) -> Self {
+        Self { upscale_factors: Vec::new(), variants: Vec::new(), max_inputs }
+    }
+
+    pub fn with_factors(mut self, factors: impl Into<Vec<u32>>) -> Self {
+        self.upscale_factors = factors.into();
+        self
+    }
+
+    pub fn with_variants(mut self, variants: impl Into<Vec<ToolVariant>>) -> Self {
+        self.variants = variants.into();
+        self
+    }
+
+    pub fn default_factor(&self) -> Option<u32> {
+        self.upscale_factors.first().copied()
+    }
+
+    pub fn default_variant(&self) -> Option<&'static str> {
+        self.variants.first().map(|v| v.id)
     }
 }
 

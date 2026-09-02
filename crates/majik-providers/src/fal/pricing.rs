@@ -1,6 +1,6 @@
 //! fal's prices, per model.
 //!
-//! **Checked 2026-08-29** against each model's own page (`fal.ai/models/<endpoint>`); the general
+//! **Checked 2026-08-29**, tools re-checked **2026-09-02**, against each model's own page (`fal.ai/models/<endpoint>`); the general
 //! pricing page carries only a handful of models. Re-check from the endpoint tables in
 //! [`super::capabilities`]. The figures here go out of date whenever fal reprices, which is why
 //! every number the app shows is labelled an estimate.
@@ -9,10 +9,11 @@
 //! `tests/shared.rs`, not in a made-up row here.
 
 use crate::models::{ImageResolution, VideoResolution};
-use crate::pricing::{flat, per_character, per_megapixel, per_second, rate, Estimate, PricedJob};
-use crate::settings::{ImageGenerationSettings, VideoGenerationSettings};
+use crate::pricing::{flat, per_character, per_megapixel, per_second, rate, Estimate, PricedJob, ToolInput};
+use crate::settings::{ImageGenerationSettings, ToolSettings, VideoGenerationSettings};
 
 use super::capabilities::ids::*;
+use super::capabilities::tool_ids;
 use ImageResolution::{Fhd as I2K, Hd as I1K, Sd as I05K, Uhd as I4K};
 use VideoResolution::{Fhd as V1080, Hd as V720, Sd as V480, Uhd as V4K};
 
@@ -27,13 +28,40 @@ pub fn pricing(job: &PricedJob<'_>) -> Estimate {
             // follow from the character count — see UNPRICED in tests/shared.rs.
             _ => Estimate::Unknown,
         },
-        PricedJob::Tool(model) => match model.id {
-            // Topaz is tiered by output size: $0.08 up to 24 MP, and no library image comes close.
-            "topaz-upscale" => flat(80_000),
-            "bria-background-remove" => flat(18_000),
-            _ => Estimate::Unknown,
-        },
+        PricedJob::Tool { settings, input } => tool(settings, *input),
     }
+}
+
+// ----- Tools --------------------------------------------------------------------------------------
+
+fn tool(settings: &ToolSettings, input: ToolInput) -> Estimate {
+    match settings.model.id {
+        // Topaz is tiered by output size: $0.08 up to 24 MP, and no library image comes close.
+        tool_ids::TOPAZ_UPSCALE => flat(80_000),
+        tool_ids::BRIA_BACKGROUND_REMOVE => flat(18_000),
+        tool_ids::TOPAZ_UPSCALE_VIDEO => topaz_video(settings, input),
+        _ => Estimate::Unknown,
+    }
+}
+
+/// Per second of video, at a rate set by the *output* resolution: $0.01 up to 720p, $0.02 from
+/// there to 1080p, $0.08 above. fal doubles this for 60 fps output, which we never ask for — the
+/// client sends no `target_fps`, so there is no interpolation to pay for.
+///
+/// A clip we have never probed (no dimensions, no duration) prices as unknown rather than as free.
+fn topaz_video(settings: &ToolSettings, input: ToolInput) -> Estimate {
+    let lines = input.output_lines(settings.upscale_factor);
+    if lines == 0 || input.duration_secs == 0 {
+        return Estimate::Unknown;
+    }
+    let micros_per_second = if lines <= 720 {
+        10_000
+    } else if lines <= 1080 {
+        20_000
+    } else {
+        80_000
+    };
+    per_second(micros_per_second, input.duration_secs)
 }
 
 // ----- Images -------------------------------------------------------------------------------------
@@ -272,6 +300,8 @@ fn video(settings: &VideoGenerationSettings) -> Estimate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pricing::ToolInput;
+    use crate::settings::ToolSettings;
     use crate::catalog;
     use crate::models::AspectRatio;
     use crate::settings::AudioGenerationSettings;
@@ -389,10 +419,41 @@ mod tests {
         assert_eq!(pricing(&PricedJob::Audio { settings: &settings, characters: 1_000 }), Estimate::Unknown);
     }
 
+    fn tool(model: &crate::models::ToolModel, factor: u32, input: ToolInput) -> Estimate {
+        let settings = ToolSettings::new(model.clone()).with_factor(factor);
+        pricing(&PricedJob::Tool { settings: &settings, input })
+    }
+
+    /// Per second, at the rate the *output* resolution falls in — so the factor moves a clip
+    /// between tiers. A 720p clip at 2× is 1440 lines, which is the top tier, not the bottom one.
+    #[test]
+    fn topaz_video_bills_per_second_of_output_resolution() {
+        let video = &catalog::tool::TOPAZ_UPSCALE_VIDEO;
+        // 360p → 720p at 2×: $0.01 a second.
+        assert_eq!(dollars(tool(video, 2, ToolInput::video(640, 360, 5))), "$0.05");
+        // 540p → 1080p at 2×: $0.02 a second.
+        assert_eq!(dollars(tool(video, 2, ToolInput::video(960, 540, 10))), "$0.20");
+        // 1080p → 2160p at 2×: $0.08 a second.
+        assert_eq!(dollars(tool(video, 2, ToolInput::video(1920, 1080, 4))), "$0.32");
+        // The factor is what moves a clip between tiers: the same 360p source at 4× lands on 1440
+        // lines, two tiers up, so it costs eight times the 2× run rather than twice.
+        assert_eq!(dollars(tool(video, 4, ToolInput::video(640, 360, 5))), "$0.40");
+    }
+
+    /// A clip the library never probed has no duration to bill, and a made-up number would be worse
+    /// than saying so.
+    #[test]
+    fn topaz_video_without_a_probed_clip_is_unknown() {
+        let video = &catalog::tool::TOPAZ_UPSCALE_VIDEO;
+        assert_eq!(tool(video, 2, ToolInput::default()), Estimate::Unknown);
+        assert_eq!(tool(video, 2, ToolInput::video(1920, 1080, 0)), Estimate::Unknown, "no duration");
+        assert_eq!(tool(video, 2, ToolInput::video(0, 0, 5)), Estimate::Unknown, "no dimensions");
+    }
+
     #[test]
     fn tools_are_flat_per_image() {
-        assert_eq!(dollars(pricing(&PricedJob::Tool(&catalog::tool::TOPAZ_UPSCALE))), "$0.08");
-        assert_eq!(dollars(pricing(&PricedJob::Tool(&catalog::tool::BRIA_BACKGROUND_REMOVE))), "$0.018");
-        assert_eq!(pricing(&PricedJob::Tool(&catalog::tool::CLARITY_UPSCALER)), Estimate::Unknown, "Replicate's tool, not fal's");
+        assert_eq!(dollars(pricing(&PricedJob::Tool { settings: &ToolSettings::new(catalog::tool::TOPAZ_UPSCALE.clone()), input: ToolInput::default() })), "$0.08");
+        assert_eq!(dollars(pricing(&PricedJob::Tool { settings: &ToolSettings::new(catalog::tool::BRIA_BACKGROUND_REMOVE.clone()), input: ToolInput::default() })), "$0.018");
+        assert_eq!(pricing(&PricedJob::Tool { settings: &ToolSettings::new(catalog::tool::CLARITY_UPSCALER.clone()), input: ToolInput::default() }), Estimate::Unknown, "Replicate's tool, not fal's");
     }
 }

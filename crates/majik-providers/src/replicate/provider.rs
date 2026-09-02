@@ -7,17 +7,19 @@ use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 
 use crate::asset::{AssetRole, ProviderAsset};
-use crate::client::{ClientOptions, ImageProviderClient, JobHandle, OnAccepted, ResumableClient, TextProviderClient, TraceSink, VideoProviderClient};
+use crate::client::{
+    ClientOptions, ImageProviderClient, JobHandle, OnAccepted, ResumableClient, TextProviderClient, ToolProviderClient, TraceSink, VideoProviderClient,
+};
 use crate::constants;
 use crate::data_uri::{from_data_uri, is_data_uri, to_data_uri};
 use crate::error::{GenerationError, Result};
 use crate::http::{self, Timeouts};
-use crate::models::{AspectRatio, ImageModel, ImageResolution};
+use crate::models::{AspectRatio, ImageModel, ImageResolution, ToolId};
 use crate::replicate::capabilities::{self as caps, VideoEndpointVariant};
 use crate::replicate::error::{ReplicateError, ReplicateResult};
 use crate::references::{rewrite_handles, ReferenceAssets, ReferenceTagStyle};
 use crate::replicate::models::{ReplicatePrediction, ReplicatePredictionStatus};
-use crate::settings::VideoGenerationSettings;
+use crate::settings::{ToolSettings, VideoGenerationSettings};
 use crate::transcode::transcode_to_png;
 use crate::Bytes;
 use majik_core::model::{MediaType, TraceLabel};
@@ -106,12 +108,14 @@ impl ImageProviderClient for ReplicateClient {
         self.generate_image_impl(prompt, model, assets, aspect_ratio, resolution).await.map_err(Into::into)
     }
 
-    async fn upscale_image(&self, image: &[u8]) -> Result<Bytes> {
-        self.upscale_image_impl(image).await.map_err(Into::into)
-    }
+}
 
-    async fn remove_background(&self, image: &[u8]) -> Result<Bytes> {
-        self.remove_background_impl(image).await.map_err(Into::into)
+// ----- ToolProviderClient -----------------------------------------------------------------------
+
+#[async_trait]
+impl ToolProviderClient for ReplicateClient {
+    async fn run_tool(&self, settings: &ToolSettings, input: &ProviderAsset) -> Result<Bytes> {
+        self.run_tool_impl(settings, input).await.map_err(Into::into)
     }
 }
 
@@ -183,27 +187,17 @@ impl ReplicateClient {
 // ----- image processing impl --------------------------------------------------------------------
 
 impl ReplicateClient {
-    async fn upscale_image_impl(&self, image: &[u8]) -> ReplicateResult<Bytes> {
-        let prediction = self
-            .submit_and_await_prediction(
-                SubmissionTarget::Versioned(constants::replicate::UPSCALE_VERSION.to_string()),
-                build_upscale_request_body(image),
-                Timeouts::IMAGE,
+    async fn run_tool_impl(&self, settings: &ToolSettings, input: &ProviderAsset) -> ReplicateResult<Bytes> {
+        let (version, body, label) = match settings.model.kind {
+            ToolId::Upscale => (
+                constants::replicate::UPSCALE_VERSION,
+                build_upscale_request_body(&input.data, settings.upscale_factor),
                 "upscale",
-            )
-            .await?;
-        self.extract_image_data(&prediction, Timeouts::IMAGE, true).await
-    }
-
-    async fn remove_background_impl(&self, image: &[u8]) -> ReplicateResult<Bytes> {
-        let prediction = self
-            .submit_and_await_prediction(
-                SubmissionTarget::Versioned(constants::replicate::REMOVE_BACKGROUND_VERSION.to_string()),
-                build_remove_background_request_body(image),
-                Timeouts::IMAGE,
-                "remove-bg",
-            )
-            .await?;
+            ),
+            ToolId::RemoveBackground => (constants::replicate::REMOVE_BACKGROUND_VERSION, build_remove_background_request_body(&input.data), "remove-bg"),
+        };
+        let prediction =
+            self.submit_and_await_prediction(SubmissionTarget::Versioned(version.to_string()), body, Timeouts::IMAGE, label).await?;
         self.extract_image_data(&prediction, Timeouts::IMAGE, true).await
     }
 }
@@ -360,10 +354,10 @@ pub fn build_request_body(
 /// philz1337x/clarity-upscaler input schema. We pin the fields we care
 /// about; everything else (creativity/resemblance/dynamic/seed/etc.)
 /// uses the model's documented defaults.
-pub fn build_upscale_request_body(image: &[u8]) -> Map<String, Value> {
+pub fn build_upscale_request_body(image: &[u8], scale_factor: u32) -> Map<String, Value> {
     let mut input = Map::new();
     input.insert("image".into(), json!(to_data_uri(image, IMAGE_DATA_URI_MIME)));
-    input.insert("scale_factor".into(), json!(2));
+    input.insert("scale_factor".into(), json!(scale_factor));
     input.insert("output_format".into(), json!("png"));
     input
 }

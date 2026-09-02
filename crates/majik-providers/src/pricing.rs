@@ -11,8 +11,7 @@
 
 use std::fmt;
 
-use crate::models::ToolModel;
-use crate::settings::{AudioGenerationSettings, ImageGenerationSettings, VideoGenerationSettings};
+use crate::settings::{AudioGenerationSettings, ImageGenerationSettings, ToolSettings, VideoGenerationSettings};
 
 /// USD in micro-dollars ($1 = 1_000_000). An integer so the arithmetic and the string the user
 /// reads can never disagree through a float.
@@ -92,7 +91,36 @@ pub enum PricedJob<'a> {
     Video(&'a VideoGenerationSettings),
     /// `characters` is the length of the text to speak; TTS bills per character.
     Audio { settings: &'a AudioGenerationSettings, characters: usize },
-    Tool(&'a ToolModel),
+    /// A tool run. `input` is the asset it will run over: an image upscaler is flat per run, but a
+    /// video one bills per second at a rate that depends on the *output* resolution, which follows
+    /// from the input's and `settings.upscale_factor`.
+    Tool { settings: &'a ToolSettings, input: ToolInput },
+}
+
+/// The size of the asset a tool will run over. Zeroes mean "not known yet" (nothing is attached, or
+/// the asset was never probed), which prices as [`Estimate::Unknown`] rather than as free.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ToolInput {
+    pub width: u32,
+    pub height: u32,
+    /// Rounded up: a provider bills a part-second of video as a whole one.
+    pub duration_secs: u32,
+}
+
+impl ToolInput {
+    pub fn image(width: u32, height: u32) -> Self {
+        Self { width, height, duration_secs: 0 }
+    }
+
+    pub fn video(width: u32, height: u32, duration_secs: u32) -> Self {
+        Self { width, height, duration_secs }
+    }
+
+    /// The output's short edge after `factor`, which is what a per-resolution rate table is keyed
+    /// on ("720p" means 720 lines, whichever way the clip is turned).
+    pub fn output_lines(&self, factor: u32) -> u32 {
+        self.width.min(self.height).saturating_mul(factor)
+    }
 }
 
 impl PricedJob<'_> {
@@ -102,7 +130,7 @@ impl PricedJob<'_> {
             PricedJob::Image(s) => s.model.id,
             PricedJob::Video(s) => s.model.id,
             PricedJob::Audio { settings, .. } => settings.model.id,
-            PricedJob::Tool(m) => m.id,
+            PricedJob::Tool { settings, .. } => settings.model.id,
         }
     }
 }

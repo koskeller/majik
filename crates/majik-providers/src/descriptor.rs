@@ -3,14 +3,19 @@
 
 use std::sync::Arc;
 
-use crate::client::{AudioProviderClient, ClientOptions, ImageProviderClient, ResumableClient, TextProviderClient, VideoProviderClient};
-use crate::models::{AudioModel, AudioModelCapabilities, ImageModel, ModelCapabilities, ToolId, ToolModel, VideoModel, VideoModelCapabilities};
+use crate::client::{AudioProviderClient, ClientOptions, ImageProviderClient, ResumableClient, TextProviderClient, ToolProviderClient, VideoProviderClient};
+use crate::models::{
+    AudioModel, AudioModelCapabilities, ImageModel, ModelCapabilities, ToolId, ToolModel, ToolModelCapabilities, VideoModel, VideoModelCapabilities,
+};
+use majik_core::model::MediaType;
 use crate::pricing::{Estimate, PricedJob};
 use crate::ProviderId;
 
 pub type ImageCapabilitiesFn = fn(&ImageModel) -> Option<ModelCapabilities>;
 pub type VideoCapabilitiesFn = fn(&VideoModel) -> Option<VideoModelCapabilities>;
 pub type AudioCapabilitiesFn = fn(&AudioModel) -> Option<AudioModelCapabilities>;
+/// What a tool model lets the composer choose. `None` for a model this provider doesn't offer.
+pub type ToolCapabilitiesFn = fn(&ToolModel) -> Option<ToolModelCapabilities>;
 /// What one output of a configured job costs. `Estimate::Unknown` for a model this provider has no
 /// price for, which is a valid answer rather than an error.
 pub type PricingFn = fn(&PricedJob<'_>) -> Estimate;
@@ -21,6 +26,8 @@ pub type MakeAudioClientFn = fn(&ClientOptions) -> Option<Arc<dyn AudioProviderC
 pub type MakeResumeClientFn = fn(&ClientOptions) -> Option<Arc<dyn ResumableClient>>;
 /// `None` for providers that route no text model (the composer then hides Improve Prompt).
 pub type MakeTextClientFn = fn(&ClientOptions) -> Option<Arc<dyn TextProviderClient>>;
+/// `None` for providers that offer no tools.
+pub type MakeToolClientFn = fn(&ClientOptions) -> Option<Arc<dyn ToolProviderClient>>;
 
 pub struct ProviderDescriptor {
     pub id: ProviderId,
@@ -41,6 +48,7 @@ pub struct ProviderDescriptor {
     pub image_capabilities: ImageCapabilitiesFn,
     pub video_capabilities: VideoCapabilitiesFn,
     pub audio_capabilities: AudioCapabilitiesFn,
+    pub tool_capabilities: ToolCapabilitiesFn,
     pub pricing: PricingFn,
     /// Tool implementations (upscalers, background removers) this provider offers; empty = no tools.
     pub supported_tool_models: Vec<ToolModel>,
@@ -49,6 +57,7 @@ pub struct ProviderDescriptor {
     pub make_video_client: MakeVideoClientFn,
     pub make_audio_client: MakeAudioClientFn,
     pub make_text_client: MakeTextClientFn,
+    pub make_tool_client: MakeToolClientFn,
     pub make_resume_client: MakeResumeClientFn,
 }
 
@@ -115,5 +124,16 @@ impl ProviderDescriptor {
     /// The models implementing `kind`, in declaration order (the composer indexes into this list).
     pub fn tool_models(&self, kind: ToolId) -> Vec<&ToolModel> {
         self.supported_tool_models.iter().filter(|m| m.kind == kind).collect()
+    }
+
+    /// The models implementing `kind` over `media`. What the composer's tool tab checks before
+    /// offering a video upscale, and what greys the entry when the provider has none.
+    pub fn tool_models_for(&self, kind: ToolId, media: MediaType) -> Vec<&ToolModel> {
+        self.supported_tool_models.iter().filter(|m| m.kind == kind && m.media == media).collect()
+    }
+
+    /// What `model` lets the composer choose.
+    pub fn tool_capabilities(&self, model: &ToolModel) -> Option<ToolModelCapabilities> {
+        (self.tool_capabilities)(model)
     }
 }

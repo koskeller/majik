@@ -2,12 +2,14 @@
 //! tests for the queue / sync paths.
 
 use std::io::Cursor;
+use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use serde_json::{json, Value};
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+use majik_core::model::{MediaType, ToolId};
 use majik_providers::catalog;
 use majik_providers::ClientOptions;
 use majik_providers::fal::capabilities::{self as caps, ids};
@@ -18,8 +20,8 @@ use majik_providers::fal::{
 use majik_providers::ReferenceAssets;
 use majik_providers::{
     AspectRatio, AssetRole, AudioGenerationSettings, AudioModel, AudioProviderClient, AudioVoice, GenerationError, ImageModel, ImageProviderClient,
-    ImageResolution, ProviderAsset, ProviderClient, ProviderId, ProviderRegistry, VideoAspectRatio, VideoDurationRange, VideoGenerationSettings,
-    VideoModel, VideoProviderClient, VideoResolution,
+    ImageResolution, JobHandle, ProviderAsset, ProviderClient, ProviderId, ProviderRegistry, ToolProviderClient, ToolSettings, VideoAspectRatio,
+    VideoDurationRange, VideoGenerationSettings, VideoModel, VideoProviderClient, VideoResolution,
 };
 
 /// One runtime for every test in this binary. `http::client()` is a process-wide `reqwest::Client`
@@ -54,7 +56,17 @@ fn client() -> FalClient {
 }
 
 fn mock_client(server: &MockServer) -> FalClient {
-    FalClient::new("test-key").with_base_urls(server.uri(), server.uri())
+    FalClient::new("test-key").with_base_urls(server.uri(), server.uri()).with_rest_base_url(server.uri())
+}
+
+/// One tool run against the mock server.
+async fn run_tool(server: &MockServer, settings: &ToolSettings, role: AssetRole, content_type: &str, data: &[u8]) -> Result<Vec<u8>, GenerationError> {
+    let input = ProviderAsset::new(role, content_type, data.to_vec());
+    mock_client(server).run_tool(settings, &input).await
+}
+
+async fn upscale_image(server: &MockServer, settings: &ToolSettings, data: &[u8]) -> Result<Vec<u8>, GenerationError> {
+    run_tool(server, settings, AssetRole::ReferenceImage, "image/png", data).await
 }
 
 fn b64(bytes: &[u8]) -> String {
@@ -1341,7 +1353,19 @@ fn descriptor_shape() {
     assert_eq!(d.supported_audio_models.len(), 2);
     assert_eq!(d.supported_image_models[0].id, ids::GEMINI_3_PRO);
     assert_eq!(d.supported_video_models[0].id, ids::VEO_31);
-    assert_eq!(d.supported_tool_models, vec![catalog::tool::TOPAZ_UPSCALE.clone(), catalog::tool::BRIA_BACKGROUND_REMOVE.clone()]);
+    assert_eq!(
+        d.supported_tool_models,
+        vec![catalog::tool::TOPAZ_UPSCALE.clone(), catalog::tool::TOPAZ_UPSCALE_VIDEO.clone(), catalog::tool::BRIA_BACKGROUND_REMOVE.clone()]
+    );
+    // The Upscale tab offers one model per media, which is what lets it take either.
+    assert_eq!(d.tool_models_for(ToolId::Upscale, MediaType::Image), vec![&catalog::tool::TOPAZ_UPSCALE]);
+    assert_eq!(d.tool_models_for(ToolId::Upscale, MediaType::Video), vec![&catalog::tool::TOPAZ_UPSCALE_VIDEO]);
+    assert!(d.tool_models_for(ToolId::RemoveBackground, MediaType::Video).is_empty());
+    assert!((d.make_tool_client)(&ClientOptions::new("k")).is_some());
+    for model in &d.supported_tool_models {
+        assert!(d.tool_capabilities(model).is_some(), "{} has no capability row", model.id);
+        assert!(caps::tool_endpoint(model).is_some(), "{} has no endpoint", model.id);
+    }
     assert!(d.supports_video_generation());
     assert!(d.supports_audio_generation());
     assert!((d.make_video_client)(&ClientOptions::new("k")).is_some());
@@ -1648,8 +1672,53 @@ async fn upscale_uses_sync_endpoint_and_downloads_result_inner() {
         .await;
     Mock::given(method("GET")).and(path("/cdn/up.png")).respond_with(ResponseTemplate::new(200).set_body_bytes(output.clone())).expect(1).mount(&server).await;
 
-    let result = mock_client(&server).upscale_image(&input).await.unwrap();
+    let settings = ToolSettings::new(catalog::tool::TOPAZ_UPSCALE.clone());
+    let result = upscale_image(&server, &settings, &input).await.unwrap();
     assert_eq!(result, output);
+}
+
+/// The factor and Topaz variant the composer picked reach the request; the variant travels as a
+/// stable slug and is mapped to fal's own wire string here.
+#[test]
+fn upscale_sends_the_selected_factor_and_variant() {
+    crate::rt().block_on(upscale_sends_the_selected_factor_and_variant_inner());
+}
+
+async fn upscale_sends_the_selected_factor_and_variant_inner() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/fal-ai/topaz/upscale/image"))
+        .and(body_partial_json(json!({ "model": "High Fidelity V2", "upscale_factor": 4 })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "image": { "url": format!("{}/cdn/up.png", server.uri()) } })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET")).and(path("/cdn/up.png")).respond_with(ResponseTemplate::new(200).set_body_bytes(vec![7])).mount(&server).await;
+
+    let settings = ToolSettings::new(catalog::tool::TOPAZ_UPSCALE.clone()).with_factor(4).with_variant("high-fidelity-v2");
+    assert_eq!(upscale_image(&server, &settings, &[1]).await.unwrap(), vec![7]);
+}
+
+/// A variant slug the table no longer knows falls back to the model's default rather than being
+/// forwarded as-is, so a request stored before a variant was dropped still runs.
+#[test]
+fn upscale_falls_back_to_the_default_variant() {
+    crate::rt().block_on(upscale_falls_back_to_the_default_variant_inner());
+}
+
+async fn upscale_falls_back_to_the_default_variant_inner() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/fal-ai/topaz/upscale/image"))
+        .and(body_partial_json(json!({ "model": "Standard V2" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "image": { "url": format!("{}/cdn/up.png", server.uri()) } })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET")).and(path("/cdn/up.png")).respond_with(ResponseTemplate::new(200).set_body_bytes(vec![7])).mount(&server).await;
+
+    let settings = ToolSettings::new(catalog::tool::TOPAZ_UPSCALE.clone()).with_variant("no-such-variant");
+    assert_eq!(upscale_image(&server, &settings, &[1]).await.unwrap(), vec![7]);
 }
 
 #[test]
@@ -1670,7 +1739,8 @@ async fn remove_background_uses_sync_endpoint_inner() {
         .await;
     Mock::given(method("GET")).and(path("/cdn/bg.png")).respond_with(ResponseTemplate::new(200).set_body_bytes(output.clone())).mount(&server).await;
 
-    let result = mock_client(&server).remove_background(&input).await.unwrap();
+    let settings = ToolSettings::new(catalog::tool::BRIA_BACKGROUND_REMOVE.clone());
+    let result = upscale_image(&server, &settings, &input).await.unwrap();
     assert_eq!(result, output);
 }
 
@@ -1686,7 +1756,7 @@ async fn sync_endpoint_errors_and_bad_downloads_are_mapped_inner() {
         .respond_with(ResponseTemplate::new(401).set_body_json(json!({ "detail": "nope" })))
         .mount(&server)
         .await;
-    let err = mock_client(&server).remove_background(&[1]).await.unwrap_err();
+    let err = upscale_image(&server, &ToolSettings::new(catalog::tool::BRIA_BACKGROUND_REMOVE.clone()), &[1]).await.unwrap_err();
     assert_eq!(err, GenerationError::Unauthorized("nope".into()));
 
     let server = MockServer::start().await;
@@ -1696,7 +1766,7 @@ async fn sync_endpoint_errors_and_bad_downloads_are_mapped_inner() {
         .mount(&server)
         .await;
     Mock::given(method("GET")).and(path("/cdn/missing.png")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
-    let err = mock_client(&server).upscale_image(&[1]).await.unwrap_err();
+    let err = upscale_image(&server, &ToolSettings::new(catalog::tool::TOPAZ_UPSCALE.clone()), &[1]).await.unwrap_err();
     assert_eq!(err, GenerationError::Unknown("Invalid image data received from the server".into()));
 
     let server = MockServer::start().await;
@@ -1705,8 +1775,154 @@ async fn sync_endpoint_errors_and_bad_downloads_are_mapped_inner() {
         .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
         .mount(&server)
         .await;
-    let err = mock_client(&server).upscale_image(&[1]).await.unwrap_err();
+    let err = upscale_image(&server, &ToolSettings::new(catalog::tool::TOPAZ_UPSCALE.clone()), &[1]).await.unwrap_err();
     assert!(matches!(err, GenerationError::Unknown(ref m) if m.starts_with("Failed to decode response")), "{err:?}");
+}
+
+/// A video upscale is a queue job, not a synchronous call, and its input goes through fal's storage
+/// rather than a data URI. `H264_output` must be `true`: the endpoint defaults to H265, which
+/// `majik_core::video` cannot decode, so the result would land in the library unplayable.
+#[test]
+fn upscale_video_uploads_the_clip_and_queues_h264() {
+    crate::rt().block_on(upscale_video_uploads_the_clip_and_queues_h264_inner());
+}
+
+async fn upscale_video_uploads_the_clip_and_queues_h264_inner() {
+    let server = MockServer::start().await;
+    let clip = vec![0, 0, 0, 0x18, b'f', b't', b'y', b'p'];
+    let output = vec![0, 0, 0, 0x18, b'f', b't', b'y', b'p', 9];
+
+    Mock::given(method("POST"))
+        .and(path("/storage/upload/initiate"))
+        .and(header("Authorization", "Key test-key"))
+        .and(body_partial_json(json!({ "content_type": "video/mp4", "file_name": "input.mp4" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "file_url": format!("{}/cdn/input.mp4", server.uri()),
+            "upload_url": format!("{}/signed/put", server.uri()),
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // The signed URL is the auth; sending our key to whatever host it names would leak it.
+    Mock::given(method("PUT"))
+        .and(path("/signed/put"))
+        .and(header("Content-Type", "video/mp4"))
+        .and(wiremock::matchers::body_bytes(clip.clone()))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/fal-ai/topaz/upscale/video"))
+        .and(body_partial_json(json!({
+            "video_url": format!("{}/cdn/input.mp4", server.uri()),
+            "model": "Proteus",
+            "upscale_factor": 4,
+            "H264_output": true,
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "request_id": "vid-1" })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/fal-ai/topaz/upscale/video/requests/vid-1/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "status": "COMPLETED" })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/fal-ai/topaz/upscale/video/requests/vid-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "video": { "url": format!("{}/cdn/out.mp4", server.uri()) } })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET")).and(path("/cdn/out.mp4")).respond_with(ResponseTemplate::new(200).set_body_bytes(output.clone())).expect(1).mount(&server).await;
+
+    let settings = ToolSettings::new(catalog::tool::TOPAZ_UPSCALE_VIDEO.clone()).with_factor(4);
+    let result = run_tool(&server, &settings, AssetRole::ReferenceVideo, "video/mp4", &clip).await.unwrap();
+    assert_eq!(result, output);
+}
+
+/// Going through the queue is what gives a video upscale a resumable handle: without one, a job
+/// still running when the app is relaunched could not be re-attached to.
+#[test]
+fn upscale_video_reports_its_queue_handle() {
+    crate::rt().block_on(upscale_video_reports_its_queue_handle_inner());
+}
+
+async fn upscale_video_reports_its_queue_handle_inner() {
+    let server = MockServer::start().await;
+    mount_upload(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/fal-ai/topaz/upscale/video"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "request_id": "vid-2" })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/fal-ai/topaz/upscale/video/requests/vid-2/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "status": "COMPLETED" })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/fal-ai/topaz/upscale/video/requests/vid-2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "video": { "url": format!("{}/cdn/out.mp4", server.uri()) } })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET")).and(path("/cdn/out.mp4")).respond_with(ResponseTemplate::new(200).set_body_bytes(vec![1])).mount(&server).await;
+
+    let seen: Arc<Mutex<Vec<JobHandle>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    let client = mock_client(&server).with_on_accepted(Arc::new(move |handle| sink.lock().unwrap().push(handle)));
+    let settings = ToolSettings::new(catalog::tool::TOPAZ_UPSCALE_VIDEO.clone());
+    let input = ProviderAsset::new(AssetRole::ReferenceVideo, "video/mp4", vec![0, 0, 0, 0x18, b'f', b't', b'y', b'p']);
+    client.run_tool(&settings, &input).await.unwrap();
+
+    let handles = seen.lock().unwrap();
+    assert_eq!(handles.len(), 1);
+    assert_eq!(handles[0].job_id, "vid-2");
+    assert!(handles[0].poll_url.as_deref().is_some_and(|u| u.ends_with("/requests/vid-2/status")), "{:?}", handles[0].poll_url);
+}
+
+/// A failed upload has to surface as a real error rather than as a request with no video in it.
+#[test]
+fn upscale_video_maps_upload_failures() {
+    crate::rt().block_on(upscale_video_maps_upload_failures_inner());
+}
+
+async fn upscale_video_maps_upload_failures_inner() {
+    let settings = ToolSettings::new(catalog::tool::TOPAZ_UPSCALE_VIDEO.clone());
+    let clip = vec![0, 0, 0, 0x18, b'f', b't', b'y', b'p'];
+
+    // The initiate call itself is refused.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/storage/upload/initiate"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({ "detail": "bad key" })))
+        .mount(&server)
+        .await;
+    let err = run_tool(&server, &settings, AssetRole::ReferenceVideo, "video/mp4", &clip).await.unwrap_err();
+    assert_eq!(err, GenerationError::Unauthorized("bad key".into()));
+
+    // The signed PUT fails, so nothing was ever stored to point the job at.
+    let server = MockServer::start().await;
+    mount_upload_initiate(&server).await;
+    Mock::given(method("PUT")).and(path("/signed/put")).respond_with(ResponseTemplate::new(500)).mount(&server).await;
+    let err = run_tool(&server, &settings, AssetRole::ReferenceVideo, "video/mp4", &clip).await.unwrap_err();
+    assert_eq!(err, GenerationError::Unknown("Failed to upload the input: HTTP 500".into()));
+}
+
+async fn mount_upload_initiate(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/storage/upload/initiate"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "file_url": format!("{}/cdn/input.mp4", server.uri()),
+            "upload_url": format!("{}/signed/put", server.uri()),
+        })))
+        .mount(server)
+        .await;
+}
+
+async fn mount_upload(server: &MockServer) {
+    mount_upload_initiate(server).await;
+    Mock::given(method("PUT")).and(path("/signed/put")).respond_with(ResponseTemplate::new(200)).mount(server).await;
 }
 
 #[test]

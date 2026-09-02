@@ -3,7 +3,7 @@
 
 use majik_core::model::{JobId, JobTrace, GenerationId, MediaType, ToolId};
 use majik_providers::http::Timeouts;
-use majik_providers::{ClientOptions, GenerationError, JobHandle, ProviderClient, ProviderId, ProviderRegistry};
+use majik_providers::{ClientOptions, GenerationError, JobHandle, ProviderAsset, ProviderClient, ProviderId, ProviderRegistry};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -51,6 +51,10 @@ pub fn stale_timeout(media_type: MediaType) -> Duration {
 pub fn stale_timeout_for(generation_type: &GenerationType) -> Duration {
     match generation_type {
         GenerationType::Video(settings) => Timeouts::video(settings.duration).total + CLIENT_HEADROOM,
+        // A video tool doesn't say how long its input is, so it gets the budget of the longest clip
+        // we would render. Upscaling is slower than generating, and the image budget would abandon
+        // a job the user has already paid for.
+        other if other.media_type() == MediaType::Video => Timeouts::video_resume().total + CLIENT_HEADROOM,
         other => stale_timeout(other.media_type()),
     }
 }
@@ -365,18 +369,17 @@ async fn run_once(job: &Job, keys: &ApiKeys, events: &async_channel::Sender<Even
                 GenerationType::Image(s) => client.generate_image(&request.prompt, &s.model, &assets, Some(s.aspect_ratio), Some(s.resolution)).await,
                 GenerationType::Video(s) => client.generate_video(&request.prompt, &assets, s).await,
                 GenerationType::Audio(s) => client.generate_audio(&request.prompt, s).await,
-                GenerationType::Upscale(_) => client.upscale_image(tool_input(request)?).await,
-                GenerationType::RemoveBackground(_) => client.remove_background(tool_input(request)?).await,
+                GenerationType::Upscale(s) | GenerationType::RemoveBackground(s) => client.run_tool(s, tool_input(&assets)?).await,
             }
         }
         Job::Resume { handle, media_type, .. } => client.resume(handle, *media_type).await,
     }
 }
 
-/// The one image a tool request runs over. Validation refuses a request without it, and a retry
+/// The one asset a tool request runs over. Validation refuses a request without it, and a retry
 /// whose input file vanished is caught before submission, so this is the last check.
-fn tool_input(request: &Request) -> Result<&[u8], GenerationError> {
-    request.assets.first().map(|a| a.data.as_slice()).ok_or_else(|| GenerationError::InvalidRequest("The tool has no image to run over.".into()))
+fn tool_input(assets: &[ProviderAsset]) -> Result<&ProviderAsset, GenerationError> {
+    assets.first().ok_or_else(|| GenerationError::InvalidRequest("The tool has nothing to run over.".into()))
 }
 
 #[cfg(test)]
@@ -453,6 +456,21 @@ mod tests {
         }
         let longest = stale_timeout_for(&video_request(Timeouts::MAX_VIDEO_OUTPUT_SECONDS).generation_type);
         assert!(longest >= Timeouts::video(Timeouts::MAX_VIDEO_OUTPUT_SECONDS).total + Timeouts::VIDEO.request * 2);
+    }
+
+    /// A video upscale is a video job for deadline purposes even though it is a tool: it doesn't
+    /// say how long its input is, so it gets the budget of the longest clip we would render. The
+    /// image budget would abandon a job the user has already paid for.
+    #[test]
+    fn a_video_tool_gets_the_video_budget_and_an_image_tool_does_not() {
+        let video_tool = GenerationType::for_tool_model(&majik_providers::catalog::tool::MOCK_UPSCALE_VIDEO);
+        let image_tool = GenerationType::for_tool_model(&majik_providers::catalog::tool::MOCK_UPSCALE);
+
+        assert_eq!(stale_timeout_for(&image_tool), stale_timeout(MediaType::Image));
+        assert_eq!(stale_timeout_for(&video_tool), Timeouts::video_resume().total + CLIENT_HEADROOM);
+        assert!(stale_timeout_for(&video_tool) > stale_timeout(MediaType::Image), "an upscale is slower than a render, not faster");
+        // As long as the longest clip we would render, since that is the longest input it can get.
+        assert_eq!(stale_timeout_for(&video_tool), stale_timeout_for(&video_request(Timeouts::MAX_VIDEO_OUTPUT_SECONDS).generation_type));
     }
 
     /// A `Resume` is bounded by the time its attempt has left, not by the per-type default, since
@@ -552,7 +570,7 @@ mod tests {
 
     fn tool_request(model: &majik_providers::ToolModel, with_image: bool) -> Request {
         let image = crate::request::AssetInput::new(majik_providers::AssetRole::ReferenceImage, "image/png", majik_core::images::solid_png(2, 2, [1, 2, 3]));
-        let mut request = Request::tool(ProviderId::mock(), model, image);
+        let mut request = Request::tool(ProviderId::mock(), majik_providers::ToolSettings::new(model.clone()), image);
         if !with_image {
             request.assets.clear();
         }

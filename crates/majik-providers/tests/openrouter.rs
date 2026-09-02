@@ -11,7 +11,10 @@ use majik_providers::ClientOptions;
 use majik_providers::openrouter::models::{Choice, ChoiceError, ImageUrl, Response, ResponseImage, ResponseMessage};
 use majik_providers::openrouter::provider::{build_request, check_for_embedded_errors, extract_image_data, parse_response};
 use majik_providers::openrouter::{descriptor, OpenRouterClient, OpenRouterError};
-use majik_providers::{AspectRatio, AssetRole, GenerationError, ImageModel, ImageProviderClient, ImageResolution, ProviderAsset, ProviderId, ToolId};
+use majik_providers::{
+    catalog, AspectRatio, AssetRole, GenerationError, ImageModel, ImageProviderClient, ImageResolution, ProviderAsset, ProviderClient, ProviderId, ToolId,
+    ToolSettings,
+};
 
 /// One runtime for every test in this binary. `http::client()` is a process-wide `reqwest::Client`
 /// whose pooled connections each carry a dispatch task owned by the runtime that opened them. Give
@@ -354,15 +357,21 @@ async fn unsupported_asset_role_is_invalid_request_inner() {
     assert_eq!(err, GenerationError::InvalidRequest("Role 'mask_image' is not supported by OpenRouter".into()));
 }
 
+/// OpenRouter routes no tool client at all, so the facade is what refuses — the provider no longer
+/// carries a pair of always-failing methods.
 #[test]
-fn upscale_and_remove_background_are_invalid_requests() {
-    crate::rt().block_on(upscale_and_remove_background_are_invalid_requests_inner());
+fn tools_are_invalid_requests() {
+    crate::rt().block_on(tools_are_invalid_requests_inner());
 }
 
-async fn upscale_and_remove_background_are_invalid_requests_inner() {
-    let client = OpenRouterClient::new("fake");
-    assert_eq!(client.upscale_image(&[]).await.unwrap_err(), GenerationError::InvalidRequest("Image upscaling is not supported by OpenRouter".into()));
-    assert_eq!(client.remove_background(&[]).await.unwrap_err(), GenerationError::InvalidRequest("Background removal is not supported by OpenRouter".into()));
+async fn tools_are_invalid_requests_inner() {
+    let client = ProviderClient::new(majik_providers::openrouter::descriptor(), "fake");
+    let input = ProviderAsset::new(AssetRole::ReferenceImage, "image/png", vec![]);
+    for model in [&catalog::tool::TOPAZ_UPSCALE, &catalog::tool::BRIA_BACKGROUND_REMOVE] {
+        let settings = ToolSettings::new(model.clone());
+        let error = client.run_tool(&settings, &input).await.unwrap_err();
+        assert_eq!(error, GenerationError::InvalidRequest(format!("{} is not supported by OpenRouter", model.kind.label())));
+    }
 }
 
 // ----- build_request ----------------------------------------------------------------------------

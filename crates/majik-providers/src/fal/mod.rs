@@ -15,7 +15,7 @@ pub mod provider;
 use std::sync::{Arc, OnceLock};
 
 use crate::catalog;
-use crate::client::{AudioProviderClient, ImageProviderClient, ResumableClient, TextProviderClient, VideoProviderClient};
+use crate::client::{AudioProviderClient, ImageProviderClient, ResumableClient, TextProviderClient, ToolProviderClient, VideoProviderClient};
 use crate::descriptor::ProviderDescriptor;
 use crate::ProviderId;
 
@@ -54,12 +54,18 @@ pub fn descriptor() -> &'static ProviderDescriptor {
         image_capabilities: capabilities::image_capabilities,
         video_capabilities: capabilities::video_capabilities,
         audio_capabilities: capabilities::audio_capabilities,
+        tool_capabilities: capabilities::tool_capabilities,
         pricing: pricing::pricing,
-        supported_tool_models: vec![catalog::tool::TOPAZ_UPSCALE.clone(), catalog::tool::BRIA_BACKGROUND_REMOVE.clone()],
+        supported_tool_models: vec![
+            catalog::tool::TOPAZ_UPSCALE.clone(),
+            catalog::tool::TOPAZ_UPSCALE_VIDEO.clone(),
+            catalog::tool::BRIA_BACKGROUND_REMOVE.clone(),
+        ],
         make_image_client: |options| Arc::new(FalClient::from_options(options)) as Arc<dyn ImageProviderClient>,
         make_video_client: |options| Some(Arc::new(FalClient::from_options(options)) as Arc<dyn VideoProviderClient>),
         make_audio_client: |options| Some(Arc::new(FalClient::from_options(options)) as Arc<dyn AudioProviderClient>),
         make_text_client: |options| Some(Arc::new(FalClient::from_options(options)) as Arc<dyn TextProviderClient>),
+        make_tool_client: |options| Some(Arc::new(FalClient::from_options(options)) as Arc<dyn ToolProviderClient>),
         make_resume_client: |options| Some(Arc::new(FalClient::from_options(options)) as Arc<dyn ResumableClient>),
     })
 }

@@ -17,8 +17,9 @@
 
 use majik_providers::{
     catalog, AspectRatio, AssetRole, AudioGenerationSettings, AudioModel, AudioVoice, ImageModel, ProviderAsset, ProviderClient, ProviderDescriptor,
-    VideoAspectRatio, VideoGenerationSettings, VideoModel,
+    ToolSettings, VideoAspectRatio, VideoGenerationSettings, VideoModel,
 };
+use majik_core::model::{MediaType, ToolId};
 
 // ----- keys -------------------------------------------------------------------------------------
 
@@ -52,6 +53,13 @@ fn client(descriptor: &'static ProviderDescriptor, key: &str) -> ProviderClient 
 /// every known threshold.
 fn reference_png() -> Vec<u8> {
     majik_core::images::solid_png(512, 512, [255, 0, 0])
+}
+
+/// A real 2 s 512×288 H.264 MP4, rendered by the Mock provider's encoder. Small enough to upload
+/// quickly and long enough that a per-second video upscale bills a couple of cents rather than a
+/// fraction of one.
+fn reference_mp4() -> Vec<u8> {
+    majik_providers::mock::video_renderer::render_blocking(512, 288, 2, [255, 0, 0]).expect("render a clip")
 }
 
 // ----- assertions -------------------------------------------------------------------------------
@@ -212,14 +220,20 @@ async fn dialogue(descriptor: &'static ProviderDescriptor, key: &str, id: &str) 
     assert_audio(id, &bytes);
 }
 
-async fn upscale(descriptor: &'static ProviderDescriptor, key: &str) {
-    let bytes = client(descriptor, key).upscale_image(&reference_png()).await.unwrap_or_else(|e| panic!("{} upscale: {e}", descriptor.display_name));
-    assert_image("upscale", &bytes);
-}
-
-async fn remove_background(descriptor: &'static ProviderDescriptor, key: &str) {
-    let bytes = client(descriptor, key).remove_background(&reference_png()).await.unwrap_or_else(|e| panic!("{} remove background: {e}", descriptor.display_name));
-    assert_image("remove background", &bytes);
+/// One tool run on the provider's model for `kind` over `media`, on that model's defaults.
+async fn run_tool(descriptor: &'static ProviderDescriptor, key: &str, kind: ToolId, media: MediaType) {
+    let models = descriptor.tool_models_for(kind, media);
+    let model = models.first().unwrap_or_else(|| panic!("{} has no {kind:?} model for {media:?}", descriptor.display_name));
+    let settings = ToolSettings::new((*model).clone());
+    let input = match media {
+        MediaType::Video => ProviderAsset::new(AssetRole::ReferenceVideo, "video/mp4", reference_mp4()),
+        _ => ProviderAsset::new(AssetRole::ReferenceImage, "image/png", reference_png()),
+    };
+    let bytes = client(descriptor, key).run_tool(&settings, &input).await.unwrap_or_else(|e| panic!("{}/{} : {e}", descriptor.display_name, model.id));
+    match media {
+        MediaType::Video => assert_video(model.id, &bytes),
+        _ => assert_image(model.id, &bytes),
+    }
 }
 
 /// What the composer puts straight into the prompt field, so the model has to have obeyed "the
@@ -473,18 +487,29 @@ mod fal {
         }
     }
     mod tools {
+        use majik_core::model::{MediaType, ToolId};
+
         #[test]
         #[ignore = "live API: needs FAL_API_KEY"]
         fn upscale() {
             let Some(key) = crate::key("FAL_API_KEY") else { return };
-            crate::rt().block_on(crate::upscale(majik_providers::fal::descriptor(), &key));
+            crate::rt().block_on(crate::run_tool(majik_providers::fal::descriptor(), &key, ToolId::Upscale, MediaType::Image));
+        }
+
+        /// The one that proves `H264_output: true` took effect: `assert_video` demuxes the result
+        /// through `majik_core::video::probe`, which an H265 clip would not survive.
+        #[test]
+        #[ignore = "live API: needs FAL_API_KEY (and bills per second of video)"]
+        fn upscale_video() {
+            let Some(key) = crate::key("FAL_API_KEY") else { return };
+            crate::rt().block_on(crate::run_tool(majik_providers::fal::descriptor(), &key, ToolId::Upscale, MediaType::Video));
         }
 
         #[test]
         #[ignore = "live API: needs FAL_API_KEY"]
         fn remove_background() {
             let Some(key) = crate::key("FAL_API_KEY") else { return };
-            crate::rt().block_on(crate::remove_background(majik_providers::fal::descriptor(), &key));
+            crate::rt().block_on(crate::run_tool(majik_providers::fal::descriptor(), &key, ToolId::RemoveBackground, MediaType::Image));
         }
     }
     mod text {
@@ -622,18 +647,20 @@ mod replicate {
         }
     }
     mod tools {
+        use majik_core::model::{MediaType, ToolId};
+
         #[test]
         #[ignore = "live API: needs REPLICATE_API_KEY"]
         fn upscale() {
             let Some(key) = crate::key("REPLICATE_API_KEY") else { return };
-            crate::rt().block_on(crate::upscale(majik_providers::replicate::descriptor(), &key));
+            crate::rt().block_on(crate::run_tool(majik_providers::replicate::descriptor(), &key, ToolId::Upscale, MediaType::Image));
         }
 
         #[test]
         #[ignore = "live API: needs REPLICATE_API_KEY"]
         fn remove_background() {
             let Some(key) = crate::key("REPLICATE_API_KEY") else { return };
-            crate::rt().block_on(crate::remove_background(majik_providers::replicate::descriptor(), &key));
+            crate::rt().block_on(crate::run_tool(majik_providers::replicate::descriptor(), &key, ToolId::RemoveBackground, MediaType::Image));
         }
     }
     mod text {
@@ -786,6 +813,7 @@ mod guard {
     //! provider says it supports. The matrix is generated from the catalogs, so it cannot diverge
     //! from them the way a hand-written list would.
 
+    use majik_core::model::MediaType;
     use majik_providers::{ProviderDescriptor, ToolId};
 
     fn sorted(ids: &[&str]) -> Vec<String> {
@@ -868,9 +896,19 @@ mod guard {
     #[test]
     fn the_tool_and_text_modules_match_every_provider() {
         for descriptor in [majik_providers::fal::descriptor(), majik_providers::replicate::descriptor()] {
-            assert!(descriptor.supports_tool(ToolId::Upscale), "{} lost upscaling; drop its tools module", descriptor.display_name);
-            assert!(descriptor.supports_tool(ToolId::RemoveBackground), "{} lost background removal", descriptor.display_name);
+            assert!(!descriptor.tool_models_for(ToolId::Upscale, MediaType::Image).is_empty(), "{} lost image upscaling; drop its tools module", descriptor.display_name);
+            assert!(!descriptor.tool_models_for(ToolId::RemoveBackground, MediaType::Image).is_empty(), "{} lost background removal", descriptor.display_name);
         }
+        // Per media, not just per kind: a provider gaining or losing a *video* upscaler changes
+        // which `tools::` tests can run, and the old per-kind check could not see it.
+        assert!(
+            !majik_providers::fal::descriptor().tool_models_for(ToolId::Upscale, MediaType::Video).is_empty(),
+            "fal lost video upscaling; drop tools::upscale_video"
+        );
+        assert!(
+            majik_providers::replicate::descriptor().tool_models_for(ToolId::Upscale, MediaType::Video).is_empty(),
+            "Replicate has gained a video upscaler; give it a tools::upscale_video test"
+        );
         let openrouter = majik_providers::openrouter::descriptor();
         assert!(!openrouter.supports_tool(ToolId::Upscale) && !openrouter.supports_tool(ToolId::RemoveBackground), "OpenRouter has gained tools; give it a module");
 

@@ -29,19 +29,20 @@ pub mod replicate;
 
 pub use asset::{AssetConstraintError, AssetConstraints, AssetRole, ProviderAsset};
 pub use client::{
-    AudioProviderClient, ClientOptions, ImageProviderClient, JobHandle, OnAccepted, ProviderClient, ResumableClient, TextProviderClient, VideoProviderClient,
+    AudioProviderClient, ClientOptions, ImageProviderClient, JobHandle, OnAccepted, ProviderClient, ResumableClient, TextProviderClient, ToolProviderClient,
+    VideoProviderClient,
 };
 pub use descriptor::ProviderDescriptor;
 pub use error::GenerationError;
 pub use id::ProviderId;
 pub use models::{
-    AspectRatio, AudioModel, AudioModelCapabilities, AudioVoice, ImageModel, ImageResolution, ModelCapabilities, VideoAspectRatio,
-    ToolId, ToolModel, VideoDurationRange, VideoModel, VideoModelCapabilities, VideoReferences, VideoResolution,
+    AspectRatio, AudioModel, AudioModelCapabilities, AudioVoice, ImageModel, ImageResolution, ModelCapabilities, ToolId, ToolModel, ToolModelCapabilities,
+    ToolVariant, VideoAspectRatio, VideoDurationRange, VideoModel, VideoModelCapabilities, VideoReferences, VideoResolution,
 };
-pub use pricing::{Estimate, PricedJob, Usd};
+pub use pricing::{Estimate, PricedJob, ToolInput, Usd};
 pub use references::{handle, rewrite_handles, ReferenceAssets, ReferenceCounts, ReferenceTagStyle};
 pub use registry::ProviderRegistry;
-pub use settings::{AudioGenerationSettings, ImageGenerationSettings, VideoGenerationSettings};
+pub use settings::{AudioGenerationSettings, ImageGenerationSettings, ToolSettings, VideoGenerationSettings, DEFAULT_UPSCALE_FACTOR};
 
 /// Bytes of a generated or input media file.
 pub type Bytes = Vec<u8>;

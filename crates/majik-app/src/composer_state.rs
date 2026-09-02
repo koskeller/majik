@@ -7,9 +7,9 @@
 use majik_core::model::{AssetId, MediaType, ToolId};
 use majik_generation::{GenerationType, Request};
 use majik_providers::{
-    AspectRatio, AssetConstraints, AssetRole, AudioGenerationSettings, AudioModel, AudioModelCapabilities, AudioVoice, ImageGenerationSettings, ImageModel, ImageResolution,
-    Estimate, ModelCapabilities, PricedJob, ProviderDescriptor, ToolModel, VideoAspectRatio, VideoGenerationSettings, VideoModel, VideoModelCapabilities,
-    VideoResolution,
+    AspectRatio, AssetConstraints, AssetRole, AudioGenerationSettings, AudioModel, AudioModelCapabilities, AudioVoice, Estimate, ImageGenerationSettings,
+    ImageModel, ImageResolution, ModelCapabilities, PricedJob, ProviderDescriptor, ToolInput, ToolModel, ToolModelCapabilities, ToolSettings, VideoAspectRatio,
+    VideoGenerationSettings, VideoModel, VideoModelCapabilities, VideoResolution,
 };
 
 use crate::drafts::{AudioDraftState, ImageDraftState, ProviderDraft, ToolDraftState, VideoDraftState};
@@ -83,11 +83,16 @@ pub struct AudioDraft {
     pub speaker2: Option<AudioVoice>,
 }
 
-/// A tool tab's draft: which of the provider's models for that tool is selected.
+/// A tool tab's draft: which of the provider's models for that tool is selected, and the settings
+/// that model offers. `None` on either means "the model's default", the way the image tab's
+/// optional resolution does, so switching models doesn't strand a value the new one can't take.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ToolDraft {
     /// Index into `provider.tool_models(kind)`.
     pub model: usize,
+    pub upscale_factor: Option<u32>,
+    /// A `ToolVariant::id` slug.
+    pub variant: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -278,6 +283,9 @@ impl ComposerState {
                     self.tools.get_mut(tool).model = ix;
                 }
             }
+            let draft = self.tools.get_mut(tool);
+            draft.upscale_factor = stored.upscale_factor;
+            draft.variant = stored.variant.clone();
         }
         if let Some(tab) = d.media_type.as_deref().and_then(ComposeTab::from_raw) {
             if self.supported_tabs().contains(&tab) {
@@ -292,8 +300,17 @@ impl ComposerState {
             image: ImageDraftState { model_id: self.image_model().map(|m| m.id.to_string()), aspect_ratio: self.image.aspect_ratio, resolution: self.image.resolution, count: Some(self.image.count) },
             video: VideoDraftState { model_id: self.video_model().map(|m| m.id.to_string()), aspect_ratio: self.video.aspect_ratio, resolution: self.video.resolution, duration: Some(self.video.duration), audio: Some(self.video.audio), count: Some(self.video.count) },
             audio: AudioDraftState { model_id: self.audio_model().map(|m| m.id.to_string()), speaker1: self.audio.speaker1.as_ref().map(|v| v.id.clone()), speaker2: self.audio.speaker2.as_ref().map(|v| v.id.clone()) },
-            upscale: ToolDraftState { model_id: self.tool_model(ToolId::Upscale).map(|m| m.id.to_string()) },
-            remove_background: ToolDraftState { model_id: self.tool_model(ToolId::RemoveBackground).map(|m| m.id.to_string()) },
+            upscale: self.tool_draft_state(ToolId::Upscale),
+            remove_background: self.tool_draft_state(ToolId::RemoveBackground),
+        }
+    }
+
+    fn tool_draft_state(&self, tool: ToolId) -> ToolDraftState {
+        let draft = self.tools.get(tool);
+        ToolDraftState {
+            model_id: self.tool_model(tool).map(|m| m.id.to_string()),
+            upscale_factor: draft.upscale_factor,
+            variant: draft.variant.clone(),
         }
     }
 
@@ -361,6 +378,25 @@ impl ComposerState {
         }
     }
 
+    /// What the active tool tab's model lets the user choose.
+    pub fn tool_caps(&self) -> Option<ToolModelCapabilities> {
+        self.provider.tool_capabilities(self.active_tool_model()?)
+    }
+
+    /// The active tool tab's model with its chosen settings, ready to run. Each setting falls back
+    /// to the model's default, so a draft that predates a model gaining one still submits.
+    pub fn tool_settings(&self) -> Option<ToolSettings> {
+        let ComposeTab::Tool(tool) = self.tab else { return None };
+        let model = self.tool_model(tool)?;
+        let draft = self.tools.get(tool);
+        let caps = self.provider.tool_capabilities(model).unwrap_or_default();
+        Some(ToolSettings {
+            model: model.clone(),
+            upscale_factor: draft.upscale_factor.or_else(|| caps.default_factor()).unwrap_or(majik_providers::DEFAULT_UPSCALE_FACTOR),
+            variant: draft.variant.clone().or_else(|| caps.default_variant().map(str::to_string)),
+        })
+    }
+
     pub fn image_model(&self) -> Option<&'static ImageModel> {
         self.provider.supported_image_models.get(self.image.model)
     }
@@ -399,9 +435,18 @@ impl ComposerState {
         }
         for tool in ToolId::ALL {
             let available = self.provider.tool_models(tool).len();
+            if self.tools.get(tool).model >= available {
+                self.tools.get_mut(tool).model = 0;
+            }
+            // A factor or variant the newly selected model doesn't offer falls back to its default
+            // rather than being sent as-is.
+            let caps = self.tool_model(tool).and_then(|m| self.provider.tool_capabilities(m)).unwrap_or_default();
             let draft = self.tools.get_mut(tool);
-            if draft.model >= available {
-                draft.model = 0;
+            if draft.upscale_factor.is_some_and(|f| !caps.upscale_factors.contains(&f)) {
+                draft.upscale_factor = None;
+            }
+            if draft.variant.as_deref().is_some_and(|v| !caps.variants.iter().any(|t| t.id == v)) {
+                draft.variant = None;
             }
         }
     }
@@ -411,7 +456,15 @@ impl ComposerState {
             ComposeTab::Media(MediaType::Image) => self.image_caps().map(|c| c.asset_constraints).unwrap_or_default(),
             ComposeTab::Media(MediaType::Video) => self.video_caps().map(|c| c.asset_constraints).unwrap_or_default(),
             ComposeTab::Media(MediaType::Audio) => AssetConstraints::none(),
-            ComposeTab::Tool(_) => AssetConstraints::new([(AssetRole::ReferenceImage, 1..=TOOL_MAX_IMAGES)]),
+            // The selected model decides what the tab takes: an image upscaler draws the image
+            // card, a video one the video card. One clip per run; images come in batches.
+            ComposeTab::Tool(_) => match self.active_tool_model() {
+                Some(model) => {
+                    let max = self.provider.tool_capabilities(model).map(|c| c.max_inputs).unwrap_or(TOOL_MAX_IMAGES).max(1);
+                    AssetConstraints::new([(model.input_role(), 1..=max)])
+                }
+                None => AssetConstraints::none(),
+            },
         }
     }
 
@@ -470,8 +523,10 @@ impl ComposerState {
     /// `Estimate::Unknown` for a model the provider has no price for.
     ///
     /// `prompt_characters` is the length of the text to speak, which is all that per-character TTS
-    /// pricing depends on; it's passed in rather than read so this module stays free of GPUI.
-    pub fn unit_price(&self, prompt_characters: usize) -> Estimate {
+    /// pricing depends on; `tool_input` is the size of the asset a tool will run over, which is what
+    /// a per-second video upscale is billed on. Both are passed in rather than read so this module
+    /// stays free of GPUI.
+    pub fn unit_price(&self, prompt_characters: usize, tool_input: ToolInput) -> Estimate {
         match self.tab {
             ComposeTab::Media(MediaType::Image) => {
                 let Some(model) = self.image_model() else { return Estimate::Unknown };
@@ -498,9 +553,9 @@ impl ComposerState {
                 let settings = AudioGenerationSettings { model: model.clone(), speaker1, speaker2: self.audio.speaker2.clone() };
                 self.provider.price(&PricedJob::Audio { settings: &settings, characters: prompt_characters })
             }
-            // Tools never reach `generation_type`, but they do cost money: one run per input image.
-            ComposeTab::Tool(_) => match self.active_tool_model() {
-                Some(model) => self.provider.price(&PricedJob::Tool(model)),
+            // Tools never reach `generation_type`, but they do cost money: one run per input.
+            ComposeTab::Tool(_) => match self.tool_settings() {
+                Some(settings) => self.provider.price(&PricedJob::Tool { settings: &settings, input: tool_input }),
                 None => Estimate::Unknown,
             },
         }
@@ -704,15 +759,18 @@ impl ComposerState {
                 let ComposeTab::Tool(tool) = tab else { return RecreateOutcome::Unsupported(tab) };
                 let models = provider.tool_models(tool);
                 let Some(first) = models.first() else { return RecreateOutcome::Unsupported(tab) };
-                match models.iter().position(|m| m.id == s.model.id) {
-                    Some(ix) => {
-                        next.tools.get_mut(tool).model = ix;
-                        None
-                    }
-                    None => {
-                        next.tools.get_mut(tool).model = 0;
-                        Some(RecreateWarning::DefaultModel { tab, original_model: s.model.name, replacement_model: first.name })
-                    }
+                let found = models.iter().position(|m| m.id == s.model.id);
+                let draft = next.tools.get_mut(tool);
+                draft.model = found.unwrap_or(0);
+                // The settings come back only alongside the model that offered them; on a
+                // substitution `coerce` would drop them anyway.
+                if found.is_some() {
+                    draft.upscale_factor = Some(s.upscale_factor);
+                    draft.variant = s.variant.clone();
+                }
+                match found {
+                    Some(_) => None,
+                    None => Some(RecreateWarning::DefaultModel { tab, original_model: s.model.name, replacement_model: first.name }),
                 }
             }
         };
@@ -1283,7 +1341,7 @@ mod tests {
         assert_eq!(restored.tab, ComposeTab::Tool(ToolId::RemoveBackground));
         assert_eq!(restored.active_tool_model().map(|m| m.id), Some("bria-background-remove"));
         assert_eq!(ComposerState::new(openrouter::descriptor(), &draft).tab, ComposeTab::Media(MediaType::Image), "a provider without the tool can't show its tab");
-        let stale = ProviderDraft { media_type: Some("upscale".into()), upscale: ToolDraftState { model_id: Some("gone".into()) }, ..Default::default() };
+        let stale = ProviderDraft { media_type: Some("upscale".into()), upscale: ToolDraftState { model_id: Some("gone".into()), ..Default::default() }, ..Default::default() };
         let restored = ComposerState::new(replicate::descriptor(), &stale);
         assert_eq!(restored.tab, ComposeTab::Tool(ToolId::Upscale));
         assert_eq!(restored.active_tool_model().map(|m| m.id), Some("clarity-upscaler"), "an unknown model id means the provider's first");
@@ -1314,14 +1372,14 @@ mod tests {
     fn unit_price_prices_the_selected_image_model() {
         let mut s = state(mock::descriptor());
         select_image_model(&mut s, "flux-2-pro");
-        assert_eq!(micros(s.unit_price(0)), Some(10_000));
+        assert_eq!(micros(s.unit_price(0, ToolInput::default())), Some(10_000));
     }
 
     #[test]
     fn unit_price_is_unknown_for_a_model_the_provider_has_no_price_for() {
         let mut s = state(mock::descriptor());
         select_image_model(&mut s, mock::pricing::UNPRICED_MODEL_ID);
-        assert_eq!(s.unit_price(0), Estimate::Unknown);
+        assert_eq!(s.unit_price(0, ToolInput::default()), Estimate::Unknown);
     }
 
     #[test]
@@ -1331,20 +1389,20 @@ mod tests {
         select_video_model(&mut s, "veo-3.1");
         s.video.duration = 8;
         s.video.audio = false;
-        assert_eq!(micros(s.unit_price(0)), Some(800_000), "8 s at $0.10/s");
+        assert_eq!(micros(s.unit_price(0, ToolInput::default())), Some(800_000), "8 s at $0.10/s");
         s.video.audio = true;
-        assert_eq!(micros(s.unit_price(0)), Some(1_200_000), "audio moves it to $0.15/s");
+        assert_eq!(micros(s.unit_price(0, ToolInput::default())), Some(1_200_000), "audio moves it to $0.15/s");
         s.video.duration = 4;
-        assert_eq!(micros(s.unit_price(0)), Some(600_000), "half the duration, half the price");
+        assert_eq!(micros(s.unit_price(0, ToolInput::default())), Some(600_000), "half the duration, half the price");
     }
 
     #[test]
     fn unit_price_scales_audio_with_the_text_length() {
         let mut s = state(mock::descriptor());
         s.set_tab(ComposeTab::Media(MediaType::Audio));
-        assert_eq!(micros(s.unit_price(0)), Some(0));
-        assert_eq!(micros(s.unit_price(1_000)), Some(100_000));
-        assert_eq!(micros(s.unit_price(2_000)), Some(200_000));
+        assert_eq!(micros(s.unit_price(0, ToolInput::default())), Some(0));
+        assert_eq!(micros(s.unit_price(1_000, ToolInput::default())), Some(100_000));
+        assert_eq!(micros(s.unit_price(2_000, ToolInput::default())), Some(200_000));
     }
 
     #[test]
@@ -1352,8 +1410,8 @@ mod tests {
         let mut s = state(mock::descriptor());
         s.set_tab(ComposeTab::Tool(ToolId::Upscale));
         assert!(s.generation_type().is_none(), "tools don't go through a generation request");
-        assert_eq!(micros(s.unit_price(0)), Some(20_000));
+        assert_eq!(micros(s.unit_price(0, ToolInput::default())), Some(20_000));
         s.set_tab(ComposeTab::Tool(ToolId::RemoveBackground));
-        assert_eq!(micros(s.unit_price(0)), Some(20_000));
+        assert_eq!(micros(s.unit_price(0, ToolInput::default())), Some(20_000));
     }
 }

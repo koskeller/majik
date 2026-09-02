@@ -11,8 +11,8 @@ use serde_json::{json, Value};
 
 use crate::asset::{AssetConstraints, AssetRole};
 use crate::models::{
-    AspectRatio, ImageModel, ImageResolution, ModelCapabilities, VideoAspectRatio, VideoDurationRange, VideoModel, VideoModelCapabilities, VideoReferences,
-    VideoResolution,
+    AspectRatio, ImageModel, ImageResolution, ModelCapabilities, ToolModel, ToolModelCapabilities, VideoAspectRatio, VideoDurationRange, VideoModel,
+    VideoModelCapabilities, VideoReferences, VideoResolution,
 };
 use crate::references::ReferenceTagStyle;
 use crate::replicate::error::{ReplicateError, ReplicateResult};
@@ -909,4 +909,17 @@ pub fn api_audio_input_param(model: &VideoModel) -> Option<&'static str> {
         GROK_IMAGINE_VIDEO => None,
         _ => None,
     }
+}
+
+// ----- Tools --------------------------------------------------------------------------------------
+
+/// Checked 2026-09-02 against `replicate.com/philz1337x/clarity-upscaler` and
+/// `replicate.com/851-labs/background-remover`. Neither exposes an enhancement-model choice; only
+/// Clarity takes a scale factor.
+pub fn tool_capabilities(model: &ToolModel) -> Option<ToolModelCapabilities> {
+    Some(match model.id {
+        "clarity-upscaler" => ToolModelCapabilities::new(10).with_factors([2, 4]),
+        "rembg" => ToolModelCapabilities::new(10),
+        _ => return None,
+    })
 }

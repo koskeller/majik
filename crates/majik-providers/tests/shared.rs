@@ -16,10 +16,11 @@ use majik_providers::dialogue::{parse_dialogue, parse_dialogue_with_voices, Dial
 use majik_providers::error::GenerationError;
 use majik_providers::http::Timeouts;
 use majik_providers::models::{AspectRatio, AudioModel, AudioVoice, ImageModel, ImageResolution, ModelCapabilities, VideoAspectRatio, VideoModel, VideoResolution};
-use majik_providers::pricing::{Estimate, PricedJob};
-use majik_providers::settings::{AudioGenerationSettings, ImageGenerationSettings, VideoGenerationSettings};
+use majik_providers::pricing::{Estimate, PricedJob, ToolInput};
+use majik_providers::settings::{AudioGenerationSettings, ImageGenerationSettings, ToolSettings, VideoGenerationSettings, DEFAULT_UPSCALE_FACTOR};
 use majik_providers::voices::{elevenlabs, gemini};
 use majik_providers::{logo, ProviderAsset, ProviderId, ProviderRegistry, ToolId, ToolModel};
+use majik_core::model::MediaType;
 
 // ===== AudioDialogueParser ==================================================================
 
@@ -834,11 +835,13 @@ impl ImageProviderClient for StubImageClient {
         Ok(Vec::new())
     }
 
-    async fn upscale_image(&self, _image: &[u8]) -> majik_providers::error::Result<Vec<u8>> {
-        Ok(Vec::new())
-    }
+}
 
-    async fn remove_background(&self, _image: &[u8]) -> majik_providers::error::Result<Vec<u8>> {
+struct StubToolClient;
+
+#[async_trait::async_trait]
+impl majik_providers::ToolProviderClient for StubToolClient {
+    async fn run_tool(&self, _settings: &ToolSettings, _input: &ProviderAsset) -> majik_providers::error::Result<Vec<u8>> {
         Ok(Vec::new())
     }
 }
@@ -860,6 +863,7 @@ fn stub_descriptor() -> ProviderDescriptor {
         image_capabilities: |_| Some(ModelCapabilities::new([AspectRatio::Square], [], 1)),
         video_capabilities: |_| None,
         audio_capabilities: |_| None,
+        tool_capabilities: |_| None,
         pricing: |_| Estimate::Exact(majik_providers::Usd(12_345)),
         supported_tool_models: Vec::new(),
         make_image_client: |_| Arc::new(StubImageClient),
@@ -867,6 +871,7 @@ fn stub_descriptor() -> ProviderDescriptor {
         make_audio_client: |_| None,
         // A provider that routes no text model: the composer hides Improve Prompt for it.
         make_text_client: |_| None,
+        make_tool_client: |_| Some(Arc::new(StubToolClient)),
         make_resume_client: |_| None,
     }
 }
@@ -915,10 +920,12 @@ fn descriptor_image_capabilities_hook_is_invoked() {
 }
 
 #[test]
-fn descriptor_make_image_client_factory_is_invoked() {
+fn descriptor_client_factories_are_invoked() {
     let d = stub_descriptor();
-    let client = (d.make_image_client)(&ClientOptions::new("key"));
-    let bytes = tokio::runtime::Runtime::new().expect("runtime").block_on(client.upscale_image(&[1, 2, 3])).expect("stub upscale succeeds");
+    let client = (d.make_tool_client)(&ClientOptions::new("key")).expect("stub routes a tool client");
+    let settings = ToolSettings::new(majik_providers::catalog::tool::TOPAZ_UPSCALE.clone());
+    let input = ProviderAsset::new(AssetRole::ReferenceImage, "image/png", vec![1, 2, 3]);
+    let bytes = tokio::runtime::Runtime::new().expect("runtime").block_on(client.run_tool(&settings, &input)).expect("stub tool succeeds");
     assert!(bytes.is_empty());
     assert!((d.make_video_client)(&ClientOptions::new("key")).is_none());
     assert!((d.make_audio_client)(&ClientOptions::new("key")).is_none());
@@ -1103,6 +1110,44 @@ fn tool_catalog_ids_are_unique_and_lookup_works() {
     assert!(tool::model("nope").is_none());
     assert!(tool::of_kind(ToolId::Upscale).all(|m| m.kind == ToolId::Upscale));
     assert!(tool::of_kind(ToolId::RemoveBackground).all(|m| m.kind == ToolId::RemoveBackground));
+    assert!(tool::of_kind_and_media(ToolId::Upscale, MediaType::Video).all(|m| m.kind == ToolId::Upscale && m.media == MediaType::Video));
+}
+
+/// The composer's Upscale tab decides what it takes from the selected model's media, so a tool
+/// model that claims audio (which no tool works on) would draw a card nothing can fill.
+#[test]
+fn every_tool_model_works_on_an_image_or_a_video() {
+    for m in tool::ALL {
+        assert_ne!(m.media, MediaType::Audio, "{}", m.id);
+        let expected = if m.media == MediaType::Video { AssetRole::ReferenceVideo } else { AssetRole::ReferenceImage };
+        assert_eq!(m.input_role(), expected, "{}", m.id);
+    }
+    // Only upscaling has a video implementation; background removal is an image operation.
+    assert!(tool::of_kind_and_media(ToolId::RemoveBackground, MediaType::Video).next().is_none());
+    assert!(tool::of_kind_and_media(ToolId::Upscale, MediaType::Video).next().is_some());
+}
+
+/// Every model a provider offers has to have a capability row, or its tab would draw no settings
+/// and fall back to a factor the endpoint may not accept.
+#[test]
+fn every_provider_tool_model_has_capabilities() {
+    for d in ProviderRegistry::shared().all() {
+        for m in &d.supported_tool_models {
+            let caps = d.tool_capabilities(m).unwrap_or_else(|| panic!("{}: {} has no capability row", d.display_name, m.id));
+            assert!(caps.max_inputs >= 1, "{}: {}", d.display_name, m.id);
+            // One clip per run: a video upscale is minutes of provider time and dollars a second.
+            if m.media == MediaType::Video {
+                assert_eq!(caps.max_inputs, 1, "{}: {}", d.display_name, m.id);
+            }
+            // A default has to exist for every list, since that is what an untouched draft sends.
+            assert_eq!(caps.default_factor().is_some(), !caps.upscale_factors.is_empty(), "{}", m.id);
+            assert_eq!(caps.default_variant().is_some(), !caps.variants.is_empty(), "{}", m.id);
+            // Background removal has no scale to choose.
+            if m.kind == ToolId::RemoveBackground {
+                assert!(caps.upscale_factors.is_empty(), "{}: {}", d.display_name, m.id);
+            }
+        }
+    }
 }
 
 #[test]
@@ -1112,6 +1157,20 @@ fn tool_model_serializes_as_id_and_round_trips() {
     let back: ToolModel = serde_json::from_str(&json).unwrap();
     assert_eq!(back, tool::TOPAZ_UPSCALE);
     assert!(serde_json::from_str::<ToolModel>("\"unknown-tool\"").is_err());
+}
+
+/// The settings default, so a `ToolSettings` stored before the tools took parameters still reads
+/// back rather than failing the whole request.
+#[test]
+fn tool_settings_fill_in_defaults_for_a_request_stored_without_them() {
+    let settings: ToolSettings = serde_json::from_str(r#"{"model":"topaz-upscale"}"#).expect("a bare model still decodes");
+    assert_eq!(settings.model, tool::TOPAZ_UPSCALE);
+    assert_eq!(settings.upscale_factor, DEFAULT_UPSCALE_FACTOR);
+    assert_eq!(settings.variant, None);
+
+    let full = ToolSettings::new(tool::TOPAZ_UPSCALE_VIDEO.clone()).with_factor(4).with_variant("gaia-hq");
+    let round_tripped: ToolSettings = serde_json::from_str(&serde_json::to_string(&full).unwrap()).unwrap();
+    assert_eq!(round_tripped, full);
 }
 
 #[test]
@@ -1164,6 +1223,9 @@ fn video_budget_scales_with_the_clip_and_never_shrinks() {
     // The per-request timeout is about one HTTP call, so it doesn't move with the clip.
     assert_eq!(Timeouts::video(30).request, Timeouts::VIDEO.request);
 }
+
+/// Clips that land on each side of a per-resolution rate tier, so the sweep can't miss one.
+const TOOL_VIDEO_INPUTS: &[(u32, u32, u32)] = &[(640, 360, 5), (1280, 720, 5), (1920, 1080, 10), (3840, 2160, 30)];
 
 const UNPRICED: &[(&str, &str)] = &[
     (ProviderId::MOCK, "flux-1-schnell"),
@@ -1255,7 +1317,21 @@ fn every_supported_model_is_priced_or_listed_as_unpriced() {
             check(d, model.id, "the default voice".into(), PricedJob::Audio { settings: &settings, characters: 1_000 });
         }
         for model in &d.supported_tool_models {
-            check(d, model.id, "its only setting".into(), PricedJob::Tool(model));
+            // Sweep the input shapes a tool can be handed: a library image, and for a video tool
+            // a clip on each side of every rate tier, at each factor it offers. A table missing one
+            // tier is otherwise invisible until a user picks exactly that clip.
+            let caps = d.tool_capabilities(model).unwrap_or_default();
+            let factors = if caps.upscale_factors.is_empty() { vec![DEFAULT_UPSCALE_FACTOR] } else { caps.upscale_factors.clone() };
+            for factor in factors {
+                let settings = ToolSettings::new(model.clone()).with_factor(factor);
+                let inputs: Vec<(String, ToolInput)> = match model.media {
+                    MediaType::Video => TOOL_VIDEO_INPUTS.iter().map(|(w, h, d)| (format!("{factor}x over {w}x{h} for {d}s"), ToolInput::video(*w, *h, *d))).collect(),
+                    _ => vec![(format!("{factor}x over 1024x1024"), ToolInput::image(1024, 1024))],
+                };
+                for (at, input) in inputs {
+                    check(d, model.id, at, PricedJob::Tool { settings: &settings, input });
+                }
+            }
         }
     }
     assert!(gaps.is_empty(), "unpriced and not listed in UNPRICED:\n  {}", gaps.join("\n  "));
@@ -1271,4 +1347,21 @@ fn descriptor_tool_models_filters_by_kind() {
     d.supported_tool_models.clear();
     assert!(!d.supports_tool(ToolId::Upscale));
     assert!(d.tool_models(ToolId::Upscale).is_empty());
+}
+
+/// The Upscale tab has one model list but two kinds of input; this filter is how it knows whether
+/// the provider can upscale a clip at all.
+#[test]
+fn descriptor_tool_models_filter_by_media() {
+    let mut d = stub_descriptor();
+    d.supported_tool_models = vec![tool::TOPAZ_UPSCALE.clone(), tool::TOPAZ_UPSCALE_VIDEO.clone(), tool::BRIA_BACKGROUND_REMOVE.clone()];
+    assert_eq!(d.tool_models_for(ToolId::Upscale, MediaType::Image), vec![&tool::TOPAZ_UPSCALE]);
+    assert_eq!(d.tool_models_for(ToolId::Upscale, MediaType::Video), vec![&tool::TOPAZ_UPSCALE_VIDEO]);
+    assert_eq!(d.tool_models_for(ToolId::RemoveBackground, MediaType::Image), vec![&tool::BRIA_BACKGROUND_REMOVE]);
+    assert!(d.tool_models_for(ToolId::RemoveBackground, MediaType::Video).is_empty());
+
+    // A provider with only an image upscaler supports the tool, but not over a clip.
+    d.supported_tool_models = vec![tool::CLARITY_UPSCALER.clone()];
+    assert!(d.supports_tool(ToolId::Upscale));
+    assert!(d.tool_models_for(ToolId::Upscale, MediaType::Video).is_empty());
 }

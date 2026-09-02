@@ -6,15 +6,10 @@ use majik_providers::{
 };
 use serde::{Deserialize, Serialize};
 
-/// What a tool request carries besides its one input image: the implementation to run it with.
-/// The clients take no parameters yet; when one gains an upscale factor or the like, it lives here.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ToolSettings {
-    pub model: ToolModel,
-}
+pub use majik_providers::ToolSettings;
 
 /// The operation a request asks for and its settings: a generation of one media type, or a tool
-/// over one image. The `kind` tag of the tool variants is the raw value of the matching [`ToolId`],
+/// over one input. The `kind` tag of the tool variants is the raw value of the matching [`ToolId`],
 /// so a stored request and the row's `tool` column say the same thing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -31,21 +26,28 @@ pub enum GenerationType {
 }
 
 impl GenerationType {
-    /// The tool variant `model` implements.
+    /// The tool variant `model` implements, on that model's own defaults.
     pub fn for_tool_model(model: &ToolModel) -> Self {
-        let settings = ToolSettings { model: model.clone() };
-        match model.kind {
+        Self::for_tool_settings(ToolSettings::new(model.clone()))
+    }
+
+    /// The tool variant `settings` names.
+    pub fn for_tool_settings(settings: ToolSettings) -> Self {
+        match settings.model.kind {
             ToolId::Upscale => GenerationType::Upscale(settings),
             ToolId::RemoveBackground => GenerationType::RemoveBackground(settings),
         }
     }
 
-    /// Tools produce an image from an image.
+    /// A tool produces the media its model works on: an image upscaler makes an image, a video one
+    /// a clip. Still a pure function of the request, which is what lets a row's media type be
+    /// decided the moment it is queued.
     pub fn media_type(&self) -> MediaType {
         match self {
-            GenerationType::Image(_) | GenerationType::Upscale(_) | GenerationType::RemoveBackground(_) => MediaType::Image,
+            GenerationType::Image(_) => MediaType::Image,
             GenerationType::Video(_) => MediaType::Video,
             GenerationType::Audio(_) => MediaType::Audio,
+            GenerationType::Upscale(s) | GenerationType::RemoveBackground(s) => s.model.media,
         }
     }
 
@@ -132,10 +134,10 @@ impl Request {
         Self { provider, generation_type, prompt: prompt.into(), assets }
     }
 
-    /// A tool run with `model` over one image (an empty prompt: tools take none). The variant
-    /// follows the model's kind, so a request can't name a model of the wrong tool.
-    pub fn tool(provider: ProviderId, model: &ToolModel, image: AssetInput) -> Self {
-        Self::new(provider, GenerationType::for_tool_model(model), "", vec![image])
+    /// A tool run over one input (an empty prompt: tools take none). The variant follows the
+    /// model's kind, so a request can't name a model of the wrong tool.
+    pub fn tool(provider: ProviderId, settings: ToolSettings, input: AssetInput) -> Self {
+        Self::new(provider, GenerationType::for_tool_settings(settings), "", vec![input])
     }
 
     pub fn media_type(&self) -> MediaType {
@@ -194,7 +196,7 @@ mod tests {
 
     #[test]
     fn tool_request_round_trips_through_json() {
-        let request = Request::tool(ProviderId::mock(), &catalog::tool::MOCK_UPSCALE, png());
+        let request = Request::tool(ProviderId::mock(), ToolSettings::new(catalog::tool::MOCK_UPSCALE.clone()), png());
         assert_eq!(request.generation_type.tool(), Some(ToolId::Upscale));
         assert_eq!(request.media_type(), MediaType::Image);
         assert!(!request.generation_type.takes_prompt());
@@ -210,11 +212,40 @@ mod tests {
 
     #[test]
     fn remove_background_kind_is_the_tool_columns_raw_value() {
-        let request = Request::tool(ProviderId::mock(), &catalog::tool::MOCK_REMOVE_BACKGROUND, png());
+        let request = Request::tool(ProviderId::mock(), ToolSettings::new(catalog::tool::MOCK_REMOVE_BACKGROUND.clone()), png());
         assert_eq!(request.generation_type.tool(), Some(ToolId::RemoveBackground));
         let json = request.to_json();
         assert!(json.contains(r#""kind":"removeBackground""#), "{json}");
         assert_eq!(Request::from_json(&json).map(|r| r.generation_type), Some(request.generation_type));
+    }
+
+    /// The row's media type follows the tool model, which is what lets a video upscale be written
+    /// as `<id>.mp4` with a poster rather than as a PNG nothing can open.
+    #[test]
+    fn a_video_tool_model_makes_a_video_row() {
+        let clip = AssetInput::new(AssetRole::ReferenceVideo, "video/mp4", vec![0, 0, 0, 0x18, b'f', b't', b'y', b'p']);
+        let settings = ToolSettings::new(catalog::tool::MOCK_UPSCALE_VIDEO.clone()).with_factor(4).with_variant("proteus");
+        let request = Request::tool(ProviderId::mock(), settings, clip);
+        assert_eq!(request.media_type(), MediaType::Video);
+        assert_eq!(request.generation_type.tool(), Some(ToolId::Upscale), "still the Upscale tool, over a clip");
+
+        let parsed = Request::from_json(&request.to_json()).expect("parses");
+        assert_eq!(parsed.generation_type, request.generation_type);
+        assert_eq!(parsed.media_type(), MediaType::Video);
+        let settings = parsed.generation_type.tool_settings().expect("a tool request");
+        assert_eq!((settings.upscale_factor, settings.variant.as_deref()), (4, Some("proteus")));
+    }
+
+    /// Rows written before the tools took parameters have to keep opening: the settings default
+    /// rather than failing the whole request.
+    #[test]
+    fn a_request_stored_without_tool_settings_still_parses() {
+        let parsed = Request::from_json(r#"{"provider":"Mock","kind":"upscale","model":"mock-upscale","prompt":""}"#).expect("parses");
+        let settings = parsed.generation_type.tool_settings().expect("a tool request");
+        assert_eq!(settings.model, catalog::tool::MOCK_UPSCALE);
+        assert_eq!(settings.upscale_factor, majik_providers::DEFAULT_UPSCALE_FACTOR);
+        assert_eq!(settings.variant, None);
+        assert_eq!(parsed.media_type(), MediaType::Image);
     }
 
     #[test]

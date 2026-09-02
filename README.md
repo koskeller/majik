@@ -10,7 +10,8 @@ Replicate and OpenRouter. Everything you make stays in one local library you own
   album or drag straight out into another app. The media lives in a plain folder you choose; the
   index next to it is SQLite.
 - **Images, video, audio and tools.** Text-to-image, image-to-image, text-to-video, image-to-video,
-  speech and dialogue, plus upscaling and background removal — one composer, one set of shortcuts.
+  speech and dialogue, plus upscaling (images and video) and background removal — one composer,
+  one set of shortcuts.
 - **Native.** Rust on [GPUI](https://github.com/zed-industries/zed), the UI framework Zed is built
   on, not a web view.
 

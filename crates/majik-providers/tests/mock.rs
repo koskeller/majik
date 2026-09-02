@@ -5,8 +5,9 @@ use std::time::Instant;
 use majik_providers::catalog;
 use majik_providers::mock::{self, image_renderer, parse_directives, video_renderer, MockClient};
 use majik_providers::{
-    AspectRatio, AudioGenerationSettings, AudioModel, AudioProviderClient, AudioVoice, GenerationError, ImageModel, ImageProviderClient,
-    ImageResolution, ProviderClient, ProviderId, VideoAspectRatio, VideoGenerationSettings, VideoModel, VideoProviderClient, VideoResolution,
+    AspectRatio, AssetRole, AudioGenerationSettings, AudioModel, AudioProviderClient, AudioVoice, GenerationError, ImageModel, ImageProviderClient,
+    ImageResolution, ProviderAsset, ProviderClient, ProviderId, ToolModel, ToolProviderClient, ToolSettings, VideoAspectRatio, VideoGenerationSettings,
+    VideoModel, VideoProviderClient, VideoResolution,
 };
 
 /// One runtime for every test in this binary. `http::client()` is a process-wide `reqwest::Client`
@@ -184,7 +185,19 @@ mod mock_provider {
 
     async fn upscale_pass_through_inner() {
         let input = [0xDE, 0xAD, 0xBE, 0xEF];
-        assert_eq!(provider().upscale_image(&input).await.unwrap(), input);
+        assert_eq!(run(&catalog::tool::MOCK_UPSCALE, AssetRole::ReferenceImage, "image/png", &input).await, input);
+    }
+
+    /// The video upscaler is the same pass-through, and exists so the composer's video tool path
+    /// has something to run headlessly.
+    #[test]
+    fn video_upscale_pass_through() {
+        crate::rt().block_on(video_upscale_pass_through_inner());
+    }
+
+    async fn video_upscale_pass_through_inner() {
+        let clip = majik_providers::mock::video_renderer::render_blocking(64, 64, 1, [0, 128, 0]).unwrap();
+        assert_eq!(run(&catalog::tool::MOCK_UPSCALE_VIDEO, AssetRole::ReferenceVideo, "video/mp4", &clip).await, clip);
     }
 
     #[test]
@@ -200,7 +213,7 @@ mod mock_provider {
         }
         let mut input = std::io::Cursor::new(Vec::new());
         canvas.write_to(&mut input, image::ImageFormat::Png).unwrap();
-        let output = provider().remove_background(&input.into_inner()).await.unwrap();
+        let output = run(&catalog::tool::MOCK_REMOVE_BACKGROUND, AssetRole::ReferenceImage, "image/png", &input.into_inner()).await;
         let matted = image::load_from_memory(&output).unwrap().into_rgba8();
         assert_eq!(matted.dimensions(), (4, 4));
         assert_eq!(matted.get_pixel(0, 0).0[3], 0, "corner colour is transparent");
@@ -215,7 +228,14 @@ mod mock_provider {
 
     async fn remove_background_passes_non_images_through_inner() {
         let input = [0x01, 0x02, 0x03];
-        assert_eq!(provider().remove_background(&input).await.unwrap(), input);
+        assert_eq!(run(&catalog::tool::MOCK_REMOVE_BACKGROUND, AssetRole::ReferenceImage, "image/png", &input).await, input);
+    }
+
+    /// One tool run on the mock client.
+    async fn run(model: &ToolModel, role: AssetRole, content_type: &str, data: &[u8]) -> Vec<u8> {
+        let settings = ToolSettings::new(model.clone());
+        let input = ProviderAsset::new(role, content_type, data.to_vec());
+        provider().run_tool(&settings, &input).await.unwrap()
     }
 }
 
@@ -231,7 +251,16 @@ mod mock_descriptor {
         assert_eq!(d.display_name, "Mock");
         assert!(d.requires_api_key);
         assert_eq!(d.is_user_selectable, cfg!(debug_assertions));
-        assert_eq!(d.supported_tool_models, vec![catalog::tool::MOCK_UPSCALE.clone(), catalog::tool::MOCK_REMOVE_BACKGROUND.clone()]);
+        assert_eq!(
+            d.supported_tool_models,
+            vec![catalog::tool::MOCK_UPSCALE.clone(), catalog::tool::MOCK_UPSCALE_VIDEO.clone(), catalog::tool::MOCK_REMOVE_BACKGROUND.clone()]
+        );
+        // A video upscaler on the Mock provider is what lets the composer's video tool path run
+        // headlessly, with no key and no network.
+        assert_eq!(
+            d.tool_models_for(majik_core::model::ToolId::Upscale, majik_core::model::MediaType::Video),
+            vec![&catalog::tool::MOCK_UPSCALE_VIDEO]
+        );
         assert_eq!(d.api_key_placeholder, "mock-any-key");
     }
 
@@ -274,7 +303,9 @@ mod mock_descriptor {
         let settings = AudioGenerationSettings { model: audio_model(), speaker1: AudioVoice::new("v1", "Voice"), speaker2: None };
         let aud = client.generate_audio("x", &settings).await.unwrap();
         assert!(aud.starts_with(b"RIFF"));
-        assert_eq!(client.upscale_image(&[1, 2]).await.unwrap(), vec![1, 2]);
+        let settings = ToolSettings::new(catalog::tool::MOCK_UPSCALE.clone());
+        let input = ProviderAsset::new(AssetRole::ReferenceImage, "image/png", vec![1, 2]);
+        assert_eq!(client.run_tool(&settings, &input).await.unwrap(), vec![1, 2]);
     }
 }
 

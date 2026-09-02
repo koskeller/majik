@@ -48,11 +48,21 @@ fn video_res_range(res: &[VideoResolution]) -> Option<String> {
 /// Rows for the given provider / tab, with their capability chips.
 pub fn rows(provider: &'static ProviderDescriptor, tab: ComposeTab) -> Vec<ModelRow> {
     match tab {
+        // The media chip is what tells the two upscalers apart: picking one is how the Upscale
+        // tab switches between taking an image and taking a clip.
         ComposeTab::Tool(tool) => provider
             .tool_models(tool)
             .into_iter()
             .enumerate()
-            .map(|(i, m)| ModelRow { index: i, name: m.name, manufacturer: m.manufacturer, logo: m.logo, description: m.short_description, chips: Vec::new() })
+            .map(|(i, m)| {
+                let mut chips = vec![m.media.label().to_string()];
+                if let Some(c) = provider.tool_capabilities(m) {
+                    if !c.upscale_factors.is_empty() {
+                        chips.push(c.upscale_factors.iter().map(|f| format!("{f}×")).collect::<Vec<_>>().join(" / "));
+                    }
+                }
+                ModelRow { index: i, name: m.name, manufacturer: m.manufacturer, logo: m.logo, description: m.short_description, chips }
+            })
             .collect(),
         ComposeTab::Media(MediaType::Image) => provider
             .supported_image_models
@@ -448,14 +458,25 @@ mod tests {
         assert_eq!(model_index(&view, vcx), gpt);
     }
 
+    /// A tool row's first chip is the media it works on. That is the only thing distinguishing the
+    /// image upscaler from the video one in the picker, and picking one is how the Upscale tab
+    /// switches between taking a picture and taking a clip.
     #[gpui::test]
-    fn video_rows_carry_capability_chips_and_tool_rows_do_not(cx: &mut TestAppContext) {
+    fn video_rows_carry_capability_chips_and_tool_rows_carry_their_media(cx: &mut TestAppContext) {
         let (view, vcx) = compose_window(cx);
         let provider = view.read_with(vcx, |view, _| view.composer_state().provider);
         let video = rows(provider, ComposeTab::Media(MediaType::Video));
         assert!(video.iter().all(|row| row.chips.iter().any(|c| c.ends_with('s'))), "every video row states its duration: {video:?}");
-        let tools = rows(provider, ComposeTab::Tool(majik_core::model::ToolId::Upscale));
-        assert!(!tools.is_empty() && tools.iter().all(|row| row.chips.is_empty()));
+
+        let upscalers = rows(provider, ComposeTab::Tool(majik_core::model::ToolId::Upscale));
+        assert!(!upscalers.is_empty());
+        assert!(upscalers.iter().all(|row| matches!(row.chips.first().map(String::as_str), Some("Image" | "Video"))), "{upscalers:?}");
+        assert_eq!(upscalers.iter().filter(|row| row.chips.first().is_some_and(|c| c == "Video")).count(), 1, "one video upscaler: {upscalers:?}");
+        // The factors it offers ride along, so the two upscalers are told apart before selecting one.
+        assert!(upscalers.iter().all(|row| row.chips.iter().any(|c| c.contains('×'))), "{upscalers:?}");
+
+        let remove_bg = rows(provider, ComposeTab::Tool(majik_core::model::ToolId::RemoveBackground));
+        assert!(remove_bg.iter().all(|row| row.chips == vec!["Image".to_string()]), "background removal has no factors: {remove_bg:?}");
     }
 
     /// The models added in the 2026-08 catalog sweep have to reach the picker, with the capability

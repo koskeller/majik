@@ -39,6 +39,7 @@ pub fn descriptor() -> &'static ProviderDescriptor {
         image_capabilities: capabilities::image_capabilities,
         video_capabilities: |_| None,
         audio_capabilities: |_| None,
+        tool_capabilities: |_| None,
         pricing: pricing::pricing,
         supported_tool_models: Vec::new(),
         make_image_client: |options| Arc::new(OpenRouterClient::from_options(options)),
@@ -46,6 +47,7 @@ pub fn descriptor() -> &'static ProviderDescriptor {
         make_audio_client: |_| None,
         make_text_client: |options| Some(Arc::new(OpenRouterClient::from_options(options))),
         // One synchronous POST: nothing to re-attach to.
+        make_tool_client: |_| None,
         make_resume_client: |_| None,
     })
 }

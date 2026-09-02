@@ -13,4 +13,4 @@ pub use improve::{improve_channel, ImproveReceiver, ImproveSender, TextRequest};
 pub use recovery::RecoveryAction;
 pub use seed::{seed_library, SeedOptions, SeedReport};
 pub use request::{build_requests, AssetInput, GenerationType, Request, ToolSettings};
-pub use validation::{validate_request, validate_requests, ValidationError};
+pub use validation::{is_supported_video_data, validate_request, validate_requests, ValidationError};

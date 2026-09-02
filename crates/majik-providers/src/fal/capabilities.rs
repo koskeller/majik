@@ -10,8 +10,8 @@ use serde_json::Value;
 
 use crate::asset::{AssetConstraints, AssetRole};
 use crate::models::{
-    AspectRatio, AudioModel, AudioModelCapabilities, AudioVoice, ImageModel, ImageResolution, ModelCapabilities, VideoAspectRatio,
-    VideoDurationRange, VideoModel, VideoModelCapabilities, VideoReferences, VideoResolution,
+    AspectRatio, AudioModel, AudioModelCapabilities, AudioVoice, ImageModel, ImageResolution, ModelCapabilities, ToolModel, ToolModelCapabilities,
+    ToolVariant, VideoAspectRatio, VideoDurationRange, VideoModel, VideoModelCapabilities, VideoReferences, VideoResolution,
 };
 use crate::references::ReferenceTagStyle;
 
@@ -408,6 +408,65 @@ pub fn edit_endpoint(model: &ImageModel) -> Option<&'static str> {
         GROK_IMAGINE_IMAGE_2 => "xai/grok-imagine-image/v2.0/edit",
         _ => return None,
     })
+}
+
+// ----- Tools --------------------------------------------------------------------------------------
+//
+// Checked 2026-09-02 against `fal.ai/models/fal-ai/topaz/upscale/{image,video}/api` and
+// `fal.ai/models/fal-ai/bria/background/remove/api`.
+
+/// Catalog ids of the tool models fal routes.
+pub mod tool_ids {
+    pub const TOPAZ_UPSCALE: &str = "topaz-upscale";
+    pub const TOPAZ_UPSCALE_VIDEO: &str = "topaz-upscale-video";
+    pub const BRIA_BACKGROUND_REMOVE: &str = "bria-background-remove";
+}
+
+pub fn tool_endpoint(model: &ToolModel) -> Option<&'static str> {
+    Some(match model.id {
+        tool_ids::TOPAZ_UPSCALE => "fal-ai/topaz/upscale/image",
+        tool_ids::TOPAZ_UPSCALE_VIDEO => "fal-ai/topaz/upscale/video",
+        tool_ids::BRIA_BACKGROUND_REMOVE => "fal-ai/bria/background/remove",
+        _ => return None,
+    })
+}
+
+/// Topaz's own enhancement models, as a stable slug plus the display name. The first is the
+/// default. A subset of what the endpoint accepts: these are the ones worth choosing between for
+/// library media, and every one of them is mapped by [`api_tool_variant`].
+const TOPAZ_IMAGE_VARIANTS: &[ToolVariant] = &[
+    ToolVariant::new("standard-v2", "Standard V2"),
+    ToolVariant::new("high-fidelity-v2", "High Fidelity V2"),
+    ToolVariant::new("low-resolution-v2", "Low Resolution V2"),
+    ToolVariant::new("cgi", "CGI"),
+    ToolVariant::new("text-refine", "Text Refine"),
+    ToolVariant::new("recovery-v2", "Recovery V2"),
+];
+
+const TOPAZ_VIDEO_VARIANTS: &[ToolVariant] =
+    &[ToolVariant::new("proteus", "Proteus"), ToolVariant::new("artemis-hq", "Artemis HQ"), ToolVariant::new("gaia-hq", "Gaia HQ"), ToolVariant::new("nyx", "Nyx")];
+
+pub fn tool_capabilities(model: &ToolModel) -> Option<ToolModelCapabilities> {
+    Some(match model.id {
+        // The endpoint takes any float; 2× and 4× are the two the composer offers.
+        tool_ids::TOPAZ_UPSCALE => ToolModelCapabilities::new(10).with_factors([2, 4]).with_variants(TOPAZ_IMAGE_VARIANTS.to_vec()),
+        // One clip per run: a video upscale is minutes of provider time and dollars a second.
+        tool_ids::TOPAZ_UPSCALE_VIDEO => ToolModelCapabilities::new(1).with_factors([2, 4]).with_variants(TOPAZ_VIDEO_VARIANTS.to_vec()),
+        tool_ids::BRIA_BACKGROUND_REMOVE => ToolModelCapabilities::new(10),
+        _ => return None,
+    })
+}
+
+/// The wire string fal wants for a `ToolVariant::id`. Falls back to the model's default variant, so
+/// a request naming a variant we have since dropped still runs rather than failing at the provider.
+pub fn api_tool_variant(model: &ToolModel, variant: Option<&str>) -> Option<&'static str> {
+    let table = match model.id {
+        tool_ids::TOPAZ_UPSCALE => TOPAZ_IMAGE_VARIANTS,
+        tool_ids::TOPAZ_UPSCALE_VIDEO => TOPAZ_VIDEO_VARIANTS,
+        _ => return None,
+    };
+    let wanted = variant.and_then(|v| table.iter().find(|t| t.id == v));
+    wanted.or_else(|| table.first()).map(|t| t.name)
 }
 
 // ----- Video endpoints ----------------------------------------------------------------------------

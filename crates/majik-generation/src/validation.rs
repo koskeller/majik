@@ -208,16 +208,17 @@ fn validate_audio_asset(asset: &AssetInput) -> Result<(), ValidationError> {
     Ok(())
 }
 
-/// A tool runs over exactly one image, with a model of its own kind (a hand-edited stored request
-/// could pair them wrongly).
+/// A tool runs over exactly one input, in the role its model's media asks for, with a model of its
+/// own kind (a hand-edited stored request could pair any of them wrongly).
 fn validate_tool_request(request: &Request, tool: ToolId) -> Result<(), ValidationError> {
     let model = request.generation_type.tool_settings().map(|s| &s.model);
-    if model.map(|m| m.kind) != Some(tool) {
+    let Some(model) = model.filter(|m| m.kind == tool) else {
         return Err(ValidationError::UnsupportedModel(model.map(|m| m.name).unwrap_or_default().to_string()));
-    }
+    };
+    let role = model.input_role();
     match request.assets.as_slice() {
-        [asset] if asset.role != AssetRole::Audio => Ok(()),
-        _ => Err(ValidationError::MissingAssetData { role: AssetRole::ReferenceImage }),
+        [asset] if asset.role == role => validate_asset(asset),
+        _ => Err(ValidationError::MissingAssetData { role }),
     }
 }
 
@@ -273,6 +274,7 @@ pub fn is_supported_audio_content_type(content_type: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use majik_providers::ToolSettings;
 
     /// A video request on `model` with `assets`, through the Mock provider (which mirrors fal's
     /// video capability tables).
@@ -400,7 +402,7 @@ mod tests {
         use majik_providers::{catalog, ProviderId};
         let provider = majik_providers::mock::descriptor();
         let png = AssetInput::new(AssetRole::ReferenceImage, "image/png", vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0]);
-        let ok = Request::tool(ProviderId::mock(), &catalog::tool::MOCK_UPSCALE, png.clone());
+        let ok = Request::tool(ProviderId::mock(), ToolSettings::new(catalog::tool::MOCK_UPSCALE.clone()), png.clone());
         assert_eq!(validate_request(&ok, provider), Ok(()));
 
         let mut none = ok.clone();
@@ -414,8 +416,40 @@ mod tests {
         assert_eq!(validate_request(&sound, provider), Err(ValidationError::MissingAssetData { role: AssetRole::ReferenceImage }));
 
         // A hand-edited request pairing the upscale kind with a background remover.
-        let mismatched = Request::new(ProviderId::mock(), GenerationType::Upscale(crate::request::ToolSettings { model: catalog::tool::MOCK_REMOVE_BACKGROUND.clone() }), "", vec![png]);
+        let mismatched = Request::new(ProviderId::mock(), GenerationType::Upscale(ToolSettings::new(catalog::tool::MOCK_REMOVE_BACKGROUND.clone())), "", vec![png]);
         assert_eq!(validate_request(&mismatched, provider), Err(ValidationError::UnsupportedModel("Mock Remove Background".into())));
+    }
+
+    /// The input has to be what the model works on: a video upscaler takes a clip and an image
+    /// upscaler refuses one, both by role and by the bytes behind it.
+    #[test]
+    fn a_video_tool_takes_a_clip_and_an_image_tool_refuses_one() {
+        use majik_providers::{catalog, ProviderId};
+        let provider = majik_providers::mock::descriptor();
+        let png = AssetInput::new(AssetRole::ReferenceImage, "image/png", vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0]);
+        let clip = mp4();
+
+        let ok = Request::tool(ProviderId::mock(), ToolSettings::new(catalog::tool::MOCK_UPSCALE_VIDEO.clone()), clip.clone());
+        assert_eq!(validate_request(&ok, provider), Ok(()));
+
+        // An image on the video upscaler: the role is not the one its model asks for.
+        let wrong_media = Request::tool(ProviderId::mock(), ToolSettings::new(catalog::tool::MOCK_UPSCALE_VIDEO.clone()), png.clone());
+        assert_eq!(validate_request(&wrong_media, provider), Err(ValidationError::MissingAssetData { role: AssetRole::ReferenceVideo }));
+
+        // And the other way round.
+        let clip_on_image_tool = Request::tool(ProviderId::mock(), ToolSettings::new(catalog::tool::MOCK_UPSCALE.clone()), clip);
+        assert_eq!(validate_request(&clip_on_image_tool, provider), Err(ValidationError::MissingAssetData { role: AssetRole::ReferenceImage }));
+
+        // The bytes are checked too, not just the role: MP4 only, as everywhere else.
+        let not_a_clip = Request::tool(
+            ProviderId::mock(),
+            ToolSettings::new(catalog::tool::MOCK_UPSCALE_VIDEO.clone()),
+            AssetInput::new(AssetRole::ReferenceVideo, "video/mp4", vec![1, 2, 3, 4]),
+        );
+        assert_eq!(
+            validate_request(&not_a_clip, provider),
+            Err(ValidationError::UnsupportedFormat { media_kind: MediaKind::Video, allowed_formats: "MP4" })
+        );
     }
 
     #[test]

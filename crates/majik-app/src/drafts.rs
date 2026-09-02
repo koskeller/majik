@@ -32,6 +32,12 @@ pub struct AudioDraftState {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct ToolDraftState {
     pub model_id: Option<String>,
+    /// `None` = the model's own default, so a draft written before a model offered these still
+    /// restores onto whatever it offers now.
+    #[serde(default)]
+    pub upscale_factor: Option<u32>,
+    #[serde(default)]
+    pub variant: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -110,12 +116,22 @@ mod tests {
         assert_eq!(draft.video.count, None, "an older draft leaves the count to the state's default");
     }
 
+    /// A draft written before the tools took settings still restores; the settings simply fall
+    /// back to the model's own defaults.
+    #[test]
+    fn tool_draft_without_settings_deserializes_to_none() {
+        let json = r#"{"upscale":{"model_id":"topaz-upscale"}}"#;
+        let draft: ProviderDraft = serde_json::from_str(json).unwrap();
+        assert_eq!(draft.upscale.model_id.as_deref(), Some("topaz-upscale"));
+        assert_eq!((draft.upscale.upscale_factor, draft.upscale.variant), (None, None));
+    }
+
     #[test]
     fn provider_draft_round_trips_tool_tab() {
         let draft = ProviderDraft {
             media_type: Some("upscale".into()),
-            upscale: ToolDraftState { model_id: Some("topaz-upscale".into()) },
-            remove_background: ToolDraftState { model_id: Some("bria-background-remove".into()) },
+            upscale: ToolDraftState { model_id: Some("topaz-upscale".into()), upscale_factor: Some(4), variant: Some("recovery-v2".into()) },
+            remove_background: ToolDraftState { model_id: Some("bria-background-remove".into()), ..Default::default() },
             ..Default::default()
         };
         let json = serde_json::to_string(&draft).unwrap();

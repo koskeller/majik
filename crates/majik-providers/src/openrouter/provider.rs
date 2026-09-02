@@ -11,7 +11,7 @@ use crate::asset::{AssetRole, ProviderAsset};
 use crate::client::{ClientOptions, ImageProviderClient, TextProviderClient, TraceSink};
 use crate::constants::openrouter as constants;
 use crate::data_uri::{from_data_uri, to_data_uri};
-use crate::error::{GenerationError, Result};
+use crate::error::Result;
 use crate::http::{self, Timeouts};
 use crate::models::{AspectRatio, ImageModel, ImageResolution};
 use crate::Bytes;
@@ -231,13 +231,5 @@ impl ImageProviderClient for OpenRouterClient {
         resolution: Option<ImageResolution>,
     ) -> Result<Bytes> {
         self.generate_image_impl(prompt, model, assets, aspect_ratio, resolution).await
-    }
-
-    async fn upscale_image(&self, _image: &[u8]) -> Result<Bytes> {
-        Err(GenerationError::InvalidRequest("Image upscaling is not supported by OpenRouter".into()))
-    }
-
-    async fn remove_background(&self, _image: &[u8]) -> Result<Bytes> {
-        Err(GenerationError::InvalidRequest("Background removal is not supported by OpenRouter".into()))
     }
 }

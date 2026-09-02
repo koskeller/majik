@@ -154,3 +154,10 @@ pub struct FalTextResponse {
     #[serde(default)]
     pub partial: bool,
 }
+
+/// `POST /storage/upload/initiate`: where to PUT the bytes, and the URL to reference them by.
+#[derive(Debug, Deserialize)]
+pub struct FalUploadInitiateResponse {
+    pub file_url: String,
+    pub upload_url: String,
+}

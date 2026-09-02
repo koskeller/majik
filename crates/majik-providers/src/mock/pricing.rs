@@ -28,6 +28,6 @@ pub fn pricing(job: &PricedJob<'_>) -> Estimate {
             per_second(rate, settings.duration)
         }
         PricedJob::Audio { characters, .. } => per_character(AUDIO_PER_CHARACTER, *characters),
-        PricedJob::Tool(_) => flat(TOOL),
+        PricedJob::Tool { .. } => flat(TOOL),
     }
 }

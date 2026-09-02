@@ -8,10 +8,13 @@ use async_trait::async_trait;
 
 use crate::asset::ProviderAsset;
 use crate::catalog;
-use crate::client::{AudioProviderClient, ClientOptions, ImageProviderClient, JobHandle, OnAccepted, ResumableClient, TextProviderClient, TraceSink, VideoProviderClient};
+use crate::client::{
+    AudioProviderClient, ClientOptions, ImageProviderClient, JobHandle, OnAccepted, ResumableClient, TextProviderClient, ToolProviderClient, TraceSink,
+    VideoProviderClient,
+};
 use crate::error::{GenerationError, Result};
-use crate::models::{AspectRatio, ImageModel, ImageResolution};
-use crate::settings::{AudioGenerationSettings, VideoGenerationSettings};
+use crate::models::{AspectRatio, ImageModel, ImageResolution, ToolId};
+use crate::settings::{AudioGenerationSettings, ToolSettings, VideoGenerationSettings};
 use crate::{Bytes, ProviderId};
 use majik_core::model::{JobTrace, MediaType, TraceLabel};
 use sha2::{Digest, Sha256};
@@ -158,15 +161,19 @@ impl ImageProviderClient for MockClient {
         Ok(image_renderer::render(&ProviderId::mock(), model, &parsed.clean_prompt, aspect_ratio, resolution))
     }
 
-    async fn upscale_image(&self, image: &[u8]) -> Result<Bytes> {
-        Ok(image.to_vec())
-    }
+}
 
-    /// Corner-key matting: the top-left pixel is the "background" and
-    /// every pixel of that colour turns transparent, so the result exercises the app's alpha
-    /// handling (RGBA PNG, checkerboard) without a model. Bytes that aren't an image pass through.
-    async fn remove_background(&self, image: &[u8]) -> Result<Bytes> {
-        let Ok(decoded) = image::load_from_memory(image) else { return Ok(image.to_vec()) };
+#[async_trait]
+impl ToolProviderClient for MockClient {
+    /// Upscaling returns the input unchanged, for an image or a clip alike. Background removal is
+    /// corner-key matting: the top-left pixel is the "background" and every pixel of that colour
+    /// turns transparent, so the result exercises the app's alpha handling (RGBA PNG, checkerboard)
+    /// without a model. Bytes that aren't an image pass through.
+    async fn run_tool(&self, settings: &ToolSettings, input: &ProviderAsset) -> Result<Bytes> {
+        if settings.model.kind == ToolId::Upscale {
+            return Ok(input.data.clone());
+        }
+        let Ok(decoded) = image::load_from_memory(&input.data) else { return Ok(input.data.clone()) };
         let mut rgba = decoded.into_rgba8();
         let key = *rgba.get_pixel(0, 0);
         for pixel in rgba.pixels_mut() {
@@ -177,7 +184,7 @@ impl ImageProviderClient for MockClient {
         let mut out = std::io::Cursor::new(Vec::new());
         match rgba.write_to(&mut out, image::ImageFormat::Png) {
             Ok(()) => Ok(out.into_inner()),
-            Err(_) => Ok(image.to_vec()),
+            Err(_) => Ok(input.data.clone()),
         }
     }
 }

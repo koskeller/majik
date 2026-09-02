@@ -10,7 +10,7 @@ use gpui_component::tooltip::Tooltip;
 use gpui_component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _};
 use majik_core::model::{AlbumId, AssetId, MediaType, ToolId};
 use majik_generation::{build_requests, improve, validate_requests, validation, AssetInput, Request};
-use majik_providers::{AspectRatio, AssetRole, AudioVoice, ImageResolution, ProviderDescriptor, ProviderId, VideoAspectRatio, VideoResolution};
+use majik_providers::{AspectRatio, AssetRole, AudioVoice, ImageResolution, ProviderDescriptor, ProviderId, ToolInput, VideoAspectRatio, VideoResolution};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -393,7 +393,7 @@ impl ComposeView {
         if self.state.tab == ComposeTab::Media(MediaType::Audio) && characters == 0 {
             return None;
         }
-        let Some(amount) = self.state.unit_price(characters).times(total.max(1)).amount() else {
+        let Some(amount) = self.state.unit_price(characters, self.tool_input(cx)).times(total.max(1)).amount() else {
             return Some("No estimate available".into());
         };
         if amount.is_zero() {
@@ -402,6 +402,24 @@ impl ComposeView {
         // Before there is anything to generate, the number is still worth showing: it is what the
         // settings the user is turning cost per output.
         Some(if total == 0 { format!("≈ {amount} each").into() } else { format!("≈ {amount} estimated").into() })
+    }
+
+    /// The size of the asset a tool run would bill on: the first input attached to a tool tab.
+    /// Zeroes everywhere else, and for an asset the library never probed — which prices as unknown
+    /// rather than as free.
+    fn tool_input(&self, cx: &App) -> ToolInput {
+        if !self.state.tab.is_tool() {
+            return ToolInput::default();
+        }
+        let accepted = self.state.accepted_assets();
+        let Some(draft) = accepted.first() else { return ToolInput::default() };
+        let library = self.library.read(cx);
+        let Some(asset) = library.lib.asset(&draft.asset) else { return ToolInput::default() };
+        ToolInput {
+            width: asset.width.unwrap_or(0),
+            height: asset.height.unwrap_or(0),
+            duration_secs: asset.duration_secs.map(|d| d.ceil().max(0.0) as u32).unwrap_or(0),
+        }
     }
 
     fn can_generate(&self, cx: &App) -> bool {
@@ -558,12 +576,18 @@ impl ComposeView {
         cx.notify();
     }
 
-    /// Submit on a tool tab: one row per attached image with the tab's selected model. The images
-    /// stay attached when nothing was queued, so the user can fix the input and try again.
+    /// Submit on a tool tab: one row per attached input with the tab's selected model and settings.
+    /// The inputs stay attached when nothing was queued, so the user can fix them and try again.
+    /// What counts as an input follows the model's media — a video upscaler takes a clip.
     fn run_tool(&mut self, tool: ToolId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(settings) = self.state.tool_settings() else {
+            crate::ui::toast(window, "Pick a model first.", cx);
+            return;
+        };
+        let video = settings.model.media == MediaType::Video;
         let assets: Vec<AssetId> = self.state.accepted_assets().iter().map(|a| a.asset.clone()).collect();
         if assets.is_empty() {
-            crate::ui::toast(window, "Add an image first.", cx);
+            crate::ui::toast(window, if video { "Add a video first." } else { "Add an image first." }, cx);
             return;
         }
         let roles: Vec<AssetRole> = self.state.accepted_assets().iter().map(|a| a.role).collect();
@@ -571,20 +595,17 @@ impl ComposeView {
             crate::ui::toast(window, e.to_string(), cx);
             return;
         }
-        let Some(model) = self.state.active_tool_model() else {
-            crate::ui::toast(window, "Pick a model first.", cx);
-            return;
-        };
         let provider = self.state.provider.id.clone();
         let album = self.album.clone();
-        let n = self.library.update(cx, |m, cx| m.run_tool_on_assets(model, &assets, provider, album, cx));
+        let n = self.library.update(cx, |m, cx| m.run_tool_on_assets(&settings, &assets, provider, album, cx));
         if n == 0 {
-            crate::ui::toast(window, "No supported images (PNG, JPEG, WebP or GIF).", cx);
+            crate::ui::toast(window, if video { "No supported videos (MP4)." } else { "No supported images (PNG, JPEG, WebP or GIF)." }, cx);
             return;
         }
         self.state.clear_active_assets();
         self.reset_transients();
-        crate::ui::toast(window, format!("{}: processing {n} image(s)…", tool.label()), cx);
+        let noun = if video { "video" } else { "image" };
+        crate::ui::toast(window, format!("{}: processing {n} {noun}(s)…", tool.label()), cx);
         cx.notify();
     }
 
@@ -961,7 +982,9 @@ fn plural(tab: ComposeTab) -> &'static str {
         ComposeTab::Media(MediaType::Image) => "images",
         ComposeTab::Media(MediaType::Video) => "videos",
         ComposeTab::Media(MediaType::Audio) => "audio",
-        ComposeTab::Tool(ToolId::Upscale) => "upscaled images",
+        // The Upscale tab makes whichever media its model works on; "media" covers both without
+        // the message having to know which model is selected.
+        ComposeTab::Tool(ToolId::Upscale) => "upscaled media",
         ComposeTab::Tool(ToolId::RemoveBackground) => "images without a background",
     }
 }
@@ -1131,8 +1154,46 @@ impl Render for ComposeView {
                     }
                 }
             }
-            // No tool has parameters yet; the row stays so future ones slot in here.
-            ComposeTab::Tool(_) => {}
+            ComposeTab::Tool(tool) => {
+                if let Some(caps) = self.state.tool_caps() {
+                    let draft_factor = self.state.tools.get(tool).upscale_factor.or_else(|| caps.default_factor());
+                    if !caps.upscale_factors.is_empty() {
+                        let factors: Vec<(u32, String)> = caps.upscale_factors.iter().map(|f| (*f, format!("{f}×"))).collect();
+                        let label = draft_factor.map(|f| format!("{f}×")).unwrap_or_else(|| "Scale".into());
+                        options = options.child(Self::capsule("tool_factor", "scaling", label, "Upscale factor").dropdown_menu(Self::options_menu(
+                            this.clone(),
+                            factors,
+                            draft_factor,
+                            |v, f, cx| {
+                                if let ComposeTab::Tool(t) = v.state.tab {
+                                    v.state.tools.get_mut(t).upscale_factor = Some(f);
+                                }
+                                cx.notify();
+                            },
+                        )));
+                    }
+                    if !caps.variants.is_empty() {
+                        let variants: Vec<(String, String)> = caps.variants.iter().map(|t| (t.id.to_string(), t.name.to_string())).collect();
+                        let current = self.state.tools.get(tool).variant.clone().or_else(|| caps.default_variant().map(str::to_string));
+                        let label = current
+                            .as_deref()
+                            .and_then(|id| caps.variants.iter().find(|t| t.id == id))
+                            .map(|t| t.name.to_string())
+                            .unwrap_or_else(|| "Model".into());
+                        options = options.child(Self::capsule("tool_variant", "sparkles", label, "Enhancement model").dropdown_menu(Self::options_menu(
+                            this.clone(),
+                            variants,
+                            current,
+                            |v, id, cx| {
+                                if let ComposeTab::Tool(t) = v.state.tab {
+                                    v.state.tools.get_mut(t).variant = Some(id);
+                                }
+                                cx.notify();
+                            },
+                        )));
+                    }
+                }
+            }
         }
 
         // --- assets ---
@@ -1452,7 +1513,7 @@ mod tests {
     }
 
     fn tool_request(model: &majik_providers::ToolModel) -> Request {
-        Request::tool(ProviderId::mock(), model, AssetInput::new(AssetRole::ReferenceImage, "image/png", vec![]))
+        Request::tool(ProviderId::mock(), majik_providers::ToolSettings::new(model.clone()), AssetInput::new(AssetRole::ReferenceImage, "image/png", vec![]))
     }
 
     fn video_request(model: &majik_providers::VideoModel, duration: u32) -> Request {
@@ -2518,6 +2579,162 @@ mod tests {
         view.update_in(vcx, |v, w, cx| v.generate(w, cx));
         assert!(tool_rows(&e, vcx, ToolId::Upscale).is_empty());
         assert_eq!(toasts(vcx), toasts_before + 2, "generate asks for an image");
+    }
+
+    /// Picking the video upscaler is how the one Upscale tab switches to taking a clip: the role
+    /// card follows the model, and an image is refused there just as a clip is on the image model.
+    #[gpui::test]
+    fn selecting_a_video_upscaler_switches_the_tab_to_taking_a_clip(cx: &mut TestAppContext) {
+        let (view, vcx, _e) = compose_window!(cx, "Mock");
+        switch_to_tab(&view, vcx, ComposeTab::Tool(ToolId::Upscale));
+        view.update(vcx, |v, _| {
+            assert_eq!(v.state.active_tool_model().map(|m| m.id), Some("mock-upscale"));
+            assert_eq!(v.state.asset_constraints().range(AssetRole::ReferenceImage), Some(&(1..=crate::composer_state::TOOL_MAX_IMAGES)));
+            assert!(!v.state.asset_constraints().accepts(AssetRole::ReferenceVideo));
+        });
+
+        select_upscaler(&view, vcx, "mock-upscale-video");
+        view.update(vcx, |v, _| {
+            assert_eq!(v.state.tab, ComposeTab::Tool(ToolId::Upscale), "still one tab");
+            // One clip per run: a video upscale is minutes of provider time and dollars a second.
+            assert_eq!(v.state.asset_constraints().range(AssetRole::ReferenceVideo), Some(&(1..=1)));
+            assert!(!v.state.asset_constraints().accepts(AssetRole::ReferenceImage));
+        });
+    }
+
+    /// A clip attached to the Upscale tab stays there rather than being routed to the Video tab,
+    /// and images attached before the switch are hidden rather than lost.
+    #[gpui::test]
+    fn a_clip_dropped_on_the_video_upscaler_stays_on_the_tool_tab(cx: &mut TestAppContext) {
+        let (view, vcx, e) = compose_window!(cx, "Mock");
+        switch_to_tab(&view, vcx, ComposeTab::Tool(ToolId::Upscale));
+        add(&view, vcx, "/tmp/before.png", AssetRole::ReferenceImage);
+        select_upscaler(&view, vcx, "mock-upscale-video");
+
+        let clip = crate::test_support::seed_asset(&e.library, vcx, MediaType::Video, 3);
+        view.update_in(vcx, |v, w, cx| assert!(v.add_video(clip, w, cx)));
+        view.update(vcx, |v, _| {
+            assert_eq!(v.state.tab, ComposeTab::Tool(ToolId::Upscale), "not sent to the Video tab");
+            let accepted = v.state.accepted_assets();
+            assert_eq!(accepted.len(), 1);
+            assert_eq!(accepted[0].role, AssetRole::ReferenceVideo);
+        });
+
+        // The image is still on the draft, just not accepted, so switching back brings it out.
+        select_upscaler(&view, vcx, "mock-upscale");
+        view.update(vcx, |v, _| {
+            let accepted = v.state.accepted_assets();
+            assert_eq!(accepted.len(), 1, "the image is back");
+            assert_eq!(accepted[0].role, AssetRole::ReferenceImage);
+        });
+    }
+
+    /// The whole point: an Upscale run over a clip makes a *video* row, so it is written as an mp4
+    /// and gets a poster rather than landing as an unreadable PNG.
+    #[gpui::test]
+    fn upscaling_a_clip_queues_a_video_row(cx: &mut TestAppContext) {
+        let (view, vcx, e) = compose_window!(cx, "Mock");
+        switch_to_tab(&view, vcx, ComposeTab::Tool(ToolId::Upscale));
+        select_upscaler(&view, vcx, "mock-upscale-video");
+        let clip = crate::test_support::seed_asset(&e.library, vcx, MediaType::Video, 4);
+        view.update_in(vcx, |v, w, cx| assert!(v.add_video(clip.clone(), w, cx)));
+
+        view.update_in(vcx, |v, w, cx| v.generate(w, cx));
+
+        let rows = tool_rows(&e, vcx, ToolId::Upscale);
+        assert_eq!(rows.len(), 1, "one row for the one clip");
+        assert_eq!(rows[0].media_type, MediaType::Video, "a video row, not an image one");
+        assert_eq!(rows[0].model_name.as_deref(), Some("Mock Video Upscale"));
+        // The row references the clip it ran over rather than copying its bytes.
+        e.library.read_with(vcx, |m, _| {
+            let inputs = m.lib.inputs(&rows[0].id);
+            assert_eq!(inputs.len(), 1);
+            assert_eq!(inputs[0].0.asset_id, clip);
+            assert_eq!(inputs[0].0.role, AssetRole::ReferenceVideo.raw());
+        });
+
+        // Completing it writes an mp4 and probes it like any other clip, which is what the media
+        // type buys: an image row would have been written as `<id>.png` and drawn nothing.
+        let id = rows[0].id.clone();
+        e.library.update(vcx, |m, cx| {
+            let job = m.attempt(&id);
+            m.apply(majik_generation::Event::Completed { id: id.clone(), job, bytes: crate::test_support::mock_clip().to_vec(), is_upscaled: true }, cx);
+        });
+        vcx.run_until_parked();
+        let row = e.library.read_with(vcx, |m, _| m.lib.get(&id).cloned()).expect("the row");
+        assert_eq!(row.status, Status::Completed);
+        assert!(row.is_upscaled);
+        assert!(row.path.as_ref().is_some_and(|p| p.extension().is_some_and(|e| e == "mp4")), "{:?}", row.path);
+        assert!(row.thumbnail.is_some(), "a video row gets a poster");
+        assert_eq!(row.duration_secs.map(|d| d.round()), Some(2.0));
+    }
+
+    /// An image on the video upscaler queues nothing and says so, rather than sending a PNG to a
+    /// video endpoint.
+    #[gpui::test]
+    fn the_video_upscaler_refuses_an_image(cx: &mut TestAppContext) {
+        let (view, vcx, e) = compose_window!(cx, "Mock");
+        switch_to_tab(&view, vcx, ComposeTab::Tool(ToolId::Upscale));
+        add(&view, vcx, "/tmp/still.png", AssetRole::ReferenceImage);
+        select_upscaler(&view, vcx, "mock-upscale-video");
+
+        let toasts_before = toasts(vcx);
+        view.update_in(vcx, |v, w, cx| v.generate(w, cx));
+        assert!(tool_rows(&e, vcx, ToolId::Upscale).is_empty(), "nothing queued");
+        assert_eq!(toasts(vcx), toasts_before + 1, "the user is told to add a video");
+    }
+
+    /// The factor and enhancement model reach the stored request, and Recreate brings them back.
+    #[gpui::test]
+    fn tool_settings_reach_the_request_and_come_back_on_recreate(cx: &mut TestAppContext) {
+        let (view, vcx, e) = compose_window!(cx, "Mock");
+        switch_to_tab(&view, vcx, ComposeTab::Tool(ToolId::Upscale));
+        select_upscaler(&view, vcx, "mock-upscale-video");
+        view.update(vcx, |v, _| v.state.tools.get_mut(ToolId::Upscale).upscale_factor = Some(4));
+        let clip = crate::test_support::seed_asset(&e.library, vcx, MediaType::Video, 5);
+        view.update_in(vcx, |v, w, cx| assert!(v.add_video(clip, w, cx)));
+        view.update_in(vcx, |v, w, cx| v.generate(w, cx));
+
+        let row = tool_rows(&e, vcx, ToolId::Upscale).remove(0);
+        let request = Request::from_json(row.request_json.as_deref().expect("a stored request")).expect("parses");
+        let settings = request.generation_type.tool_settings().expect("a tool request");
+        assert_eq!(settings.model.id, "mock-upscale-video");
+        assert_eq!(settings.upscale_factor, 4);
+
+        // Recreate lands on the Upscale tab with that model and factor, not the tab's defaults.
+        let state = view.read_with(vcx, |v, _| v.state.clone());
+        let outcome = state.load_recreate(&request, vec![]);
+        let crate::composer_state::RecreateOutcome::Loaded { state, warning } = outcome else { panic!("{outcome:?}") };
+        assert!(warning.is_none(), "{warning:?}");
+        assert_eq!(state.tab, ComposeTab::Tool(ToolId::Upscale));
+        assert_eq!(state.active_tool_model().map(|m| m.id), Some("mock-upscale-video"));
+        assert_eq!(state.tool_settings().map(|s| s.upscale_factor), Some(4));
+    }
+
+    /// A per-second video upscale is priced off the attached clip, so the caption changes when a
+    /// clip is attached — an image upscale's flat price does not.
+    #[gpui::test]
+    fn the_estimate_for_a_video_upscale_follows_the_attached_clip(cx: &mut TestAppContext) {
+        let (view, vcx, e) = compose_window!(cx, "Mock");
+        switch_to_tab(&view, vcx, ComposeTab::Tool(ToolId::Upscale));
+        select_upscaler(&view, vcx, "mock-upscale-video");
+
+        let empty = view.read_with(vcx, |v, cx| v.tool_input(cx));
+        assert_eq!(empty, majik_providers::ToolInput::default(), "nothing attached, nothing to bill on");
+
+        let clip = crate::test_support::seed_asset(&e.library, vcx, MediaType::Video, 6);
+        view.update_in(vcx, |v, w, cx| assert!(v.add_video(clip, w, cx)));
+        vcx.run_until_parked();
+        let attached = view.read_with(vcx, |v, cx| v.tool_input(cx));
+        assert_eq!((attached.width, attached.height), (64, 64), "the seeded clip's own size");
+        assert_eq!(attached.duration_secs, 2);
+    }
+
+    fn select_upscaler(view: &gpui::Entity<ComposeView>, vcx: &mut VisualTestContext, id: &str) {
+        view.update(vcx, |v, cx| {
+            let ix = v.state.provider.tool_models(ToolId::Upscale).iter().position(|m| m.id == id).expect("the provider offers it");
+            v.select_model(ix, cx);
+        });
     }
 
     #[gpui::test]

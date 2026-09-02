@@ -51,6 +51,8 @@ fn image(settings: &ImageGenerationSettings) -> Estimate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pricing::ToolInput;
+    use crate::settings::ToolSettings;
     use crate::catalog;
     use crate::models::{AspectRatio, ImageResolution};
 
@@ -88,6 +90,6 @@ mod tests {
 
     #[test]
     fn openrouter_routes_nothing_but_images() {
-        assert_eq!(pricing(&PricedJob::Tool(&catalog::tool::TOPAZ_UPSCALE)), Estimate::Unknown);
+        assert_eq!(pricing(&PricedJob::Tool { settings: &ToolSettings::new(catalog::tool::TOPAZ_UPSCALE.clone()), input: ToolInput::default() }), Estimate::Unknown);
     }
 }

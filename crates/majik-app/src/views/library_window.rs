@@ -1326,7 +1326,7 @@ mod tests {
         // What the composer's Upscale tab leaves behind: a tool row whose request names the model
         // and whose one input is the image it ran over.
         let input = seed_asset(&e.library, cx, MediaType::Image, 9);
-        let request = Request::tool(ProviderId::mock(), &catalog::tool::MOCK_UPSCALE, AssetInput::new(AssetRole::ReferenceImage, "image/png", vec![]));
+        let request = Request::tool(ProviderId::mock(), majik_providers::ToolSettings::new(catalog::tool::MOCK_UPSCALE.clone()), AssetInput::new(AssetRole::ReferenceImage, "image/png", vec![]));
         seed_request(&e.library, cx, &request, &[("reference_image", input.clone())]);
         let (window, vcx) = root_window(cx);
         assert!(panel_open(&window, vcx));

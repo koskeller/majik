@@ -90,9 +90,11 @@ Dependency direction (never reversed): `app → {generation, video, audio, platf
 - **Attempt** (`GenerationJob`) — one provider run of a generation; a retry is the next attempt. The
   row mirrors the active one; every HTTP exchange of it is a **trace**.
 - **Request** — everything needed to (re)run a generation: provider, `GenerationType` (a media
-  kind's settings, or a tool over one image), prompt. Stored on the row; Recreate loads it back.
+  kind's settings, or a tool over one input), prompt. Stored on the row; Recreate loads it back.
 - **Tool** — Upscale / Remove Background: a generation whose request is `Upscale` /
-  `RemoveBackground(ToolSettings)`; shown as its own composer tab.
+  `RemoveBackground(ToolSettings)`; shown as its own composer tab. A tool model declares the media it
+  works on (`ToolModel::media`), so the one Upscale tab takes an image or a clip depending on the
+  model picked, and the row's media type is the model's.
 - **Draft** — the composer's per-provider state (`ComposerState`, persisted in `drafts.json`); a
   **`DraftAsset`** is an asset attached in a role, sent as an `AssetInput` when generating.
 - **Entry** — what a grid or the detail shows: a generation or an asset (`EntryId`).
@@ -141,7 +143,8 @@ Dependency direction (never reversed): `app → {generation, video, audio, platf
   catalogs and checked against each descriptor by a guard test that does run on every push.
 - **`majik-generation::Engine`** owns a tokio runtime on a background thread (reqwest needs it; GPUI's
   executor doesn't). One `Request` type covers every operation — `GenerationType::Image / Video /
-  Audio` and the tools, `Upscale / RemoveBackground(ToolSettings { model })` over one input image —
+  Audio` and the tools, `Upscale / RemoveBackground(ToolSettings { model, upscale_factor, variant })`
+  over one input image or clip —
   and every row stores its request (`generations.request_json`; the `tool` column is derived from it), so
   Recreate and Retry work on tool rows exactly as on generations. Requests go in; `Event`s
   (`Accepted / Trace / Completed / Failed / Cancelled`, each naming its attempt) come out on

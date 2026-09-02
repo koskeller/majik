@@ -2237,7 +2237,7 @@ mod tests {
     /// An upscale row over an imported image, as the composer's Upscale tab leaves it.
     fn upscaled(env: &crate::test_support::TestEnv, cx: &mut TestAppContext) -> (GenerationId, majik_core::model::AssetId) {
         let input = seed_asset(&env.library, cx, MediaType::Image, 7);
-        let request = Request::tool(ProviderId::mock(), &catalog::tool::MOCK_UPSCALE, majik_generation::AssetInput::new(majik_providers::AssetRole::ReferenceImage, "image/png", vec![]));
+        let request = Request::tool(ProviderId::mock(), majik_providers::ToolSettings::new(catalog::tool::MOCK_UPSCALE.clone()), majik_generation::AssetInput::new(majik_providers::AssetRole::ReferenceImage, "image/png", vec![]));
         let id = seed_request(&env.library, cx, &request, &[("reference_image", input.clone())]);
         (id, input)
     }
@@ -2490,7 +2490,7 @@ mod tests {
         let (_detail, vcx) = rendered_detail_on(cx, &env, &image);
         assert!(vcx.debug_bounds("checkerboard").is_none(), "a plain image sits on the black stage");
         let input = seed_asset(&env.library, cx, MediaType::Image, 7);
-        let request = Request::tool(ProviderId::mock(), &catalog::tool::MOCK_REMOVE_BACKGROUND, majik_generation::AssetInput::new(majik_providers::AssetRole::ReferenceImage, "image/png", vec![]));
+        let request = Request::tool(ProviderId::mock(), majik_providers::ToolSettings::new(catalog::tool::MOCK_REMOVE_BACKGROUND.clone()), majik_generation::AssetInput::new(majik_providers::AssetRole::ReferenceImage, "image/png", vec![]));
         let cutout = seed_request(&env.library, cx, &request, &[("reference_image", input)]);
         let (_detail, vcx) = rendered_detail_on(cx, &env, &cutout);
         assert!(vcx.debug_bounds("checkerboard").is_some(), "a background removal shows its transparency");

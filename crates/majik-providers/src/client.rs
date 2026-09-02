@@ -8,7 +8,7 @@ use crate::descriptor::ProviderDescriptor;
 use crate::error::{GenerationError, Result};
 use crate::models::{AspectRatio, ImageModel, ImageResolution};
 use crate::registry::ProviderRegistry;
-use crate::settings::{AudioGenerationSettings, VideoGenerationSettings};
+use crate::settings::{AudioGenerationSettings, ToolSettings, VideoGenerationSettings};
 use crate::{Bytes, ProviderId};
 use majik_core::model::{JobTrace, MediaType};
 
@@ -23,9 +23,15 @@ pub trait ImageProviderClient: Send + Sync {
         resolution: Option<ImageResolution>,
     ) -> Result<Bytes>;
 
-    async fn upscale_image(&self, image: &[u8]) -> Result<Bytes>;
+}
 
-    async fn remove_background(&self, image: &[u8]) -> Result<Bytes>;
+/// Running a tool (upscale, background removal) over one input asset. Its own trait rather than a
+/// pair of methods on [`ImageProviderClient`] because an upscaler is not necessarily about images:
+/// `settings.model.media` says what the run consumes and produces, and a video one goes through the
+/// provider's queue rather than a synchronous call.
+#[async_trait]
+pub trait ToolProviderClient: Send + Sync {
+    async fn run_tool(&self, settings: &ToolSettings, input: &ProviderAsset) -> Result<Bytes>;
 }
 
 #[async_trait]
@@ -90,6 +96,7 @@ pub struct ProviderClient {
     video: Option<Arc<dyn VideoProviderClient>>,
     audio: Option<Arc<dyn AudioProviderClient>>,
     text: Option<Arc<dyn TextProviderClient>>,
+    tool: Option<Arc<dyn ToolProviderClient>>,
     resume: Option<Arc<dyn ResumableClient>>,
 }
 
@@ -105,6 +112,7 @@ impl ProviderClient {
             video: (descriptor.make_video_client)(options),
             audio: (descriptor.make_audio_client)(options),
             text: (descriptor.make_text_client)(options),
+            tool: (descriptor.make_tool_client)(options),
             resume: (descriptor.make_resume_client)(options),
         }
     }
@@ -157,11 +165,10 @@ impl ProviderClient {
         }
     }
 
-    pub async fn upscale_image(&self, image: &[u8]) -> Result<Bytes> {
-        self.image.upscale_image(image).await
-    }
-
-    pub async fn remove_background(&self, image: &[u8]) -> Result<Bytes> {
-        self.image.remove_background(image).await
+    pub async fn run_tool(&self, settings: &ToolSettings, input: &ProviderAsset) -> Result<Bytes> {
+        match &self.tool {
+            Some(t) => t.run_tool(settings, input).await,
+            None => Err(GenerationError::InvalidRequest(format!("{} is not supported by {}", settings.model.kind.label(), self.descriptor.display_name))),
+        }
     }
 }

@@ -11,7 +11,10 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{Map, Value};
 
 use crate::asset::{AssetRole, ProviderAsset};
-use crate::client::{AudioProviderClient, ClientOptions, ImageProviderClient, JobHandle, OnAccepted, ResumableClient, TextProviderClient, TraceSink, VideoProviderClient};
+use crate::client::{
+    AudioProviderClient, ClientOptions, ImageProviderClient, JobHandle, OnAccepted, ResumableClient, TextProviderClient, ToolProviderClient, TraceSink,
+    VideoProviderClient,
+};
 use crate::constants::fal as constants;
 use crate::data_uri::{from_data_uri, to_data_uri};
 use crate::error::{GenerationError, Result};
@@ -21,12 +24,12 @@ use crate::fal::capabilities::VideoEndpointVariant;
 use crate::fal::error::{handle_http_error, FalError};
 use crate::fal::models::{
     FalAudioFileResponse, FalErrorDetail, FalQueueStatus, FalQueueStatusResponse, FalQueueSubmitResponse, FalQueuedVideoResponse, FalResponse,
-    FalSingleImageResponse, FalTextResponse, FalVideoResponse,
+    FalSingleImageResponse, FalTextResponse, FalUploadInitiateResponse, FalVideoResponse,
 };
 use crate::http::{self, Timeouts};
 use crate::models::{AspectRatio, ImageModel, ImageResolution, VideoModel, VideoResolution};
 use crate::references::{rewrite_handles, ReferenceAssets, ReferenceTagStyle};
-use crate::settings::{AudioGenerationSettings, VideoGenerationSettings};
+use crate::settings::{AudioGenerationSettings, ToolSettings, VideoGenerationSettings};
 use crate::transcode::transcode_to_png;
 use crate::Bytes;
 use majik_core::model::{MediaType, TraceLabel};
@@ -39,6 +42,7 @@ pub struct FalClient {
     api_key: String,
     base_url: String,
     queue_base_url: String,
+    rest_base_url: String,
     on_accepted: Option<OnAccepted>,
     on_trace: Option<TraceSink>,
 }
@@ -59,7 +63,14 @@ pub struct QueueTicket {
 
 impl FalClient {
     pub fn new(api_key: impl Into<String>) -> Self {
-        Self { api_key: api_key.into(), base_url: constants::BASE_URL.to_string(), queue_base_url: constants::QUEUE_BASE_URL.to_string(), on_accepted: None, on_trace: None }
+        Self {
+            api_key: api_key.into(),
+            base_url: constants::BASE_URL.to_string(),
+            queue_base_url: constants::QUEUE_BASE_URL.to_string(),
+            rest_base_url: constants::REST_BASE_URL.to_string(),
+            on_accepted: None,
+            on_trace: None,
+        }
     }
 
     pub fn from_options(options: &ClientOptions) -> Self {
@@ -84,6 +95,16 @@ impl FalClient {
         self.base_url = base_url.into().trim_end_matches('/').to_string();
         self.queue_base_url = queue_base_url.into().trim_end_matches('/').to_string();
         self
+    }
+
+    /// Override the storage (`https://rest.fal.ai`) base URL — for tests pointing at a mock server.
+    pub fn with_rest_base_url(mut self, rest_base_url: impl Into<String>) -> Self {
+        self.rest_base_url = rest_base_url.into().trim_end_matches('/').to_string();
+        self
+    }
+
+    pub fn rest_base_url(&self) -> &str {
+        &self.rest_base_url
     }
 
     pub fn base_url(&self) -> &str {
@@ -131,12 +152,12 @@ impl ImageProviderClient for FalClient {
         self.generate_image_impl(prompt, model, assets, aspect_ratio, resolution).await.map_err(GenerationError::from)
     }
 
-    async fn upscale_image(&self, image: &[u8]) -> Result<Bytes> {
-        self.upscale_image_impl(image).await.map_err(GenerationError::from)
-    }
+}
 
-    async fn remove_background(&self, image: &[u8]) -> Result<Bytes> {
-        self.remove_background_impl(image).await.map_err(GenerationError::from)
+#[async_trait]
+impl ToolProviderClient for FalClient {
+    async fn run_tool(&self, settings: &ToolSettings, input: &ProviderAsset) -> Result<Bytes> {
+        self.run_tool_impl(settings, input).await.map_err(GenerationError::from)
     }
 }
 
@@ -220,19 +241,52 @@ impl FalClient {
         self.extract_image_data(&result_data).await
     }
 
-    async fn upscale_image_impl(&self, image: &[u8]) -> std::result::Result<Bytes, FalError> {
-        let mut body = Map::new();
-        body.insert("image_url".into(), Value::String(to_data_uri(image, PNG_MIME)));
-        body.insert("model".into(), Value::String("Standard V2".into()));
-        body.insert("upscale_factor".into(), Value::from(2));
-        body.insert("output_format".into(), Value::String("png".into()));
-        self.process_image(constants::UPSCALE_ENDPOINT, &body).await
+    /// One tool run over one asset. Image tools are a synchronous `fal.run` call; a video upscale
+    /// goes through the queue like any other video job, so it reports a handle and can be resumed.
+    async fn run_tool_impl(&self, settings: &ToolSettings, input: &ProviderAsset) -> std::result::Result<Bytes, FalError> {
+        let model = &settings.model;
+        let Some(endpoint) = caps::tool_endpoint(model) else {
+            return Err(FalError::UnsupportedModel(model.id.to_string()));
+        };
+        match model.media {
+            MediaType::Video => self.upscale_video_impl(settings, endpoint, input).await,
+            _ => self.process_image_tool(settings, endpoint, input).await,
+        }
     }
 
-    async fn remove_background_impl(&self, image: &[u8]) -> std::result::Result<Bytes, FalError> {
+    async fn process_image_tool(&self, settings: &ToolSettings, endpoint: &str, input: &ProviderAsset) -> std::result::Result<Bytes, FalError> {
         let mut body = Map::new();
-        body.insert("image_url".into(), Value::String(to_data_uri(image, PNG_MIME)));
-        self.process_image(constants::REMOVE_BACKGROUND_ENDPOINT, &body).await
+        body.insert("image_url".into(), Value::String(to_data_uri(&input.data, PNG_MIME)));
+        if let Some(variant) = caps::api_tool_variant(&settings.model, settings.variant.as_deref()) {
+            body.insert("model".into(), Value::String(variant.into()));
+        }
+        if caps::tool_capabilities(&settings.model).is_some_and(|c| !c.upscale_factors.is_empty()) {
+            body.insert("upscale_factor".into(), Value::from(settings.upscale_factor));
+            body.insert("output_format".into(), Value::String("png".into()));
+        }
+        self.process_image(endpoint, &body).await
+    }
+
+    /// Topaz video upscaling. The clip is too big to inline as a data URI, so it is uploaded to
+    /// fal's storage first and passed by URL.
+    ///
+    /// `H264_output` is not optional for us: the endpoint defaults to H265, and `majik_core::video`
+    /// decodes H.264 in MP4 only, so an H265 result would land in the library as an asset nothing
+    /// can play. `target_fps` is deliberately never sent — frame interpolation doubles the price
+    /// and there is no UI asking for it.
+    async fn upscale_video_impl(&self, settings: &ToolSettings, endpoint: &str, input: &ProviderAsset) -> std::result::Result<Bytes, FalError> {
+        let video_url = self.upload_file(&input.data, &input.mime_type(), "input.mp4").await?;
+
+        let mut body = Map::new();
+        body.insert("video_url".into(), Value::String(video_url));
+        if let Some(variant) = caps::api_tool_variant(&settings.model, settings.variant.as_deref()) {
+            body.insert("model".into(), Value::String(variant.into()));
+        }
+        body.insert("upscale_factor".into(), Value::from(settings.upscale_factor));
+        body.insert("H264_output".into(), Value::Bool(true));
+
+        let result_data = self.submit_and_await_queue(endpoint, &body, Timeouts::video_resume(), "video").await?;
+        self.download_video_result(&result_data).await
     }
 
     async fn generate_video_impl(&self, prompt: &str, assets: &[ProviderAsset], settings: &VideoGenerationSettings) -> std::result::Result<Bytes, FalError> {
@@ -661,6 +715,36 @@ impl FalClient {
             return Err(FalError::NoResultGenerated);
         }
         Ok(text)
+    }
+
+    /// Puts `data` in fal's storage and returns the URL to reference it by. Two steps, the way
+    /// fal's own clients do it: ask `/storage/upload/initiate` for a signed URL, then PUT the bytes
+    /// at it. The PUT carries no `Authorization` header — the signature in the URL is the auth, and
+    /// sending our key to whatever host it points at would leak it.
+    pub async fn upload_file(&self, data: &[u8], content_type: &str, file_name: &str) -> std::result::Result<String, FalError> {
+        let mut body = Map::new();
+        body.insert("content_type".into(), Value::String(content_type.to_string()));
+        body.insert("file_name".into(), Value::String(file_name.to_string()));
+
+        let initiate_url = format!("{}/storage/upload/initiate?storage_type=fal-cdn-v3", self.rest_base_url);
+        let (status, payload) = self.post_json(&initiate_url, &body, Timeouts::VIDEO, TraceLabel::Submit).await?;
+        if status != 200 && status != 201 {
+            return Err(handle_http_error(status, &payload));
+        }
+        let initiated: FalUploadInitiateResponse = serde_json::from_slice(&payload).map_err(|e| {
+            tracing::error!(body = %String::from_utf8_lossy(&payload), "fal.ai upload initiate decode failed");
+            FalError::DecodingError(e.to_string())
+        })?;
+
+        let upload_url = Self::parse_url(&initiated.upload_url)?;
+        let request = http::client().put(upload_url).header(CONTENT_TYPE, content_type.to_string()).body(data.to_vec()).timeout(Timeouts::VIDEO.request);
+        let (put_status, put_payload) = http::send_traced(request, TraceLabel::Submit, self.on_trace.as_ref()).await?;
+        if !(200..300).contains(&put_status) {
+            tracing::error!(status = put_status, body = %String::from_utf8_lossy(&put_payload), "fal.ai upload failed");
+            return Err(FalError::UploadFailed(format!("HTTP {put_status}")));
+        }
+
+        Ok(initiated.file_url)
     }
 
     /// Synchronous tool call (`https://fal.run/<endpoint>`) returning a single image.

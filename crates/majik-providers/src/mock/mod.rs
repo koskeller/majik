@@ -9,10 +9,10 @@ pub mod video_renderer;
 use std::sync::{Arc, OnceLock};
 
 use crate::catalog;
-use crate::client::{AudioProviderClient, ClientOptions, ImageProviderClient, ResumableClient, TextProviderClient, VideoProviderClient};
+use crate::client::{AudioProviderClient, ClientOptions, ImageProviderClient, ResumableClient, TextProviderClient, ToolProviderClient, VideoProviderClient};
 use crate::descriptor::ProviderDescriptor;
 use crate::logo;
-use crate::models::{AudioModel, AudioModelCapabilities, ImageModel, ModelCapabilities, VideoModel, VideoModelCapabilities};
+use crate::models::{AudioModel, AudioModelCapabilities, ImageModel, ModelCapabilities, ToolModel, ToolModelCapabilities, VideoModel, VideoModelCapabilities};
 use crate::ProviderId;
 
 pub use directives::{parse_directives, Parsed};
@@ -37,12 +37,18 @@ pub fn descriptor() -> &'static ProviderDescriptor {
         image_capabilities,
         video_capabilities,
         audio_capabilities,
+        tool_capabilities,
         pricing: pricing::pricing,
-        supported_tool_models: vec![catalog::tool::MOCK_UPSCALE.clone(), catalog::tool::MOCK_REMOVE_BACKGROUND.clone()],
+        supported_tool_models: vec![
+            catalog::tool::MOCK_UPSCALE.clone(),
+            catalog::tool::MOCK_UPSCALE_VIDEO.clone(),
+            catalog::tool::MOCK_REMOVE_BACKGROUND.clone(),
+        ],
         make_image_client,
         make_video_client,
         make_audio_client,
         make_text_client,
+        make_tool_client,
         make_resume_client,
     })
 }
@@ -64,6 +70,21 @@ fn audio_capabilities(model: &AudioModel) -> Option<AudioModelCapabilities> {
 
 fn make_image_client(options: &ClientOptions) -> Arc<dyn ImageProviderClient> {
     Arc::new(MockClient::from_options(options))
+}
+
+/// The mock upscalers take the same factors as the real ones, so a composer test can exercise the
+/// capsules; neither mock tool has enhancement models to choose between.
+fn tool_capabilities(model: &ToolModel) -> Option<ToolModelCapabilities> {
+    Some(match model.id {
+        "mock-upscale" => ToolModelCapabilities::new(10).with_factors([2, 4]),
+        "mock-upscale-video" => ToolModelCapabilities::new(1).with_factors([2, 4]),
+        "mock-remove-background" => ToolModelCapabilities::new(10),
+        _ => return None,
+    })
+}
+
+fn make_tool_client(options: &ClientOptions) -> Option<Arc<dyn ToolProviderClient>> {
+    Some(Arc::new(MockClient::from_options(options)))
 }
 
 fn make_resume_client(options: &ClientOptions) -> Option<Arc<dyn ResumableClient>> {

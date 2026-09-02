@@ -7,7 +7,8 @@
 use std::collections::BTreeMap;
 
 use majik_providers::asset::{AssetRole, ProviderAsset};
-use majik_providers::client::{AudioProviderClient, ImageProviderClient, VideoProviderClient};
+use majik_providers::catalog;
+use majik_providers::client::{AudioProviderClient, ImageProviderClient, ToolProviderClient, VideoProviderClient};
 use majik_providers::error::GenerationError;
 use majik_providers::models::{
     AspectRatio, AudioModel, AudioVoice, ImageModel, ImageResolution, VideoAspectRatio, VideoDurationRange, VideoModel, VideoResolution,
@@ -20,7 +21,7 @@ use majik_providers::replicate::provider::{
     build_remove_background_request_body, build_request_body, build_upscale_request_body, build_video_reference_body, build_video_request_body,
 };
 use majik_providers::replicate::{self, ReplicateClient, ReplicateError, VideoEndpointVariant};
-use majik_providers::settings::{AudioGenerationSettings, VideoGenerationSettings};
+use majik_providers::settings::{AudioGenerationSettings, ToolSettings, VideoGenerationSettings};
 use majik_providers::ReferenceAssets;
 use serde_json::{json, Map, Value};
 use wiremock::matchers::{body_partial_json, header, method, path};
@@ -268,7 +269,7 @@ fn eleven_labs_v3_body_uses_prompt_and_voice() {
 
 #[test]
 fn upscale_body() {
-    let body = build_upscale_request_body(&[0x01, 0x02]);
+    let body = build_upscale_request_body(&[0x01, 0x02], 2);
     assert!(s(&body, "image").unwrap().starts_with("data:image/png;base64,"));
     assert_eq!(body.get("scale_factor"), Some(&json!(2)));
     assert_eq!(s(&body, "output_format"), Some("png"));
@@ -827,7 +828,7 @@ async fn upscale_posts_pinned_version_to_predictions_inner() {
         .and(header("Prefer", "wait=60"))
         .and(body_partial_json(json!({
             "version": majik_providers::constants::replicate::UPSCALE_VERSION,
-            "input": { "scale_factor": 2, "output_format": "png" }
+            "input": { "scale_factor": 4, "output_format": "png" }
         })))
         .respond_with(ResponseTemplate::new(201).set_body_json(json!({
             "id": "up-1", "status": "succeeded", "output": [format!("{}/up.png", server.uri())]
@@ -837,7 +838,8 @@ async fn upscale_posts_pinned_version_to_predictions_inner() {
         .await;
     Mock::given(method("GET")).and(path("/up.png")).respond_with(ResponseTemplate::new(200).set_body_bytes(png.clone())).mount(&server).await;
 
-    let bytes = client(&server).upscale_image(&[0x01, 0x02]).await.unwrap();
+    let settings = ToolSettings::new(catalog::tool::CLARITY_UPSCALER.clone()).with_factor(4);
+    let bytes = run_tool(&server, &settings).await;
     assert_eq!(bytes, png);
 }
 
@@ -863,8 +865,14 @@ async fn remove_background_posts_pinned_version_to_predictions_inner() {
         .await;
     Mock::given(method("GET")).and(path("/bg.png")).respond_with(ResponseTemplate::new(200).set_body_bytes(png.clone())).mount(&server).await;
 
-    let bytes = client(&server).remove_background(&[0x01, 0x02]).await.unwrap();
+    let bytes = run_tool(&server, &ToolSettings::new(catalog::tool::REMBG.clone())).await;
     assert_eq!(bytes, png);
+}
+
+/// One tool run against the mock server, over two bytes standing in for an image.
+async fn run_tool(server: &MockServer, settings: &ToolSettings) -> Vec<u8> {
+    let input = ProviderAsset::new(AssetRole::ReferenceImage, "image/png", vec![0x01, 0x02]);
+    client(server).run_tool(settings, &input).await.unwrap()
 }
 
 #[test]

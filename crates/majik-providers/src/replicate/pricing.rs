@@ -33,7 +33,7 @@ pub fn pricing(job: &PricedJob<'_>) -> Estimate {
         },
         // Both tools are community models billed by the second on their own hardware; Replicate
         // publishes a median run cost, which is the only figure to estimate from.
-        PricedJob::Tool(model) => match model.id {
+        PricedJob::Tool { settings, .. } => match settings.model.id {
             // philz1337x/clarity-upscaler, A100 (40GB), median $0.015 a run.
             "clarity-upscaler" => flat(15_000),
             // 851-labs/background-remover (catalog name "rembg"), T4, median $0.00054 a run.
@@ -254,6 +254,8 @@ fn video(settings: &VideoGenerationSettings) -> Estimate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pricing::ToolInput;
+    use crate::settings::ToolSettings;
     use crate::catalog;
     use crate::models::AspectRatio;
     use crate::settings::AudioGenerationSettings;
@@ -383,8 +385,8 @@ mod tests {
 
     #[test]
     fn the_compute_billed_tools_use_their_published_median_run() {
-        assert_eq!(dollars(pricing(&PricedJob::Tool(&catalog::tool::CLARITY_UPSCALER))), "$0.015");
-        assert_eq!(dollars(pricing(&PricedJob::Tool(&catalog::tool::REMBG))), "$0.001");
-        assert_eq!(pricing(&PricedJob::Tool(&catalog::tool::TOPAZ_UPSCALE)), Estimate::Unknown, "fal's tool, not Replicate's");
+        assert_eq!(dollars(pricing(&PricedJob::Tool { settings: &ToolSettings::new(catalog::tool::CLARITY_UPSCALER.clone()), input: ToolInput::default() })), "$0.015");
+        assert_eq!(dollars(pricing(&PricedJob::Tool { settings: &ToolSettings::new(catalog::tool::REMBG.clone()), input: ToolInput::default() })), "$0.001");
+        assert_eq!(pricing(&PricedJob::Tool { settings: &ToolSettings::new(catalog::tool::TOPAZ_UPSCALE.clone()), input: ToolInput::default() }), Estimate::Unknown, "fal's tool, not Replicate's");
     }
 }

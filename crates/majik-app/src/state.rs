@@ -9,7 +9,7 @@ use majik_generation::engine::{stale_timeout, stale_timeout_for, JobRunner};
 use majik_generation::engine::InertRunner;
 use majik_generation::{validation, AssetInput, Engine, Event, ImproveReceiver, Job, Request, TextRequest};
 use crate::credentials::ApiKeys;
-use majik_providers::{AssetRole, JobHandle, ProviderDescriptor, ProviderId, ProviderRegistry, ToolModel};
+use majik_providers::{AssetRole, JobHandle, ProviderDescriptor, ProviderId, ProviderRegistry, ToolSettings};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -628,17 +628,25 @@ impl LibraryModel {
         Some(AssetInput::new(role, content_type, bytes))
     }
 
-    /// Run a tool with the composer's selected model over library assets, one row per asset.
-    /// Assets that aren't readable images are skipped. A row references the asset it ran over,
-    /// so a tool over a generation's output shares that asset rather than copying it.
-    pub fn run_tool_on_assets(&mut self, model: &ToolModel, assets: &[AssetId], provider: ProviderId, album: Option<AlbumId>, cx: &mut Context<Self>) -> usize {
+    /// Run a tool with the composer's selected model and settings over library assets, one row per
+    /// asset. The model's media decides what an input has to be — an image upscaler skips anything
+    /// that isn't a readable image, a video one anything that isn't a clip. A row references the
+    /// asset it ran over, so a tool over a generation's output shares that asset rather than
+    /// copying it.
+    pub fn run_tool_on_assets(&mut self, settings: &ToolSettings, assets: &[AssetId], provider: ProviderId, album: Option<AlbumId>, cx: &mut Context<Self>) -> usize {
+        let media = settings.model.media;
+        let role = settings.model.input_role();
         let mut n = 0;
         for id in assets {
-            let Some(input) = self.lib.asset(id).filter(|a| a.kind == MediaType::Image).and_then(|a| self.asset_input(a, AssetRole::ReferenceImage)) else { continue };
-            if majik_providers::transcode::sniff_image_mime(&input.data).is_none() {
+            let Some(input) = self.lib.asset(id).filter(|a| a.kind == media).and_then(|a| self.asset_input(a, role)) else { continue };
+            let readable = match media {
+                MediaType::Video => majik_generation::is_supported_video_data(&input.data),
+                _ => majik_providers::transcode::sniff_image_mime(&input.data).is_some(),
+            };
+            if !readable {
                 continue;
             }
-            self.queue_request(Request::tool(provider.clone(), model, input), &[(id.clone(), AssetRole::ReferenceImage.raw())], album.as_ref());
+            self.queue_request(Request::tool(provider.clone(), settings.clone(), input), &[(id.clone(), role.raw())], album.as_ref());
             n += 1;
         }
         self.changed(cx);
@@ -898,7 +906,7 @@ mod tests {
     fn retry_of_a_tool_row_without_its_input_reports_the_failure(cx: &mut TestAppContext) {
         let e = env(cx, 1, "Mock");
         let output = e.library.read_with(cx, |m, _| m.lib.generations()[0].output_asset_id.clone().unwrap());
-        e.library.update(cx, |m, cx| m.run_tool_on_assets(&catalog::tool::MOCK_UPSCALE, &[output], ProviderId::mock(), None, cx));
+        e.library.update(cx, |m, cx| m.run_tool_on_assets(&ToolSettings::new(catalog::tool::MOCK_UPSCALE.clone()), &[output], ProviderId::mock(), None, cx));
         let row = e.library.read_with(cx, |m, _| m.lib.generations().iter().find(|i| i.tool.is_some()).unwrap().id.clone());
         // The job failed and the source image vanished from the folder behind the app's back.
         e.library.update(cx, |m, _| {
@@ -1191,6 +1199,33 @@ mod tests {
         });
     }
 
+    /// What an input has to be follows the model's media, not a hard-coded image check: a video
+    /// upscaler takes the clip and skips the picture, and an image tool does the reverse.
+    #[gpui::test]
+    fn run_tool_on_assets_picks_inputs_by_the_models_media(cx: &mut TestAppContext) {
+        let e = env(cx, 0, "Mock");
+        let image = crate::test_support::seed_asset(&e.library, cx, MediaType::Image, 1);
+        let clip = crate::test_support::seed_asset(&e.library, cx, MediaType::Video, 2);
+        let assets = [image.clone(), clip.clone()];
+
+        let video_tool = ToolSettings::new(catalog::tool::MOCK_UPSCALE_VIDEO.clone());
+        let n = e.library.update(cx, |m, cx| m.run_tool_on_assets(&video_tool, &assets, ProviderId::mock(), None, cx));
+        assert_eq!(n, 1, "only the clip");
+        let rows = e.library.read_with(cx, |m, _| m.lib.generations().iter().filter(|i| i.tool == Some(ToolId::Upscale)).cloned().collect::<Vec<_>>());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].media_type, MediaType::Video);
+        assert_eq!(rows[0].model_name.as_deref(), Some("Mock Video Upscale"));
+        assert_eq!(e.library.read_with(cx, |m, _| m.lib.inputs(&rows[0].id)[0].0.role.clone()), AssetRole::ReferenceVideo.raw());
+
+        let image_tool = ToolSettings::new(catalog::tool::MOCK_UPSCALE.clone());
+        let n = e.library.update(cx, |m, cx| m.run_tool_on_assets(&image_tool, &assets, ProviderId::mock(), None, cx));
+        assert_eq!(n, 1, "only the image");
+        let images = e.library.read_with(cx, |m, _| {
+            m.lib.generations().iter().filter(|i| i.tool == Some(ToolId::Upscale) && i.media_type == MediaType::Image).count()
+        });
+        assert_eq!(images, 1);
+    }
+
     #[gpui::test]
     fn run_tool_on_assets_stores_selected_tool_model_name_and_skips_non_images(cx: &mut TestAppContext) {
         let e = env(cx, 0, "Mock");
@@ -1200,7 +1235,7 @@ mod tests {
             (image, sound)
         });
         let model = &catalog::tool::MOCK_REMOVE_BACKGROUND;
-        let n = e.library.update(cx, |m, cx| m.run_tool_on_assets(model, &[image.clone(), sound], ProviderId::mock(), None, cx));
+        let n = e.library.update(cx, |m, cx| m.run_tool_on_assets(&ToolSettings::new(model.clone()), &[image.clone(), sound], ProviderId::mock(), None, cx));
         assert_eq!(n, 1, "only image assets are queued");
         let rows: Vec<_> = e.library.read_with(cx, |m, _| m.lib.generations().iter().filter(|i| i.tool == Some(ToolId::RemoveBackground)).cloned().collect());
         assert_eq!(rows.len(), 1);
@@ -1264,7 +1299,7 @@ mod tests {
         let e = env(cx, 1, "Mock");
         let output = e.library.read_with(cx, |m, _| m.lib.generations()[0].output_asset_id.clone().unwrap());
         let row = e.library.update(cx, |m, cx| {
-            m.run_tool_on_assets(&catalog::tool::MOCK_REMOVE_BACKGROUND, &[output], ProviderId::mock(), None, cx);
+            m.run_tool_on_assets(&ToolSettings::new(catalog::tool::MOCK_REMOVE_BACKGROUND.clone()), &[output], ProviderId::mock(), None, cx);
             let row = m.lib.generations().iter().find(|i| i.tool.is_some()).unwrap().id.clone();
             m.lib.fail_generation(&row, "boom");
             row
@@ -1285,7 +1320,7 @@ mod tests {
     fn a_tool_over_a_library_output_references_that_asset(cx: &mut TestAppContext) {
         let e = env(cx, 1, "Mock");
         let output = e.library.read_with(cx, |m, _| m.lib.generations()[0].output_asset_id.clone().unwrap());
-        e.library.update(cx, |m, cx| m.run_tool_on_assets(&catalog::tool::MOCK_UPSCALE, std::slice::from_ref(&output), ProviderId::mock(), None, cx));
+        e.library.update(cx, |m, cx| m.run_tool_on_assets(&ToolSettings::new(catalog::tool::MOCK_UPSCALE.clone()), std::slice::from_ref(&output), ProviderId::mock(), None, cx));
         e.library.read_with(cx, |m, _| {
             let row = m.lib.generations().iter().find(|i| i.tool.is_some()).unwrap();
             assert_eq!(m.lib.inputs(&row.id)[0].1.id, output, "no copy: the tool row points at the same asset");
@@ -1578,7 +1613,7 @@ mod album_tests {
         use majik_core::model::ToolId;
         let e = env(cx, 2, "Mock");
         let outputs: Vec<_> = e.library.read_with(cx, |m, _| m.lib.generations().iter().filter_map(|i| i.output_asset_id.clone()).collect());
-        e.library.update(cx, |m, cx| m.run_tool_on_assets(&catalog::tool::MOCK_UPSCALE, &outputs, ProviderId::mock(), None, cx));
+        e.library.update(cx, |m, cx| m.run_tool_on_assets(&ToolSettings::new(catalog::tool::MOCK_UPSCALE.clone()), &outputs, ProviderId::mock(), None, cx));
         e.library.read_with(cx, |m, _| {
             let feed = m.lib.feed(&FeedFilter::Library, MediaFilter::All);
             assert_eq!(feed.len(), 4, "the 2 originals and their 2 tool rows sit in the same feed");
