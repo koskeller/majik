@@ -215,7 +215,7 @@ impl Db {
                     m.tool, m.output_asset_id, m.active_job_id,
                     CASE WHEN j.status IN ('queued', 'running') THEN j.external_id END AS job_id,
                     CASE WHEN j.status IN ('queued', 'running') THEN j.poll_url END AS poll_url,
-                    j.error, j.error_kind, j.started_at
+                    j.error, j.error_kind, COALESCE(j.created_at, m.created_at) AS queued_at, j.started_at
              FROM generations m LEFT JOIN generation_jobs j ON j.id = m.active_job_id
              WHERE m.deleted_at IS NULL ORDER BY m.created_at DESC, m.id ASC",
         )?;
@@ -693,6 +693,7 @@ fn row_to_item(r: &Row<'_>) -> rusqlite::Result<Generation> {
         tool: r.get::<_, Option<String>>("tool")?.as_deref().and_then(tool_from_raw),
         job_id: r.get("job_id")?,
         poll_url: r.get("poll_url")?,
+        queued_at_ms: r.get::<_, i64>("queued_at")? as u64,
         started_at_ms: r.get::<_, Option<i64>>("started_at")?.map(|v| v as u64),
         active_job_id: r.get::<_, Option<String>>("active_job_id")?.map(JobId),
     })
@@ -817,6 +818,7 @@ mod tests {
             tool: None,
             job_id: None,
             poll_url: None,
+            queued_at_ms: 42,
             started_at_ms: None,
             active_job_id: None,
         }

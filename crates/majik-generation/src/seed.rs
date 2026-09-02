@@ -617,6 +617,7 @@ fn write_row(planned: &PlannedRow, pools: &Pools, store: &dyn BlobStore) -> Resu
             tool: planned.request.generation_type.tool(),
             job_id: None,
             poll_url: None,
+            queued_at_ms: planned.created_at_ms,
             started_at_ms: None,
             active_job_id: None,
         },

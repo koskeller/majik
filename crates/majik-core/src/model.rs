@@ -204,8 +204,12 @@ pub struct Generation {
     /// `None` once the attempt has ended.
     pub job_id: Option<String>,
     pub poll_url: Option<String>,
-    /// When the active attempt started at the provider (`None` while it is still queued), so the
-    /// elapsed time a generating row shows is the attempt's own and a retry starts from zero.
+    /// When the active attempt was asked for (`generation_jobs.created_at`; the row's own creation
+    /// for a row without one). The clock a generating row's elapsed time runs from: a retry counts
+    /// from the moment it was requested, not from the row's creation or from when the provider
+    /// took it, so the timer never shows the previous attempt's time or jumps back to zero.
+    pub queued_at_ms: u64,
+    /// When the active attempt started at the provider (`None` while it is still queued).
     pub started_at_ms: Option<u64>,
     /// The attempt this row mirrors: its `status`, `error`, `error_kind`, `job_id`, `poll_url` and
     /// `started_at_ms` are the active job's (see [`GenerationJob`]).
@@ -590,6 +594,7 @@ mod tests {
             tool,
             job_id: None,
             poll_url: None,
+            queued_at_ms: 0,
             started_at_ms: None,
             active_job_id: None,
         }

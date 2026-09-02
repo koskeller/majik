@@ -8,8 +8,10 @@
 //! injected as [`Now`].
 //!
 //! When the file has an audio track, [`majik_audio::Player`] plays it and *is* the clock, so
-//! frames follow the audio position. Otherwise, or when no output device exists (headless CI), the
-//! injected clock drives playback.
+//! frames follow the audio position. It is opened on the first [`Player::play`], not with the
+//! player: opening an output device is synchronous UI-thread work (the sink is `!Send`), and a
+//! video merely paged past never plays. Until then, for silent files, and when no output device
+//! exists (headless CI), the injected clock drives playback.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -64,6 +66,8 @@ pub struct Player {
     duration: f64,
     interval: Duration,
     frame: Option<Arc<Frame>>,
+    /// The file has an audio track that hasn't been opened yet (see [`Self::open_audio`]).
+    audio_pending: bool,
     /// Bumped by every seek so results decoded for an older position are ignored.
     generation: u64,
     /// Generation of the last result applied; `None` until the first frame is asked for.
@@ -74,26 +78,17 @@ pub struct Player {
 
 impl Player {
     /// Wrap an already opened `Source` (open it off the UI thread — it reads the whole sample
-    /// table). Starts paused at zero, looping, unmuted.
+    /// table). Starts paused at zero, looping, unmuted; cheap, as the audio sink waits for the
+    /// first [`Self::play`].
     pub fn new(source: Source, path: &Path, now: Now) -> Self {
         let size = source.size();
         let duration = source.duration();
         let interval = source.frame_interval();
-        let clock = if source.has_audio() {
-            match majik_audio::Player::open(path) {
-                Ok(audio) => Clock::Audio(audio),
-                Err(e) => {
-                    tracing::warn!(target: "majik", "video audio for {}: {e:#}; playing silently", path.display());
-                    Clock::Monotonic { now, base_secs: 0.0, running_since: None }
-                }
-            }
-        } else {
-            Clock::Monotonic { now, base_secs: 0.0, running_since: None }
-        };
+        let audio_pending = source.has_audio();
         Self {
             source: Arc::new(Mutex::new(source)),
             path: path.to_path_buf(),
-            clock,
+            clock: Clock::Monotonic { now, base_secs: 0.0, running_since: None },
             playing: false,
             looping: true,
             muted: false,
@@ -101,6 +96,7 @@ impl Player {
             duration,
             interval,
             frame: None,
+            audio_pending,
             generation: 0,
             shown_generation: None,
             in_flight: false,
@@ -112,9 +108,30 @@ impl Player {
         &self.path
     }
 
-    /// Whether the audio track drives the clock (false for silent files or without an output device).
+    /// Whether the audio track drives the clock: false until the first play opens it, for silent
+    /// files, and without an output device.
     pub fn has_audio(&self) -> bool {
         matches!(self.clock, Clock::Audio(_))
+    }
+
+    /// Hand the clock to the audio track, at the position reached so far; once per player, on the
+    /// first play. Without an output device the file plays silently on the injected clock.
+    fn open_audio(&mut self) {
+        if !self.audio_pending {
+            return;
+        }
+        self.audio_pending = false;
+        match majik_audio::Player::open(&self.path) {
+            Ok(mut audio) => {
+                let position = self.position();
+                if position > 0.0 {
+                    audio.seek(position);
+                }
+                audio.set_volume(if self.muted { 0.0 } else { 1.0 });
+                self.clock = Clock::Audio(audio);
+            }
+            Err(e) => tracing::warn!(target: "majik", "video audio for {}: {e:#}; playing silently", self.path.display()),
+        }
     }
 
     pub fn play(&mut self) {
@@ -124,6 +141,7 @@ impl Player {
         if self.at_end() {
             self.seek(0.0);
         }
+        self.open_audio();
         self.playing = true;
         match &mut self.clock {
             Clock::Audio(audio) => audio.play(),

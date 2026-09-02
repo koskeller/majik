@@ -590,6 +590,7 @@ impl Library {
             tool,
             job_id: None,
             poll_url: None,
+            queued_at_ms: now,
             started_at_ms: None,
             active_job_id: Some(job.id.clone()),
         };
@@ -666,6 +667,7 @@ impl Library {
         row.error_kind = None;
         row.job_id = None;
         row.poll_url = None;
+        row.queued_at_ms = now;
         row.started_at_ms = None;
         row.active_job_id = Some(job.id.clone());
         self.db.transaction(|db| {
@@ -780,6 +782,7 @@ impl Library {
     pub fn set_created_at(&mut self, id: &GenerationId, created_at_ms: u64) {
         if let Some(it) = self.get_mut(id) {
             it.created_at_ms = created_at_ms;
+            it.queued_at_ms = created_at_ms;
         }
         if let Err(e) = self.persist(id) {
             tracing::warn!(target: "majik", "persisting created_at of {id}: {e:#}");
@@ -1402,6 +1405,23 @@ mod tests {
         lib.complete_generation(&id, &png(2), false).unwrap();
         assert_eq!(attempts(&lib, &id), [(1, JobStatus::Failed), (2, JobStatus::Completed)]);
         assert_eq!(lib.jobs(&id)[0].error.as_deref(), Some("boom"), "history is kept");
+    }
+
+    #[test]
+    fn a_retry_restarts_the_rows_clock() {
+        let (dir, mut lib) = temp_library(0);
+        let id = lib.add_generating(MediaType::Image, Some("{}".into()), None, Some("Mock".into()), None);
+        lib.set_created_at(&id, 1_000);
+        assert_eq!(lib.get(&id).unwrap().queued_at_ms, 1_000, "the first attempt's clock is the row's");
+        lib.fail_generation(&id, "boom");
+        lib.start_attempt(&id).unwrap();
+        let item = lib.get(&id).unwrap();
+        let attempt = lib.active_job(&id).unwrap();
+        assert_eq!(item.created_at_ms, 1_000, "the row keeps its place in the feed");
+        assert_eq!(item.queued_at_ms, attempt.created_at_ms, "… but its clock is the new attempt's");
+        assert!(item.queued_at_ms > 1_000);
+        let reopened = Library::open(dir.path()).unwrap();
+        assert_eq!(reopened.get(&id).unwrap().queued_at_ms, attempt.created_at_ms, "read back from the attempt");
     }
 
     #[test]

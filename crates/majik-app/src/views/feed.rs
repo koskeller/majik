@@ -787,7 +787,8 @@ impl FeedView {
 
         let content: gpui::AnyElement = match (item.status, &item.thumbnail, item.media_type) {
             (Status::Generating, _, _) => {
-                let elapsed = majik_core::now_ms().saturating_sub(item.created_at_ms) / 1000;
+                // The attempt's own time: a retry counts from when it was asked for.
+                let elapsed = majik_core::now_ms().saturating_sub(item.queued_at_ms) / 1000;
                 v_flex()
                     .size_full()
                     .items_center()
@@ -1043,7 +1044,8 @@ fn selection_menu_entries(info: &MenuInfo) -> Vec<MenuEntry> {
 /// stay visible but disabled (single selection), except that a multi-selection drops Recreate
 /// entirely. There is no Use Image; an item is dragged into the composer instead. A single
 /// generating item offers Cancel instead of Recreate. Items whose file went missing get Retry,
-/// which regenerates in place, and Delete, like failed ones.
+/// which regenerates in place, and Delete, like failed ones; a single one of either also gets
+/// Recreate, so the request can be changed in the composer before it runs again.
 /// The tools (Upscale, Remove Background) are not here either: they run from the composer's
 /// tool tabs.
 fn context_menu_entries(items: &[Generation], in_album: Option<&majik_core::model::AlbumId>) -> Vec<MenuEntry> {
@@ -1075,10 +1077,11 @@ fn context_menu_entries(items: &[Generation], in_album: Option<&majik_core::mode
             MenuEntry::action(if n > 1 { "Delete Selected" } else { "Delete" }, DeleteMedia),
         ]);
     } else if all_failed || all_missing {
-        entries.extend([
-            MenuEntry::action(if n > 1 { "Retry Selected" } else { "Retry" }, Retry).enabled(all_failed || items.iter().any(|i| i.can_retry())),
-            MenuEntry::action(if n > 1 { "Delete Selected" } else { "Delete" }, DeleteMedia),
-        ]);
+        entries.push(MenuEntry::action(if n > 1 { "Retry Selected" } else { "Retry" }, Retry).enabled(all_failed || items.iter().any(|i| i.can_retry())));
+        if n == 1 {
+            entries.push(MenuEntry::action("Recreate", Recreate).enabled(items.iter().any(|i| i.can_recreate())));
+        }
+        entries.push(MenuEntry::action(if n > 1 { "Delete Selected" } else { "Delete" }, DeleteMedia));
     } else {
         let generating: Vec<GenerationId> = items.iter().filter(|i| i.status == Status::Generating).map(|i| i.id.clone()).collect();
         if !generating.is_empty() {
@@ -2939,8 +2942,8 @@ mod context_menu_tests {
         let entries = menu_for(&view, vcx, &[id]);
         assert_menu(
             &entries,
-            &["Retry", "Delete"],
-            &["Retry Selected", "Delete Selected", "Open", "Copy", "Recreate", "Cancel Generation", "Favorite", "Add to Album…"],
+            &["Retry", "Recreate", "Delete"],
+            &["Retry Selected", "Delete Selected", "Open", "Copy", "Cancel Generation", "Favorite", "Add to Album…"],
         );
     }
 
@@ -2951,8 +2954,8 @@ mod context_menu_tests {
         let entries = menu_for(&view, vcx, &[id]);
         assert_menu(
             &entries,
-            &["Retry", "Delete"],
-            &["Retry Selected", "Delete Selected", "Open", "Copy", "Save…", "Recreate", "Cancel Generation", "Favorite", "Add to Album…"],
+            &["Retry", "Recreate", "Delete"],
+            &["Retry Selected", "Delete Selected", "Open", "Copy", "Save…", "Cancel Generation", "Favorite", "Add to Album…"],
         );
     }
 
@@ -2961,7 +2964,7 @@ mod context_menu_tests {
         let (view, vcx, env) = feed(cx);
         let id = seed_item(&env.library, vcx, Seed { status: Status::Missing, recreatable: false, ..Seed::default() });
         let entries = menu_for(&view, vcx, &[id]);
-        assert_menu(&entries, &["Delete"], &["Retry"]);
+        assert_menu(&entries, &["Delete"], &["Retry", "Recreate"]);
     }
 
     #[gpui::test]
@@ -2970,7 +2973,7 @@ mod context_menu_tests {
         let a = seed_item(&env.library, vcx, Seed { status: Status::Missing, ..Seed::default() });
         let b = seed_item(&env.library, vcx, Seed { status: Status::Missing, ..Seed::default() });
         let entries = menu_for(&view, vcx, &[a, b]);
-        assert_menu(&entries, &["Retry Selected", "Delete Selected"], &["Retry", "Delete", "Open", "Favorite"]);
+        assert_menu(&entries, &["Retry Selected", "Delete Selected"], &["Retry", "Recreate", "Delete", "Open", "Favorite"]);
     }
 
     #[gpui::test]
@@ -3076,7 +3079,7 @@ mod context_menu_tests {
         let a = seed_item(&env.library, vcx, failed);
         let b = seed_item(&env.library, vcx, failed);
         let entries = menu_for(&view, vcx, &[a, b]);
-        assert_menu(&entries, &["Retry Selected", "Delete Selected"], &["Retry", "Delete", "Open", "Cancel Generations", "Favorite"]);
+        assert_menu(&entries, &["Retry Selected", "Delete Selected"], &["Retry", "Recreate", "Delete", "Open", "Cancel Generations", "Favorite"]);
     }
 
     #[gpui::test]

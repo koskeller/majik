@@ -107,6 +107,7 @@ fn item_for_asset(asset: &Asset) -> Generation {
         tool: None,
         job_id: None,
         poll_url: None,
+        queued_at_ms: asset.created_at_ms,
         started_at_ms: None,
         active_job_id: None,
     }
@@ -125,9 +126,9 @@ pub struct DetailView {
     pan: Point<Pixels>,
     drag_start: Option<(Point<Pixels>, Point<Pixels>)>,
     show_info: bool,
-    /// The current item's input assets (role, file) for the info panel, loaded once per item so
-    /// `render_info` never touches the database.
-    info_assets: Option<(GenerationId, Vec<(String, std::path::PathBuf)>)>,
+    /// The current item's input assets for the info panel, loaded once per item so `render_info`
+    /// never touches the database.
+    info_assets: Option<(GenerationId, Vec<InfoAsset>)>,
     /// For a plain asset: the generations it was an input of (their thumbnails or files), loaded
     /// with `info_assets`.
     info_uses: Vec<std::path::PathBuf>,
@@ -184,6 +185,17 @@ pub struct DetailView {
 }
 
 impl EventEmitter<DetailEvent> for DetailView {}
+
+/// An input asset as the info panel shows it: its role and the picture that stands for it — the
+/// image itself, a video's thumbnail (an `img` of an mp4 draws nothing), or none for audio and for
+/// a video whose thumbnail hasn't been rendered yet, which get an icon card instead.
+#[derive(Clone, Debug, PartialEq)]
+struct InfoAsset {
+    role: String,
+    kind: MediaType,
+    path: std::path::PathBuf,
+    picture: Option<std::path::PathBuf>,
+}
 
 fn item_pixel_size(item: &Generation) -> Option<(f32, f32)> {
     match (item.width, item.height) {
@@ -377,6 +389,12 @@ impl DetailView {
     /// Create / drop the player so it always matches the current item. Opening reads the whole
     /// sample table, so it happens off the UI thread; the poster stays up until the first frame.
     fn sync_player(&mut self, item: &Generation, window: &mut Window, cx: &mut Context<Self>) {
+        // Mid-slide the leaving item keeps its player (and so its picture) and the arriving one
+        // waits: opening a source and dropping a decoder are work the animation's frames can't
+        // spare, and the strip would otherwise snap from the last frame back to the thumbnail.
+        if self.paging.is_animating() {
+            return;
+        }
         self.sync_audio(item);
         let wants = item.media_type == MediaType::Video && item.status == Status::Completed && item.path.is_some();
         if !wants {
@@ -536,6 +554,7 @@ impl DetailView {
     }
 
     /// (position, duration, playing) of whichever player is active.
+    #[cfg(test)]
     fn transport(&self) -> Option<(f64, f64, bool)> {
         if let Some(p) = &self.player {
             return Some((p.position(), p.duration(), p.is_playing()));
@@ -544,6 +563,22 @@ impl DetailView {
             return Some((a.position(), a.duration(), a.is_playing() && !a.finished()));
         }
         None
+    }
+
+    /// The transport bar's (position, duration, playing) for `item`: its player's once that is
+    /// open, and until then — while the source opens, or mid-slide while the leaving item still
+    /// holds the player — a paused bar at zero over the stored duration. The bar keeps its place
+    /// either way: were it to vanish meanwhile, the stage would grow and shrink by its height and
+    /// the picture jump with it. `None` for anything that doesn't play.
+    fn transport_for(&self, item: &Generation) -> Option<(f64, f64, bool)> {
+        if let Some(p) = self.player.as_ref().filter(|_| self.player_for.as_ref() == Some(&item.id)) {
+            return Some((p.position(), p.duration(), p.is_playing()));
+        }
+        if let Some(a) = self.audio.as_ref().filter(|_| self.audio_for.as_ref() == Some(&item.id)) {
+            return Some((a.position(), a.duration(), a.is_playing() && !a.finished()));
+        }
+        let plays = matches!(item.media_type, MediaType::Video | MediaType::Audio) && item.status == Status::Completed && item.file().is_some();
+        plays.then(|| (0.0, item.duration_secs.unwrap_or(0.0), false))
     }
 
     /// Keep the elapsed label of a generating item moving (1 Hz), like the feed's generating cells.
@@ -653,7 +688,8 @@ impl DetailView {
 
     fn image_pixel_size(&self, cx: &App) -> Option<(f32, f32)> {
         let item = self.item(cx)?;
-        if let Some((w, h)) = self.player.as_ref().and_then(|p| p.size()) {
+        let player = self.player.as_ref().filter(|_| self.player_for.as_ref() == Some(&item.id));
+        if let Some((w, h)) = player.and_then(|p| p.size()) {
             return Some((w as f32, h as f32));
         }
         item_pixel_size(&item)
@@ -867,7 +903,18 @@ impl DetailView {
             return;
         }
         let lib = &self.library.read(cx).lib;
-        let assets = lib.inputs(&item.id).into_iter().map(|(link, asset)| (link.role, asset.path)).collect();
+        let assets = lib
+            .inputs(&item.id)
+            .into_iter()
+            .map(|(link, asset)| {
+                let picture = match asset.kind {
+                    MediaType::Image => Some(asset.path.clone()),
+                    MediaType::Video => asset.thumbnail.clone(),
+                    MediaType::Audio => None,
+                };
+                InfoAsset { role: link.role, kind: asset.kind, path: asset.path, picture }
+            })
+            .collect();
         self.info_assets = Some((item.id.clone(), assets));
         self.info_uses = match self.subject(cx) {
             Some(Subject { generation: None, asset: Some(asset), .. }) => {
@@ -997,8 +1044,8 @@ impl DetailView {
         let media: gpui::AnyElement = match (item.status, &item.path, item.media_type) {
             (Status::Generating, _, _) => {
                 // `GenerationLoadingView(style: .regular)`: a larger spinner over the elapsed time
-                // of the attempt (a retry counts from when the provider took it).
-                let elapsed = majik_core::now_ms().saturating_sub(item.started_at_ms.unwrap_or(item.created_at_ms)) / 1000;
+                // of the attempt (a retry counts from when it was asked for).
+                let elapsed = majik_core::now_ms().saturating_sub(item.queued_at_ms) / 1000;
                 v_flex()
                     .size_full()
                     .items_center()
@@ -1090,9 +1137,11 @@ impl DetailView {
                 None => gpui::img(path.clone()).image_cache(&self.images).absolute().left(left).top(top).w(w).h(h).object_fit(ObjectFit::Fill).into_any_element(),
             },
             (_, Some(_), MediaType::Video) => {
-                let player = if is_current { self.player.as_ref() } else { None };
+                // The picture follows the player, which mid-slide still belongs to the leaving item.
+                let owns_player = self.player_for.as_ref() == Some(&item.id);
+                let player = if owns_player { self.player.as_ref() } else { None };
                 let playing = player.map(|p| p.is_playing()).unwrap_or(false);
-                let frame = if is_current { self.frame_image.clone() } else { None };
+                let frame = if owns_player { self.frame_image.clone() } else { None };
                 let surface_el: gpui::AnyElement = match frame {
                     Some(f) => gpui::img(f).absolute().left(left).top(top).w(w).h(h).object_fit(ObjectFit::Fill).into_any_element(),
                     None => item
@@ -1197,8 +1246,8 @@ impl DetailView {
         }
         chips.push(chip("Created", format_date(item.created_at_ms)).into_any_element());
 
-        // The request's input assets: image roles as
-        // pictures, audio as an icon card (no player in the sheet).
+        // The request's input assets: images and video thumbnails as pictures, audio (no player
+        // in the sheet) and a video still without a thumbnail as an icon card.
         let assets: Vec<gpui::AnyElement> = self
             .info_assets
             .as_ref()
@@ -1207,17 +1256,23 @@ impl DetailView {
             .unwrap_or_default()
             .iter()
             .enumerate()
-            .map(|(k, (role, path))| {
-                let role = majik_providers::AssetRole::from_raw(role);
+            .map(|(k, asset)| {
+                let role = majik_providers::AssetRole::from_raw(&asset.role);
                 let caption: SharedString = match role {
                     Some(role) => role.display_name().into(),
-                    None => path.extension().and_then(|e| e.to_str()).unwrap_or("file").to_uppercase().into(),
+                    None => asset.path.extension().and_then(|e| e.to_str()).unwrap_or("file").to_uppercase().into(),
                 };
                 let card = gpui::div().id(("info-asset", k)).relative().flex_none().size(px(96.)).rounded_lg().overflow_hidden().bg(theme.muted);
-                let card = if role == Some(majik_providers::AssetRole::Audio) {
-                    card.child(v_flex().size_full().items_center().justify_center().child(icon("audio-lines").size_5()))
-                } else {
-                    card.child(gpui::img(path.clone()).image_cache(&self.images).size_full().rounded_lg().object_fit(ObjectFit::Cover))
+                let card = match &asset.picture {
+                    Some(picture) => card.child(gpui::img(picture.clone()).image_cache(&self.images).size_full().rounded_lg().object_fit(ObjectFit::Cover)),
+                    None => {
+                        let glyph = match asset.kind {
+                            MediaType::Audio => "audio-lines",
+                            MediaType::Video => "film",
+                            MediaType::Image => "image",
+                        };
+                        card.child(v_flex().size_full().items_center().justify_center().child(icon(glyph).size_5()))
+                    }
                 };
                 card.child(gpui::div().absolute().bottom_0p5().left_0p5().px_1().rounded_sm().bg(gpui::black().opacity(0.5)).text_xs().text_color(gpui::white()).child(caption)).into_any_element()
             })
@@ -1281,21 +1336,23 @@ impl Render for DetailView {
         let is_generation = subject.generation.is_some();
         let subject_asset = subject.asset.clone();
         let item = subject.item;
+        // The slide advances before the players sync, so the frame it settles on is the one that
+        // hands the player to the item it landed on (`sync_player` waits while it runs).
+        let clock = now(cx);
+        let mut keep_pumping = false;
+        if self.paging.is_animating() {
+            self.paging.tick(clock);
+            keep_pumping |= self.paging.is_animating();
+        }
         self.sync_player(&item, window, cx);
         self.sync_elapsed_ticker(&item, cx);
         self.sync_request(&item);
         self.sync_compare(&item, cx);
         self.sync_info_assets(&item, cx);
-        let mut keep_pumping = false;
         if let Some(a) = &self.audio {
             if a.is_playing() && !a.finished() {
                 keep_pumping = true;
             }
-        }
-        let clock = now(cx);
-        if self.paging.is_animating() {
-            self.paging.tick(clock);
-            keep_pumping |= self.paging.is_animating();
         }
         keep_pumping |= self.tick_morph(&item, clock, cx);
         if keep_pumping {
@@ -1557,7 +1614,7 @@ impl Render for DetailView {
             .on_mouse_down(MouseButton::Navigate(NavigationDirection::Back), cx.listener(|this, _: &MouseDownEvent, _, cx| this.go(-1, cx)))
             .on_mouse_down(MouseButton::Navigate(NavigationDirection::Forward), cx.listener(|this, _: &MouseDownEvent, _, cx| this.go(1, cx)));
 
-        let controls = self.transport().map(|(pos, dur, playing)| {
+        let controls = self.transport_for(&item).map(|(pos, dur, playing)| {
             let frac = if dur > 0.0 { (pos / dur) as f32 } else { 0.0 };
             h_flex()
                 .h(px(40.))
@@ -1831,6 +1888,74 @@ mod tests {
     }
 
     #[gpui::test]
+    fn transport_bar_is_there_before_the_player_is_open(cx: &mut TestAppContext) {
+        let (detail, vcx, env, _ids) = detail_window!(cx, 1, 0);
+        let video = seed_item(&env.library, vcx, Seed { media_type: MediaType::Video, ..Seed::default() });
+        // What the model's completion probe fills in for a real generation.
+        env.library.update(vcx, |m, _| m.lib.set_media_info(&video, Some(64), Some(64), Some(2.0)));
+        vcx.run_until_parked();
+        let ids = all_ids(&env, vcx);
+        let index = ids.iter().position(|i| i == &video).expect("video is in the feed");
+        let thumbnails = detail.read_with(vcx, |d, _| d.thumbnails.clone());
+        let detail = vcx.new(|cx| DetailView::new(ids.into_iter().map(EntryId::Generation).collect(), index, None, thumbnails, cx));
+        detail.update_in(vcx, |d, window, cx| {
+            let item = d.item(cx).unwrap();
+            d.sync_player(&item, window, cx);
+            assert!(d.player.is_none(), "the source is still opening");
+            assert_eq!(d.transport_for(&item), Some((0.0, 2.0, false)), "a paused bar over the stored duration meanwhile");
+        });
+        vcx.run_until_parked();
+        detail.read_with(vcx, |d, cx| {
+            assert!(d.player.is_some());
+            assert_eq!(d.transport_for(&d.item(cx).unwrap()), Some((0.0, 2.0, false)), "then the player's own");
+        });
+        detail.update(vcx, |d, cx| {
+            let other = d.ids.iter().position(|id| id != &EntryId::Generation(video.clone())).expect("the seeded image");
+            d.go(other as isize - d.index as isize, cx);
+            assert_eq!(d.transport_for(&d.item(cx).unwrap()), None, "an image has no bar, whoever holds the player");
+        });
+    }
+
+    #[gpui::test]
+    fn a_slide_keeps_the_leaving_videos_player_until_it_settles(cx: &mut TestAppContext) {
+        // A 32 px image beside the 64 px clip, so the fitted size tells whose it is.
+        let (detail, vcx, env, _ids) = detail_window!(cx, 0, 0);
+        let image = seed_item(&env.library, vcx, Seed::default());
+        let video = seed_item(&env.library, vcx, Seed { media_type: MediaType::Video, ..Seed::default() });
+        vcx.run_until_parked();
+        let ids = all_ids(&env, vcx);
+        let index = ids.iter().position(|i| i == &video).expect("video is in the feed");
+        let thumbnails = detail.read_with(vcx, |d, _| d.thumbnails.clone());
+        let detail = vcx.new(|cx| DetailView::new(ids.into_iter().map(EntryId::Generation).collect(), index, None, thumbnails, cx));
+        sync_player(&detail, vcx);
+        let other = detail.read_with(vcx, |d, _| d.ids.iter().position(|id| *id == EntryId::Generation(image.clone())).expect("the seeded image"));
+        detail.update_in(vcx, |d, window, cx| {
+            let delta = other as isize - d.index as isize;
+            d.go(delta, cx);
+            // An unmeasured (headless) stage jumps, so start the slide a measured one would have.
+            d.paging.navigate(if delta > 0 { paging::Step::Next } else { paging::Step::Prev }, 800.0, now(cx));
+            let item = d.item(cx).unwrap();
+            assert_eq!(item.media_type, MediaType::Image);
+            d.sync_player(&item, window, cx);
+            assert_eq!(d.player_for, Some(video.clone()), "mid-slide the leaving video keeps its player");
+            assert!(d.player.is_some() && d.frame_image.is_some(), "… and its picture");
+            assert_eq!(d.image_pixel_size(cx), Some((32.0, 32.0)), "the arriving image is fitted by its own size, not the player's");
+            assert_eq!(d.transport_for(&item), None);
+        });
+        detail.update_in(vcx, |d, window, cx| {
+            // Settle the slide the way the render loop does, a frame at a time.
+            let mut clock = now(cx);
+            while d.paging.is_animating() {
+                clock += Duration::from_millis(16);
+                d.paging.tick(clock);
+            }
+            let item = d.item(cx).unwrap();
+            d.sync_player(&item, window, cx);
+            assert!(d.player.is_none() && d.frame_image.is_none() && d.player_for.is_none(), "dropped once the slide has settled");
+        });
+    }
+
+    #[gpui::test]
     fn unsupported_video_shows_error_chip_and_no_player(cx: &mut TestAppContext) {
         let (detail, vcx, _env, _video) = video_detail!(cx, Seed { bytes: Some(crate::test_support::unsupported_clip()), ..Seed::default() });
         detail.read_with(vcx, |d, _| {
@@ -1954,7 +2079,7 @@ mod tests {
     }
 
     /// What `render` does on every frame for the info panel: load the current item's assets.
-    fn info_assets(detail: &Entity<DetailView>, vcx: &mut gpui::VisualTestContext) -> Vec<(String, std::path::PathBuf)> {
+    fn info_assets(detail: &Entity<DetailView>, vcx: &mut gpui::VisualTestContext) -> Vec<InfoAsset> {
         detail.update(vcx, |d, cx| {
             let item = d.item(cx).unwrap();
             d.sync_info_assets(&item, cx);
@@ -1969,9 +2094,35 @@ mod tests {
         attach_png(&env, vcx, &ids[0], "first_frame", 0);
         detail.update_in(vcx, |d, w, cx| d.show_info(&ShowInfo, w, cx));
         let assets = info_assets(&detail, vcx);
-        let roles: Vec<&str> = assets.iter().map(|(r, _)| r.as_str()).collect();
+        let roles: Vec<&str> = assets.iter().map(|a| a.role.as_str()).collect();
         assert_eq!(roles, ["first_frame", "last_frame"], "role order, not attach order");
-        assert!(assets.iter().all(|(_, p)| p.is_file()), "every strip image is a stored asset file");
+        assert!(assets.iter().all(|a| a.picture.as_ref().is_some_and(|p| p.is_file())), "every strip image is a stored asset file");
+    }
+
+    #[gpui::test]
+    fn info_panel_shows_a_video_input_by_its_thumbnail(cx: &mut TestAppContext) {
+        let (detail, vcx, env, ids) = detail_window!(cx, 1, 0);
+        let clip = seed_asset(&env.library, vcx, MediaType::Video, 1);
+        env.library.update(vcx, |m, _| m.lib.attach_inputs(&ids[0], &[(clip.clone(), "reference_video")]).expect("input linked"));
+        vcx.run_until_parked();
+        let asset = env.library.read_with(vcx, |m, _| m.lib.asset(&clip).cloned().unwrap());
+        let thumbnail = asset.thumbnail.clone().expect("the import rendered a thumbnail");
+        detail.update_in(vcx, |d, w, cx| d.show_info(&ShowInfo, w, cx));
+        let assets = info_assets(&detail, vcx);
+        assert_eq!(assets.len(), 1);
+        assert_eq!((assets[0].kind, assets[0].picture.as_deref()), (MediaType::Video, Some(thumbnail.as_path())), "the card draws the thumbnail, never the mp4");
+        assert_eq!(assets[0].path, asset.path, "the caption still knows the file");
+    }
+
+    #[gpui::test]
+    fn info_panel_shows_an_audio_input_as_an_icon_card(cx: &mut TestAppContext) {
+        let (detail, vcx, env, ids) = detail_window!(cx, 1, 0);
+        let sound = seed_asset(&env.library, vcx, MediaType::Audio, 1);
+        env.library.update(vcx, |m, _| m.lib.attach_inputs(&ids[0], &[(sound, "audio")]).expect("input linked"));
+        vcx.run_until_parked();
+        detail.update_in(vcx, |d, w, cx| d.show_info(&ShowInfo, w, cx));
+        let assets = info_assets(&detail, vcx);
+        assert_eq!(assets.iter().map(|a| (a.kind, a.picture.is_none())).collect::<Vec<_>>(), [(MediaType::Audio, true)]);
     }
 
     #[gpui::test]
@@ -2445,9 +2596,12 @@ mod tests {
             let position = d.transport().unwrap().0;
             assert!((position - 0.25).abs() < 0.05, "scrubber seeks to the middle, got {position}");
         });
-        // The feed is newest-first: the seeded image is the next page.
+        // The feed is newest-first: the seeded image is the next page. The drawn stage slides
+        // there, and the player goes once the slide has settled.
         detail.update(vcx, |d, cx| d.go(1, cx));
         vcx.run_until_parked();
+        vcx.background_executor.advance_clock(Duration::from_millis(700));
+        redraw(&detail, vcx);
         detail.read_with(vcx, |d, _| assert!(d.audio.is_none() && d.audio_for.is_none(), "leaving the item hard-stops its player"));
     }
 

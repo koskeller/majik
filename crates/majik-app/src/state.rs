@@ -1329,6 +1329,7 @@ mod tests {
         let id = e.library.update(cx, |m, cx| {
             let id = m.lib.add_generating(MediaType::Image, Some(image_request("retry me").to_json()), Some("Mock".into()), Some("Mock".into()), None);
             m.lib.fail_generation_kind(&id, "boom", Some("server_error"));
+            m.lib.set_created_at(&id, 1_000);
             cx.notify();
             id
         });
@@ -1338,6 +1339,8 @@ mod tests {
             let it = m.lib.get(&id).unwrap();
             assert_eq!(it.status, Status::Generating, "failed row flipped back to generating");
             assert!(it.error.is_none());
+            assert_eq!(it.created_at_ms, 1_000, "keeps its place in the feed");
+            assert!(it.queued_at_ms >= majik_core::now_ms() - 5_000, "the elapsed clock the cell shows restarts with the attempt, not from the old row");
         });
     }
 
