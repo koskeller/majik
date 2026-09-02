@@ -126,6 +126,8 @@ pub struct FeedView {
     shape: ThumbnailShape,
     filter: FeedFilter,
     media_filter: MediaFilter,
+    /// The toolbar's favorites-only toggle: like `media_filter`, the grid's own and never stored.
+    favorites_only: bool,
     /// Zoom level: the minimum tile width (persisted in `Config`).
     zoom: u32,
     /// Columns the current layout uses — derived from `zoom` and the measured width, never set
@@ -243,6 +245,7 @@ impl FeedView {
             shape,
             filter: FeedFilter::Library,
             media_filter: MediaFilter::All,
+            favorites_only: false,
             zoom,
             // The width isn't measured yet; the first render lays the grid out for real.
             columns: feed::columns_for(0., zoom),
@@ -303,9 +306,21 @@ impl FeedView {
         self.refresh(Change::Filter, cx);
     }
 
+    pub fn favorites_only(&self) -> bool {
+        self.favorites_only
+    }
+
+    pub fn set_favorites_only(&mut self, favorites_only: bool, cx: &mut Context<Self>) {
+        if self.favorites_only == favorites_only {
+            return;
+        }
+        self.favorites_only = favorites_only;
+        self.refresh(Change::Filter, cx);
+    }
+
     fn refresh(&mut self, change: Change, cx: &mut Context<Self>) {
         let now = now(cx);
-        let ids = self.library.read(cx).lib.entries(&self.filter, self.media_filter);
+        let ids = self.library.read(cx).lib.entries(&self.filter, self.media_filter, self.favorites_only);
         if ids != self.ids {
             // The boxes recorded by the last frame belong to the old layout. The grid may not be
             // drawn again before someone asks for one (the detail closing after a delete), so
@@ -729,6 +744,9 @@ impl FeedView {
 
     /// The per-filter empty state: (icon, title, hint).
     fn empty_state(&self, cx: &App) -> (&'static str, &'static str, SharedString) {
+        if self.favorites_only && self.shows_favorites_toggle() {
+            return ("heart", "No Favorites Here", "Click the heart on an item to add it to your favorites, or turn the favorites filter off".into());
+        }
         match &self.filter {
             FeedFilter::Library => ("images", "Nothing Here Yet", format!("Press {} to open the composer", crate::actions::keystroke_label(crate::actions::NEW_GENERATION_KEYS)).into()),
             FeedFilter::Favorites => ("heart", "No Favorites Yet", "Click the heart on an item to add it to your favorites".into()),
@@ -736,6 +754,12 @@ impl FeedView {
             FeedFilter::Album(_) => ("layers", "Album Unavailable", "This album has been deleted".into()),
             FeedFilter::Assets => ("layers", "No Assets Yet", "Generated files and the inputs you add to the composer collect here".into()),
         }
+    }
+
+    /// The favorites-only toggle is for feeds that list generations of every kind: the Favorites
+    /// feed is already that filter, and assets carry no favorite.
+    fn shows_favorites_toggle(&self) -> bool {
+        !matches!(self.filter, FeedFilter::Favorites | FeedFilter::Assets)
     }
 
     /// The thumbnail to draw in a cell: the large tier once a cell is bigger than the standard one
@@ -1393,6 +1417,14 @@ impl Render for FeedView {
         // The panel toggles are the Library window's, in its title bar.
         let toolbar = toolbar(cx)
             .child(gpui::div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD).child(title))
+        let favorites_button = button("favorites-only")
+            .icon(icon(if self.favorites_only { "heart-filled" } else { "heart" }))
+            .ghost()
+            .small()
+            .selected(self.favorites_only)
+            .tooltip("Favorites only")
+            .on_click(cx.listener(|this, _, _, cx| this.set_favorites_only(!this.favorites_only, cx)));
+
             .child(gpui::div().text_xs().text_color(muted_fg).child(format!("{count} items")))
             .child(gpui::div().flex_1())
             .when(assets_feed, |t| {
@@ -1402,6 +1434,7 @@ impl Render for FeedView {
             .child(
                 button("shape")
                     .icon(icon(match self.shape {
+            .when(self.shows_favorites_toggle(), |t| t.child(favorites_button))
                         ThumbnailShape::Square => "square",
                         ThumbnailShape::AspectRatio => "ratio",
                     }))
@@ -1735,6 +1768,87 @@ mod tests {
     fn selection_click_cmd_shift_and_right_click(cx: &mut TestAppContext) {
         let (view, vcx, _env) = feed_window!(cx, 5);
         view.update(vcx, |f, cx| {
+    #[gpui::test]
+    fn favorites_only_lists_only_favorited_items(cx: &mut TestAppContext) {
+        let (view, vcx, env) = feed_window!(cx, 3);
+        let favorite = seed_item(&env.library, vcx, Seed { favorite: true, ..Seed::default() });
+        vcx.run_until_parked();
+        view.update(vcx, |f, cx| {
+            assert!(!f.favorites_only(), "off by default");
+            assert_eq!(f.ids.len(), 4);
+            f.set_favorites_only(true, cx);
+            assert_eq!(f.ids, vec![EntryId::Generation(favorite.clone())]);
+            // Combines with the media filter rather than replacing it.
+            f.media_filter = MediaFilter::Video;
+            f.refresh(Change::Filter, cx);
+            assert!(f.ids.is_empty());
+            f.media_filter = MediaFilter::All;
+            f.set_favorites_only(false, cx);
+            assert_eq!(f.ids.len(), 4, "off shows everything again");
+        });
+    }
+
+    #[gpui::test]
+    fn favorites_only_follows_the_library_and_survives_feed_changes(cx: &mut TestAppContext) {
+        let (view, vcx, env) = feed_window!(cx, 2);
+        let album = env.library.update(vcx, |m, cx| m.create_album("Trips".into(), cx));
+        let all: Vec<GenerationId> = view.read_with(vcx, |f, _| f.ids.iter().filter_map(|id| id.media().cloned()).collect());
+        env.library.update(vcx, |m, cx| m.add_to_album(&album, &all, cx));
+        view.update(vcx, |f, cx| f.set_favorites_only(true, cx));
+        vcx.run_until_parked();
+        view.update(vcx, |f, _| assert!(f.ids.is_empty()));
+
+        // Favoriting from elsewhere (the detail, another window) brings the item into the grid…
+        env.library.update(vcx, |m, cx| m.set_favorite(std::slice::from_ref(&all[0]), true, cx));
+        vcx.run_until_parked();
+        view.update(vcx, |f, cx| {
+            assert_eq!(f.ids, vec![EntryId::Generation(all[0].clone())]);
+            f.selection.select_all(&[EntryId::Generation(all[0].clone())]);
+            // …and the toggle applies to albums too, keeping its state across feeds.
+            f.set_filter(FeedFilter::Album(album.clone()), cx);
+            assert!(f.favorites_only());
+            assert_eq!(f.ids, vec![EntryId::Generation(all[0].clone())]);
+            f.set_filter(FeedFilter::Library, cx);
+            f.selection.select_all(&[EntryId::Generation(all[0].clone())]);
+        });
+        // …and unfavoriting drops the cell and its selection.
+        env.library.update(vcx, |m, cx| m.set_favorite(std::slice::from_ref(&all[0]), false, cx));
+        vcx.run_until_parked();
+        view.update(vcx, |f, _| {
+            assert!(f.ids.is_empty());
+            assert!(f.selection.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn favorites_only_toggle_is_offered_where_favorites_can_differ(cx: &mut TestAppContext) {
+        let (view, vcx, _env) = feed_window!(cx, 1);
+        view.update(vcx, |f, cx| {
+            assert!(f.shows_favorites_toggle());
+            f.set_filter(FeedFilter::Album(majik_core::model::AlbumId("any".into())), cx);
+            assert!(f.shows_favorites_toggle());
+            f.set_filter(FeedFilter::Favorites, cx);
+            assert!(!f.shows_favorites_toggle(), "the Favorites feed already is that filter");
+            f.set_filter(FeedFilter::Assets, cx);
+            assert!(!f.shows_favorites_toggle(), "assets carry no favorite");
+            // The Assets feed lists everything even while the toggle is on.
+            f.set_favorites_only(true, cx);
+            assert_eq!(f.ids.len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn favorites_only_empty_state_names_the_filter(cx: &mut TestAppContext) {
+        let (view, vcx, _env) = feed_window!(cx, 2);
+        view.update(vcx, |f, cx| {
+            f.set_favorites_only(true, cx);
+            assert!(f.ids.is_empty());
+            assert_eq!(f.empty_state(cx).1, "No Favorites Here");
+            f.set_filter(FeedFilter::Favorites, cx);
+            assert_eq!(f.empty_state(cx).1, "No Favorites Yet", "the feed's own copy where the toggle is not offered");
+        });
+    }
+
             let ids = f.ids.clone();
             // Plain click selects one.
             f.cell_mouse_down(0, &ids[0], &down(0., false, false, 1), cx);

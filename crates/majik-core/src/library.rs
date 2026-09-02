@@ -154,29 +154,33 @@ impl Library {
     /// Generations matching a sidebar filter and a media-type filter, newest first. The Assets
     /// filter lists no generations (see [`Self::entries`]).
     pub fn feed(&self, filter: &FeedFilter, media: MediaFilter) -> Vec<GenerationId> {
+        self.generations_in(filter, media, false).map(|it| it.id.clone()).collect()
+    }
+
+    fn generations_in<'a>(&'a self, filter: &'a FeedFilter, media: MediaFilter, favorites_only: bool) -> impl Iterator<Item = &'a Generation> + 'a {
         let album_items: Option<&Vec<GenerationId>> = match filter {
             FeedFilter::Album(id) => self.album(id).map(|a| &a.items),
             _ => None,
         };
         self.generations
             .iter()
-            .filter(|it| media.matches(it.media_type))
-            .filter(|it| match filter {
+            .filter(move |it| media.matches(it.media_type))
+            .filter(move |it| !favorites_only || it.is_favorite)
+            .filter(move |it| match filter {
                 FeedFilter::Library => true,
                 FeedFilter::Favorites => it.is_favorite,
                 FeedFilter::Album(_) => album_items.map(|v| v.contains(&it.id)).unwrap_or(false),
                 FeedFilter::Assets => false,
             })
-            .map(|it| it.id.clone())
-            .collect()
     }
 
     /// What the grid shows for a filter: generations, or for [`FeedFilter::Assets`] every asset
-    /// (missing ones included), newest first.
-    pub fn entries(&self, filter: &FeedFilter, media: MediaFilter) -> Vec<EntryId> {
+    /// (missing ones included), newest first. `favorites_only` is the grid's own toggle and keeps
+    /// only favorited generations; assets carry no favorite, so the Assets feed ignores it.
+    pub fn entries(&self, filter: &FeedFilter, media: MediaFilter, favorites_only: bool) -> Vec<EntryId> {
         match filter {
             FeedFilter::Assets => self.assets.iter().filter(|a| media.matches(a.kind)).map(|a| EntryId::Asset(a.id.clone())).collect(),
-            _ => self.feed(filter, media).into_iter().map(EntryId::Generation).collect(),
+            _ => self.generations_in(filter, media, favorites_only).map(|it| EntryId::Generation(it.id.clone())).collect(),
         }
     }
 
@@ -1090,6 +1094,21 @@ mod tests {
         assert!(lib2.get(&id).unwrap().is_favorite);
         assert_eq!(lib2.feed(&FeedFilter::Favorites, MediaFilter::All), vec![id.clone()]);
         assert_eq!(lib2.feed(&FeedFilter::Album(album), MediaFilter::All), vec![id]);
+    }
+
+    #[test]
+    fn entries_favorites_only_keeps_favorited_generations_and_every_asset() {
+        let (_dir, mut lib) = temp_library(3);
+        let favorite = lib.generations()[1].id.clone();
+        lib.set_favorite(&favorite, true);
+        let album = lib.create_album("Trip");
+        lib.add_to_album(&album, &[lib.generations()[0].id.clone(), favorite.clone()]);
+
+        assert_eq!(lib.entries(&FeedFilter::Library, MediaFilter::All, true), vec![EntryId::Generation(favorite.clone())]);
+        assert_eq!(lib.entries(&FeedFilter::Album(album), MediaFilter::All, true), vec![EntryId::Generation(favorite)]);
+        assert_eq!(lib.entries(&FeedFilter::Library, MediaFilter::Video, true), vec![], "combines with the media filter");
+        assert_eq!(lib.entries(&FeedFilter::Library, MediaFilter::All, false).len(), 3);
+        assert_eq!(lib.entries(&FeedFilter::Assets, MediaFilter::All, true).len(), 3, "assets have no favorite to filter on");
     }
 
     #[test]

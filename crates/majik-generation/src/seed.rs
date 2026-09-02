@@ -1109,7 +1109,7 @@ mod tests {
             assert!(!library.feed(&FeedFilter::Album(album.id.clone()), MediaFilter::All).is_empty());
         }
         // Outputs plus the imports; a failed row has no asset, so this is a lower bound.
-        assert_eq!(library.entries(&FeedFilter::Assets, MediaFilter::All).len(), report.assets);
+        assert_eq!(library.entries(&FeedFilter::Assets, MediaFilter::All, false).len(), report.assets);
         assert!(library.assets().len() >= options.imports);
     }
 
