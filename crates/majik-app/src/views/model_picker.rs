@@ -133,14 +133,33 @@ pub fn rows(provider: &'static ProviderDescriptor, tab: ComposeTab) -> Vec<Model
     }
 }
 
-/// Row height for two lines and for three. Every row gets the same explicit height because the
-/// list is virtualised and measures a single row for all of them: the name line plus whichever of
-/// the description and the chip row the models in the list carry.
-const ROW_HEIGHT: f32 = 52.;
-const ROW_HEIGHT_WITH_CHIPS: f32 = 64.;
+/// Every row gets the same explicit height because the list is virtualised and measures a single
+/// row for all of them: the name line plus whichever of the description and the chip row the
+/// models in the list carry. A chip row is taller than a text line (the chips have their own
+/// padding), so the two are sized apart rather than as "two lines" / "three lines".
+const NAME_LINE: f32 = 24.;
+const DESCRIPTION_LINE: f32 = 20.;
+const CHIP_ROW: f32 = 22.;
+/// The `gap_1p5` between the lines of a card.
+const LINE_GAP: f32 = 6.;
+/// The `py_2` of a card.
+const CARD_PADDING: f32 = 8.;
+const LOGO_SIZE: f32 = 36.;
 /// Air between the cards. The list can't space items itself (it lays them out by the measured
 /// size, which excludes margins), so each row carries half the gap above and below its card.
-const ROW_GAP: f32 = 6.;
+const ROW_GAP: f32 = 8.;
+
+/// The card height for a list whose rows carry these lines.
+fn card_height(has_description: bool, has_chips: bool) -> f32 {
+    let mut lines = NAME_LINE;
+    if has_description {
+        lines += LINE_GAP + DESCRIPTION_LINE;
+    }
+    if has_chips {
+        lines += LINE_GAP + CHIP_ROW;
+    }
+    lines.max(LOGO_SIZE) + 2. * CARD_PADDING
+}
 
 pub struct ModelPickerDelegate {
     compose: WeakEntity<ComposeView>,
@@ -232,19 +251,19 @@ impl RenderOnce for ModelListItem {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
         let (muted, muted_fg, primary) = (theme.muted, theme.muted_foreground, theme.primary);
-        let tile = logo_tile(self.row.logo, self.row.manufacturer, 36., cx);
+        let tile = logo_tile(self.row.logo, self.row.manufacturer, LOGO_SIZE, cx);
         let description = self.row.description;
         let has_description = self.row.has_description();
         let mut chips = h_flex().gap_1().flex_nowrap().overflow_hidden();
         for chip in &self.row.chips {
             chips = chips.child(gpui::div().flex_none().px_1p5().py_0p5().rounded_full().bg(muted).text_xs().whitespace_nowrap().text_color(muted_fg).child(chip.clone()));
         }
-        let card_height = if self.has_chips && self.has_description { ROW_HEIGHT_WITH_CHIPS } else { ROW_HEIGHT };
+        let card_height = card_height(self.has_description, self.has_chips);
         let card = self
             .base
             .h_full()
             .px_2()
-            .py_1()
+            .py_2()
             .rounded_md()
             .overflow_hidden()
             .child(
@@ -257,14 +276,17 @@ impl RenderOnce for ModelListItem {
                         v_flex()
                             .flex_1()
                             .min_w_0()
-                            .gap_1()
+                            .gap_1p5()
                             .overflow_hidden()
                             .child(
+                                // Centred, not baseline-aligned: gpui reports no baselines to the
+                                // layout, so `items_baseline` bottom-aligns the boxes and the
+                                // smaller maker text sits visibly below the name.
                                 h_flex()
                                     .gap_2()
-                                    .items_baseline()
+                                    .items_center()
                                     .child(gpui::div().font_weight(gpui::FontWeight::SEMIBOLD).whitespace_nowrap().child(self.row.name))
-                                    .child(gpui::div().text_xs().text_color(muted_fg).whitespace_nowrap().child(self.row.manufacturer)),
+                                    .child(gpui::div().text_sm().text_color(muted_fg).whitespace_nowrap().text_ellipsis().overflow_hidden().child(self.row.manufacturer)),
                             )
                             .when(has_description, |d| d.child(gpui::div().text_sm().text_color(muted_fg).whitespace_nowrap().text_ellipsis().overflow_hidden().child(description)))
                             .when(!self.row.chips.is_empty(), |d| d.child(chips)),
@@ -285,9 +307,11 @@ pub fn open_model_picker(compose: WeakEntity<ComposeView>, provider: &'static Pr
         list.scroll_to_item(IndexPath::new(current), ScrollStrategy::Center, window, cx);
     });
     let list_for_dialog = list.clone();
-    // No scrollbar: the list's overlay bar rides over the rows (they run to the list's edge) and
-    // appears on open, since scrolling to the current model counts as a scroll.
-    window.open_dialog(cx, move |dialog, _window, _cx| dialog.title("Choose a model").w(px(560.)).child(List::new(&list_for_dialog).search_placeholder("Search models").scrollbar_visible(false).max_h(px(520.))));
+    // No scrollbar: the list's overlay bar rides over the rows and appears on open, since
+    // scrolling to the current model counts as a scroll. The padding is the list's, not the
+    // dialog's, so the highlighted card keeps clear of the edges and the rows still scroll under
+    // the search field.
+    window.open_dialog(cx, move |dialog, _window, _cx| dialog.title("Choose a model").w(px(560.)).child(List::new(&list_for_dialog).search_placeholder("Search models").scrollbar_visible(false).px_2().py_1().max_h(px(520.))));
     // `open_dialog` focuses the dialog itself; the search field has to win.
     list.update(cx, |list, cx| list.focus(window, cx));
     list
