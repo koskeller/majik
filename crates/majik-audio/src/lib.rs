@@ -21,7 +21,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use rodio::source::SeekError;
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Source};
 use symphonia::core::codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_NULL};
 use symphonia::core::errors::Error as SymphoniaError;
@@ -240,6 +239,14 @@ pub fn output_device_available() -> bool {
 /// [`stop`](Player::stop) unloads and rewinds to zero.
 ///
 /// The type is intentionally `!Send`; keep it on the UI thread.
+///
+/// Every load, including a seek, gets a fresh rodio sink rather than reusing
+/// one: rodio's `Player::append` waits for the audio thread to drain a stopped
+/// queue, and its `try_seek` waits for the audio thread to answer, and both
+/// wait forever once the sound has ended (nothing runs the callback that
+/// would answer) or the device has stopped pulling. The end of a clip, when
+/// the video player asks to loop, is exactly when a sound has just ended, and
+/// the UI thread froze there. Dropping a sink only sets a flag.
 pub struct Player {
     path: PathBuf,
     /// Queue/controls for the current source. Declared before `_stream` so it
@@ -283,9 +290,7 @@ impl Player {
             .map_err(|e| anyhow!("open default audio output: {e}"))?;
         // The stream closes with the player, on purpose; rodio would announce it on stderr.
         stream.log_on_drop(false);
-        let sink = rodio::Player::connect_new(stream.mixer());
-        // Start paused so the freshly appended source does not auto-play.
-        sink.pause();
+        let sink = fresh_sink(&stream, 1.0);
 
         let mut player = Self {
             path: path.to_path_buf(),
@@ -376,8 +381,9 @@ impl Player {
     /// play/pause state. If the track was stopped or had finished, the source
     /// is reloaded paused at the requested position.
     ///
-    /// Uses rodio's native seek; if the decoder reports it unsupported, the
-    /// file is reopened and the leading `secs` are skipped instead.
+    /// Always reopens the file with the decoder positioned at `secs` (see the
+    /// type's note): the decoder's own seek runs on this thread and never
+    /// waits on the audio one.
     pub fn seek(&mut self, secs: f64) {
         let duration = self.duration();
         let target = if secs.is_finite() { secs.max(0.0) } else { 0.0 };
@@ -388,33 +394,12 @@ impl Player {
         };
 
         let was_playing = self.is_playing();
-
-        if !self.loaded || self.sink.empty() {
-            if let Err(e) = self.load(target) {
-                tracing::error!(path = %self.path.display(), error = %e, "reload for seek");
-            }
+        if let Err(e) = self.load(target) {
+            tracing::error!(path = %self.path.display(), error = %e, "reload for seek");
             return;
         }
-
-        // The decoder seeks in absolute file time, and rodio's position
-        // tracker resyncs to the seek target, so any pre-seek offset from a
-        // previous `load` no longer applies once a native seek succeeds.
-        match self.sink.try_seek(Duration::from_secs_f64(target)) {
-            Ok(()) => {
-                self.skip_offset = 0.0;
-            }
-            Err(e) => {
-                let unsupported = matches!(e, SeekError::NotSupported { .. });
-                tracing::debug!(path = %self.path.display(), error = %e, unsupported, "native seek failed; reopening with skip");
-                self.sink.pause();
-                if let Err(e) = self.load(target) {
-                    tracing::error!(path = %self.path.display(), error = %e, "reload for seek");
-                    return;
-                }
-                if was_playing {
-                    self.sink.play();
-                }
-            }
+        if was_playing {
+            self.sink.play();
         }
     }
 
@@ -442,13 +427,9 @@ impl Player {
         self.loaded && self.sink.empty()
     }
 
-    /// Decode the file and append it to the sink, leaving the sink paused at
-    /// `start_secs`. Clears any previous source first.
+    /// Decode the file and put it on a fresh sink, paused at `start_secs`;
+    /// the previous sink, and whatever it was playing, is dropped.
     fn load(&mut self, start_secs: f64) -> Result<()> {
-        // Drop whatever is queued. `stop` clears asynchronously (within 5 ms);
-        // `append` waits for the queue to flush before resuming.
-        self.sink.stop();
-        self.sink.pause();
         self.loaded = false;
         self.skip_offset = 0.0;
 
@@ -470,30 +451,35 @@ impl Player {
             .build()
             .with_context(|| format!("decode {}", self.path.display()))?;
 
+        // A new sink's queue is empty, so `append` has nothing to wait for.
+        let sink = fresh_sink(&self._stream, self.volume);
         // Seek the bare decoder before it enters the sink so the first
-        // samples already come from the right place.
+        // samples already come from the right place. rodio's position tracker
+        // starts at zero for the new source, so the pre-seek is accounted for
+        // in `skip_offset`.
         if start_secs > 0.0 {
+            self.skip_offset = start_secs;
             match decoder.try_seek(Duration::from_secs_f64(start_secs)) {
-                Ok(()) => {
-                    // rodio's position tracker starts at zero for the new
-                    // source, so account for the pre-seek here.
-                    self.skip_offset = start_secs;
-                }
+                Ok(()) => sink.append(decoder),
                 Err(e) => {
                     tracing::debug!(error = %e, "decoder seek failed; skipping instead");
-                    self.skip_offset = start_secs;
-                    self.sink.set_volume(self.volume as rodio::Float);
-                    self.sink
-                        .append(decoder.skip_duration(Duration::from_secs_f64(start_secs)));
-                    self.loaded = true;
-                    return Ok(());
+                    sink.append(decoder.skip_duration(Duration::from_secs_f64(start_secs)));
                 }
             }
+        } else {
+            sink.append(decoder);
         }
-
-        self.sink.set_volume(self.volume as rodio::Float);
-        self.sink.append(decoder);
+        self.sink = sink;
         self.loaded = true;
         Ok(())
     }
+}
+
+/// A paused sink on `stream` at `volume`, with nothing queued.
+fn fresh_sink(stream: &MixerDeviceSink, volume: f32) -> rodio::Player {
+    let sink = rodio::Player::connect_new(stream.mixer());
+    // Paused so a freshly appended source does not auto-play.
+    sink.pause();
+    sink.set_volume(volume as rodio::Float);
+    sink
 }

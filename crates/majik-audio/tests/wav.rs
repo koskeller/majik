@@ -128,6 +128,41 @@ fn player_open_seek_position() {
     assert_eq!(player.position(), 0.0);
 }
 
+/// The end of a clip is where the video player asks to loop: a seek back to zero right as the
+/// sound runs out, and again once it has, must come back (the UI thread froze here) and restart.
+#[test]
+fn seeking_back_as_the_sound_ends_returns_and_restarts() {
+    if !output_device_available() {
+        eprintln!("skipping seeking_back_as_the_sound_ends_returns_and_restarts: no audio output device");
+        return;
+    }
+    let path = write_test_wav();
+    let mut player = Player::open(&path).expect("open player");
+    player.set_volume(0.0);
+
+    // Seeks landing in the last few milliseconds, while the sound is still draining or has just
+    // run out; the video player follows each with `play`, as here.
+    for _ in 0..5 {
+        player.seek(1.98);
+        player.play();
+        std::thread::sleep(Duration::from_millis(10));
+        player.seek(0.0);
+        player.play();
+        assert!(player.is_playing(), "playing again from the top");
+        assert!(player.position() < 0.5, "from the top: {}", player.position());
+    }
+    // And once it has actually finished.
+    player.seek(1.9);
+    player.play();
+    let done = wait_for(|| player.finished(), |f| *f);
+    assert!(done, "player did not finish");
+    player.seek(0.0);
+    player.play();
+    assert!(player.is_playing());
+    let pos = wait_for(|| player.position(), |p| *p > 0.05);
+    assert!(pos < 0.5, "restarted from the top: {pos}");
+}
+
 /// Poll `read` every 5 ms for up to 2 s until `ok` accepts the value.
 fn wait_for<T>(mut read: impl FnMut() -> T, ok: impl Fn(&T) -> bool) -> T {
     let deadline = Instant::now() + Duration::from_secs(2);
