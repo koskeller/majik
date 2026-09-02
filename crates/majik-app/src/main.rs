@@ -51,12 +51,15 @@ fn main() {
 
     // `gpui_macos::text_system` warns about every duplicate PostScript face it skips, and macOS's
     // `.AppleSystemUIFont` family always lists a couple, so that target is capped at errors.
+    // symphonia's AAC decoder logs an error for every frame it rejects, which is a decode error
+    // it also returns and `majik_audio` reports once, so its target is off.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive("majik=info".parse().unwrap())
                 .add_directive("gpui=warn".parse().unwrap())
-                .add_directive("gpui_macos::text_system=error".parse().unwrap()),
+                .add_directive("gpui_macos::text_system=error".parse().unwrap())
+                .add_directive("symphonia_codec_aac=off".parse().unwrap()),
         )
         .init();
 

@@ -18,3 +18,5 @@ symphonia = { version = "0.5", default-features = false, features = ["mp3", "wav
 
 [dev-dependencies]
 hound = "3.5"
+# Writes the MP4 with an AAC track that must be refused, since no encoder is on hand.
+mp4.workspace = true

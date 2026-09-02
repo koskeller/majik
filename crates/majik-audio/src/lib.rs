@@ -23,9 +23,9 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use rodio::source::SeekError;
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Source};
-use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_NULL};
 use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::FormatOptions;
+use symphonia::core::formats::{FormatOptions, FormatReader};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
@@ -49,31 +49,7 @@ pub struct AudioInfo {
 /// MP3 files without a Xing/Info header) the packets are scanned to sum their
 /// durations; that is still demux-only and much cheaper than decoding.
 pub fn probe(path: &Path) -> Result<AudioInfo> {
-    let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let stream = MediaSourceStream::new(Box::new(file), Default::default());
-
-    let mut hint = Hint::new();
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        hint.with_extension(ext);
-    }
-
-    let probed = symphonia::default::get_probe()
-        .format(
-            &hint,
-            stream,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
-        )
-        .with_context(|| format!("unrecognized audio format: {}", path.display()))?;
-    let mut format = probed.format;
-
-    let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        .ok_or_else(|| anyhow!("no audio track in {}", path.display()))?;
-    let track_id = track.id;
-    let params = track.codec_params.clone();
+    let (mut format, track_id, params) = open_format(path)?;
 
     let sample_rate = params.sample_rate.unwrap_or(0);
     let mut channels = params
@@ -156,9 +132,89 @@ pub fn probe(path: &Path) -> Result<AudioInfo> {
     })
 }
 
+/// Demux `path` and pick its first audio track: the reader positioned at the
+/// first packet, the track's id, and its codec parameters.
+fn open_format(path: &Path) -> Result<(Box<dyn FormatReader>, u32, CodecParameters)> {
+    let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let stream = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+
+    let probed = symphonia::default::get_probe()
+        .format(
+            &hint,
+            stream,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .with_context(|| format!("unrecognized audio format: {}", path.display()))?;
+    let format = probed.format;
+
+    let track = format
+        .tracks()
+        .iter()
+        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .ok_or_else(|| anyhow!("no audio track in {}", path.display()))?;
+    let track_id = track.id;
+    let params = track.codec_params.clone();
+    Ok((format, track_id, params))
+}
+
 /// Duration of an audio file in seconds. Convenience wrapper over [`probe`].
 pub fn duration_secs(path: &Path) -> Result<f64> {
     Ok(probe(path)?.duration_secs)
+}
+
+/// How many of the track's packets [`ensure_decodable`] tries before giving up on it.
+const DECODE_PROBE_PACKETS: usize = 4;
+
+/// Check that the file's audio track decodes, not merely demuxes.
+///
+/// symphonia reads AAC-LC only. A stream whose frames carry more channels than
+/// its configuration declares, which some providers' clips do, fails every
+/// frame; rodio then skips every packet and plays silence while the decoder
+/// logs an error for each one. Trying the first few packets here lets a caller
+/// play the picture without sound and say why, once.
+pub fn ensure_decodable(path: &Path) -> Result<()> {
+    let (mut format, track_id, params) = open_format(path)?;
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&params, &DecoderOptions::default())
+        .map_err(|e| anyhow!("no decoder for the audio track of {}: {e}", path.display()))?;
+
+    let mut tried = 0;
+    let mut last_failure = None;
+    while tried < DECODE_PROBE_PACKETS {
+        let packet = match format.next_packet() {
+            Ok(packet) => packet,
+            Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(SymphoniaError::ResetRequired) => break,
+            Err(e) => return Err(e).with_context(|| format!("reading audio packets of {}", path.display())),
+        };
+        if packet.track_id() != track_id {
+            continue;
+        }
+        tried += 1;
+        match decoder.decode(&packet) {
+            Ok(_) => return Ok(()),
+            // Malformed data and a feature the decoder lacks (SBR, a program config element) both
+            // leave the frame unplayed; the next packet may still say more.
+            Err(SymphoniaError::DecodeError(reason)) | Err(SymphoniaError::Unsupported(reason)) => {
+                last_failure = Some(reason)
+            }
+            Err(e) => return Err(e).with_context(|| format!("decoding the audio track of {}", path.display())),
+        }
+    }
+    match last_failure {
+        Some(reason) => Err(anyhow!(
+            "the audio track of {} can't be decoded ({reason}); none of its first {tried} packets did",
+            path.display()
+        )),
+        // A track without packets has nothing to play and nothing to fail on.
+        None => Ok(()),
+    }
 }
 
 /// Returns `true` if a default audio output device can be opened.
@@ -166,7 +222,14 @@ pub fn duration_secs(path: &Path) -> Result<f64> {
 /// Handy for tests and headless environments: opening a [`Player`] will fail
 /// with an error when this returns `false`.
 pub fn output_device_available() -> bool {
-    DeviceSinkBuilder::open_default_sink().is_ok()
+    match DeviceSinkBuilder::open_default_sink() {
+        Ok(mut sink) => {
+            // Closing the probe sink again is the point; rodio would announce it on stderr.
+            sink.log_on_drop(false);
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// A single-file audio player bound to the default output device.
@@ -214,9 +277,12 @@ impl Player {
     /// decoded or no output device is available.
     pub fn open(path: &Path) -> Result<Self> {
         let info = probe(path)?;
+        ensure_decodable(path)?;
 
-        let stream = DeviceSinkBuilder::open_default_sink()
+        let mut stream = DeviceSinkBuilder::open_default_sink()
             .map_err(|e| anyhow!("open default audio output: {e}"))?;
+        // The stream closes with the player, on purpose; rodio would announce it on stderr.
+        stream.log_on_drop(false);
         let sink = rodio::Player::connect_new(stream.mixer());
         // Start paused so the freshly appended source does not auto-play.
         sink.pause();
