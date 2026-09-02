@@ -883,7 +883,11 @@ impl ComposeView {
                     .child(gpui::div().text_xs().child(a.path.extension().and_then(|e| e.to_str()).unwrap_or("audio").to_uppercase()))
                     .into_any_element(),
                 // Round the image itself so its corners match the card (parent clip alone doesn't).
-                Some(a) => crate::ui::cover_image(a.thumbnail.clone().unwrap_or(a.path)).rounded_lg().into_any_element(),
+                Some(a) => match crate::ui::picture_for(a.kind, a.thumbnail.as_deref(), &a.path) {
+                    Some(picture) => crate::ui::cover_image(picture).rounded_lg().into_any_element(),
+                    // A clip whose poster isn't made yet.
+                    None => v_flex().size_full().items_center().justify_center().child(icon("film").size_5()).into_any_element(),
+                },
                 // The asset's file is gone (or the asset itself): the card stays so it can be removed.
                 None => v_flex().size_full().items_center().justify_center().child(icon("file-x").size_5()).into_any_element(),
             })

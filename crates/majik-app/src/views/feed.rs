@@ -945,7 +945,7 @@ impl FeedView {
         let feed_for_drag = feed.clone();
         let dragged = self.dragged(&id, cx);
         let entry = snapshot.entry();
-        let drag_preview_img = entry.thumbnail().or_else(|| entry.file()).map(std::path::Path::to_path_buf);
+        let drag_preview_img = entry.file().and_then(|file| crate::ui::picture_for(entry.kind(), entry.thumbnail(), file));
         let body = self
             .render_snapshot_body(snapshot, thumbnail_opacity, cx)
             .child(gpui::div().absolute().inset_0().child(record_bounds(self.cell_bounds.clone(), id.clone())));

@@ -907,11 +907,7 @@ impl DetailView {
             .inputs(&item.id)
             .into_iter()
             .map(|(link, asset)| {
-                let picture = match asset.kind {
-                    MediaType::Image => Some(asset.path.clone()),
-                    MediaType::Video => asset.thumbnail.clone(),
-                    MediaType::Audio => None,
-                };
+                let picture = crate::ui::picture_for(asset.kind, asset.thumbnail.as_deref(), &asset.path);
                 InfoAsset { role: link.role, kind: asset.kind, path: asset.path, picture }
             })
             .collect();

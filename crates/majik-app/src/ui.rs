@@ -310,6 +310,17 @@ pub fn cover_image(source: impl Into<gpui::ImageSource>) -> gpui::Img {
     gpui::img(source).absolute().inset_0().size_full().object_fit(gpui::ObjectFit::Cover)
 }
 
+/// The file an image element may show for an asset: its thumbnail, or, for a still picture whose
+/// thumbnail is not made yet, the picture itself. A clip or a sound file is never one: gpui reads
+/// what isn't a raster image as an SVG and logs `Usvg(NotAnUtf8Str)` for every frame.
+pub fn picture_for(kind: majik_core::model::MediaType, thumbnail: Option<&std::path::Path>, file: &std::path::Path) -> Option<std::path::PathBuf> {
+    match (kind, thumbnail) {
+        (_, Some(thumbnail)) => Some(thumbnail.to_path_buf()),
+        (majik_core::model::MediaType::Image, None) => Some(file.to_path_buf()),
+        (majik_core::model::MediaType::Video | majik_core::model::MediaType::Audio, None) => None,
+    }
+}
+
 /// Rounded logo tile with initials fallback (port of `ModelLogoView`).
 pub fn logo_tile(name: &str, fallback_label: &str, size: f32, cx: &mut App) -> gpui::AnyElement {
     use gpui::ParentElement as _;
@@ -440,6 +451,18 @@ mod tests {
     use super::*;
     use gpui::{CursorStyle, TestAppContext};
     use std::cell::Cell;
+
+    #[test]
+    fn only_a_still_picture_stands_in_for_its_own_thumbnail() {
+        use majik_core::model::MediaType;
+        use std::path::Path;
+        let thumb = Path::new("t.jpg");
+        assert_eq!(picture_for(MediaType::Image, Some(thumb), Path::new("a.png")).as_deref(), Some(thumb));
+        assert_eq!(picture_for(MediaType::Image, None, Path::new("a.png")).as_deref(), Some(Path::new("a.png")));
+        assert_eq!(picture_for(MediaType::Video, Some(thumb), Path::new("a.mp4")).as_deref(), Some(thumb));
+        assert_eq!(picture_for(MediaType::Video, None, Path::new("a.mp4")), None, "an MP4 is not a picture");
+        assert_eq!(picture_for(MediaType::Audio, None, Path::new("a.mp3")), None);
+    }
 
     #[test]
     fn app_buttons_show_the_pointing_hand() {
