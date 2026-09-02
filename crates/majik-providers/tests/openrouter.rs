@@ -790,7 +790,7 @@ fn text_body(content: &str) -> serde_json::Value {
         "id": "gen-text",
         "choices": [{ "message": { "role": "assistant", "content": content }, "finish_reason": "stop" }],
         "created": 1_700_000_000,
-        "model": "anthropic/claude-haiku-4.5",
+        "model": "anthropic/claude-sonnet-5",
         "object": "chat.completion"
     })
 }
@@ -814,8 +814,9 @@ async fn text_request_sends_the_instruction_and_the_prompt_without_modalities_in
 
     let request = &server.received_requests().await.unwrap()[0];
     let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
-    assert_eq!(body["model"], "anthropic/claude-haiku-4.5");
+    assert_eq!(body["model"], "anthropic/claude-sonnet-5");
     assert_eq!(body["max_tokens"], 400);
+    assert!(body.get("reasoning").is_none(), "thinking stays off by saying nothing about it: {body}");
     assert!(body.get("modalities").is_none(), "a text completion asks for no image modality: {body}");
     assert!(body.get("image_config").is_none(), "{body}");
     assert_eq!(body["messages"][0]["role"], "system");

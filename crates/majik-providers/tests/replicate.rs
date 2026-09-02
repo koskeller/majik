@@ -1146,7 +1146,7 @@ async fn text_prediction_sends_the_prompts_and_concatenates_the_output_chunks_in
     use majik_providers::TextProviderClient as _;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/v1/models/anthropic/claude-4.5-haiku/predictions"))
+        .and(path("/v1/models/anthropic/claude-sonnet-5/predictions"))
         .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
             "id": "p1",
             "status": "succeeded",
@@ -1163,6 +1163,7 @@ async fn text_prediction_sends_the_prompts_and_concatenates_the_output_chunks_in
     assert_eq!(body["input"]["prompt"], "apple");
     assert_eq!(body["input"]["system_prompt"], "rewrite it");
     assert!(body["input"].get("reasoning_effort").is_none(), "the rewriter's model takes no GPT-5 knobs: {body}");
+    assert_eq!(body["input"]["effort"], "low", "thinking off: {body}");
     assert_eq!(body["input"]["max_tokens"], 400);
 }
 

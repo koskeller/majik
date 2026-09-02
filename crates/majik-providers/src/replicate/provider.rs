@@ -452,6 +452,9 @@ impl ReplicateClient {
         input.insert("prompt".into(), Value::String(user.to_string()));
         input.insert("system_prompt".into(), Value::String(system.to_string()));
         input.insert("max_tokens".into(), Value::from(max_tokens));
+        // "'low' disables thinking for the fastest, cheapest responses" — a rewrite the user waits
+        // on must not spend its token budget thinking.
+        input.insert("effort".into(), Value::String("low".into()));
 
         let prediction = self
             .submit_and_await_prediction(SubmissionTarget::OfficialModel(constants::replicate::TEXT_MODEL.to_string()), input, Timeouts::TEXT, "text")

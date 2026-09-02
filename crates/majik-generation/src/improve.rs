@@ -1,4 +1,4 @@
-//! Rewriting a prompt with a small text model: the instruction the composer sends and the request
+//! Copy-editing a prompt with a text model: the instruction the composer sends and the request
 //! that carries it. No HTTP here; [`crate::engine::Engine`] makes the call.
 
 use majik_core::model::MediaType;
@@ -43,8 +43,6 @@ pub fn text_request(prompt: &str, generation_type: &GenerationType, provider: &P
     }
 }
 
-/// The instruction the model rewrites under: what it is writing for, what is already decided
-/// elsewhere (ratio, resolution, duration), what the user attached, and how to answer.
 /// The handles the attached references are addressed by, in the order the roles arrive: the same
 /// numbering the composer shows and the provider clients rewrite.
 fn reference_handles(reference_roles: &[AssetRole]) -> Vec<String> {
@@ -59,6 +57,10 @@ fn reference_handles(reference_roles: &[AssetRole]) -> Vec<String> {
         .collect()
 }
 
+/// The instruction the model edits under: what the prompt is for, how light the edit has to be,
+/// what is already decided elsewhere (ratio, resolution, duration), what the user attached, and how
+/// to answer. The job is a copy-edit, not a rewrite: the user's prompt is theirs, and a model left
+/// to "improve" it pads it out with detail nobody asked for.
 pub fn instruction(generation_type: &GenerationType, provider: &ProviderDescriptor, reference_roles: &[AssetRole]) -> String {
     let media = match generation_type.media_type() {
         MediaType::Image => "an image",
@@ -67,28 +69,18 @@ pub fn instruction(generation_type: &GenerationType, provider: &ProviderDescript
     };
     let manufacturer = manufacturer(generation_type);
     let mut lines = vec![
-        "You rewrite prompts for AI media generation.".to_string(),
-        format!("Rewrite the user's prompt into one strong prompt for {} by {manufacturer}, {media} generation model.", generation_type.model_name()),
-        "Keep the user's subject, intent, named styles, people and any text to be rendered. Add only the concrete visual detail that changes the result — composition, lighting, materials, colour, camera, mood — in a few precise sentences. No filler, no strings of adjectives, no saying the same thing twice.".to_string(),
+        "You copy-edit prompts for AI media generation.".to_string(),
+        format!("The user's prompt is for {} by {manufacturer}, {media} generation model.", generation_type.model_name()),
+        "Make the smallest edit that leaves it clear and in correct English: fix spelling, grammar and word order, and replace a vague or wrong word with the precise one. Keep the user's words, order, length and tone wherever they already work. Do not add detail, style, mood, lighting or camera direction the user did not ask for, and do not remove anything they did.".to_string(),
     ];
-
-    if let GenerationType::Video(settings) = generation_type {
-        lines.push(format!(
-            "Describe motion and what changes over the {}s shot, including camera movement.",
-            settings.duration
-        ));
-        if settings.audio_enabled {
-            lines.push("The model also generates sound — describe it in one clause.".to_string());
-        }
-    }
 
     if !reference_roles.is_empty() {
         let roles = reference_roles.iter().map(|r| r.display_name().to_lowercase()).collect::<Vec<_>>().join(", ");
-        // The rewriter is a text call: the images go to the generation model, not to it. Saying
+        // The editor is a text call: the images go to the generation model, not to it. Saying
         // they are "attached" makes a literal model answer "I don't see any images", which would
         // then go into the prompt field.
         lines.push(format!(
-            "The generation will also receive {} reference image{} ({roles}), which you cannot see. Write the prompt so it refers to them (\"the subject in the reference\", \"the style of the reference\") instead of describing or inventing what they show.",
+            "The generation will also receive {} reference image{} ({roles}), which you cannot see. Do not describe or invent what they show; leave how the prompt refers to them as it is.",
             reference_roles.len(),
             if reference_roles.len() == 1 { "" } else { "s" },
         ));
@@ -104,17 +96,17 @@ pub fn instruction(generation_type: &GenerationType, provider: &ProviderDescript
     }
 
     if let Some(fixed) = fixed_settings(generation_type) {
-        lines.push(format!("The output is {fixed} — do not mention aspect ratio, resolution or duration."));
+        lines.push(format!("The output is {fixed} — do not add aspect ratio, resolution or duration."));
     }
 
     if let Some(limit) = prompt_character_limit(generation_type, provider).ok().flatten() {
         lines.push(format!("Stay under {limit} characters."));
     }
 
-    // A terse prompt ("make it snowy") over references the rewriter cannot see invites a clarifying
+    // A terse prompt ("make it snowy") over references the editor cannot see invites a clarifying
     // question, and the answer goes straight into the prompt field. There is nobody to answer it.
     lines.push(
-        "Reply with the rewritten prompt only: one short paragraph, plain text, no quotes, no preamble, no alternatives. Never ask a question or request more detail — if the prompt is terse or leans on something you cannot see, write the best prompt you can from what it gives you."
+        "Reply with the edited prompt only: plain text, no quotes, no preamble, no alternatives, no notes on what changed. Never ask a question or request more detail — if part of the prompt is terse or leans on something you cannot see, leave that part as written."
             .to_string(),
     );
     lines.join("\n")
@@ -178,30 +170,33 @@ mod tests {
         assert!(text.contains(gt.model_name()), "{text}");
         assert!(text.contains("an image generation model"), "{text}");
         assert!(text.contains("4:5") && text.contains("2K"), "the fixed settings are named: {text}");
-        assert!(text.contains("do not mention aspect ratio"), "{text}");
-        assert!(text.ends_with("write the best prompt you can from what it gives you."), "the answer format comes last: {text}");
+        assert!(text.contains("do not add aspect ratio"), "{text}");
+        assert!(text.ends_with("leave that part as written."), "the answer format comes last: {text}");
         assert!(text.contains("Never ask a question"), "there is nobody to answer one: {text}");
         assert!(!text.contains("reference image"), "nothing attached, nothing said: {text}");
     }
 
-    /// A rewrite that pads the prompt out is worse than the original; the instruction asks for a
-    /// short one in as many words.
+    /// The prompt is the user's; the model only tidies it. A rewrite that pads it out with detail
+    /// nobody asked for is worse than the original.
     #[test]
-    fn the_instruction_asks_for_a_concise_rewrite() {
+    fn the_instruction_asks_for_the_smallest_edit_and_no_additions() {
         let text = instruction(&image(), provider(), &[]);
-        assert!(text.contains("in a few precise sentences"), "{text}");
-        assert!(text.contains("No filler, no strings of adjectives"), "{text}");
-        assert!(text.contains("one short paragraph"), "{text}");
+        assert!(text.starts_with("You copy-edit prompts"), "{text}");
+        assert!(text.contains("Make the smallest edit that leaves it clear and in correct English"), "{text}");
+        assert!(text.contains("Keep the user's words, order, length and tone"), "{text}");
+        assert!(text.contains("Do not add detail, style, mood, lighting or camera direction"), "{text}");
+        assert!(text.contains("no notes on what changed"), "{text}");
     }
 
+    /// A video prompt gets the same light edit: no motion, camera or sound direction is asked for,
+    /// with or without the audio toggle.
     #[test]
-    fn a_video_instruction_asks_for_motion_and_sound_only_when_there_is_sound() {
-        let with_audio = instruction(&video(&catalog::video::VEO_31, true), provider(), &[]);
-        assert!(with_audio.contains("over the 8s shot"), "{with_audio}");
-        assert!(with_audio.contains("generates sound"), "{with_audio}");
-        let silent = instruction(&video(&catalog::video::VEO_31, false), provider(), &[]);
-        assert!(silent.contains("over the 8s shot"), "{silent}");
-        assert!(!silent.contains("generates sound"), "{silent}");
+    fn a_video_instruction_adds_no_motion_or_sound_direction() {
+        for audio in [true, false] {
+            let text = instruction(&video(&catalog::video::VEO_31, audio), provider(), &[]);
+            assert!(text.contains("a video generation model"), "{text}");
+            assert!(!text.contains("shot") && !text.contains("sound") && !text.contains("motion"), "{text}");
+        }
     }
 
     #[test]
@@ -210,8 +205,8 @@ mod tests {
         assert!(one.contains("receive 1 reference image (image)"), "{one}");
         let two = instruction(&video(&catalog::video::VEO_31, false), provider(), &[AssetRole::FirstFrame, AssetRole::LastFrame]);
         assert!(two.contains("receive 2 reference images (first frame, last frame)"), "{two}");
-        assert!(two.contains("which you cannot see"), "the rewriter is a text call: {two}");
-        assert!(two.contains("instead of describing or inventing what they show"), "{two}");
+        assert!(two.contains("which you cannot see"), "the editor is a text call: {two}");
+        assert!(two.contains("Do not describe or invent what they show"), "{two}");
     }
 
     #[test]

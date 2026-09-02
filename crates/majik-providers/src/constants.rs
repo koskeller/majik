@@ -11,8 +11,9 @@ pub mod fal {
     /// fal's LLM router; `TEXT_MODEL` is one of the model ids it accepts.
     pub const ANY_LLM_ENDPOINT: &str = "fal-ai/any-llm";
     /// See the note on `openrouter::TEXT_MODEL`. fal refuses a reasoning model outright unless
-    /// reasoning is enabled, which this is not.
-    pub const TEXT_MODEL: &str = "anthropic/claude-haiku-4.5";
+    /// reasoning is enabled, which this is not, and `any-llm`'s model list stops at the Claude 4.5
+    /// generation (checked 2026-09-02), so this is the largest Claude it routes.
+    pub const TEXT_MODEL: &str = "anthropic/claude-sonnet-4.5";
 }
 
 pub mod openrouter {
@@ -21,17 +22,19 @@ pub mod openrouter {
     pub const TITLE: &str = "Majik";
     /// Rewriting a prompt is a quick task the user waits on with the composer frozen, so thinking
     /// must be off: reasoning tokens count against the budget and leave an empty completion, and
-    /// the latency risks the 30 s deadline. Claude Haiku 4.5 has it off by default and is carried
-    /// by all three providers. (Tested live; `openai/gpt-5-mini` returned nothing here and fal
-    /// rejected it outright.)
-    pub const TEXT_MODEL: &str = "anthropic/claude-haiku-4.5";
+    /// the latency risks the 30 s deadline. Claude models think only when asked to, and a request
+    /// that says nothing about reasoning doesn't ask. (Tested live on Haiku 4.5;
+    /// `openai/gpt-5-mini` returned nothing here and fal rejected it outright.) Sonnet: the edit is
+    /// meant to be light, and a smaller model tends to rewrite instead.
+    pub const TEXT_MODEL: &str = "anthropic/claude-sonnet-5";
 }
 
 pub mod replicate {
     pub const BASE_URL: &str = "https://api.replicate.com/v1";
-    /// The same model as the other providers' `TEXT_MODEL`, but Replicate names it the other way
-    /// round. An official model, so it is called by slug rather than pinned to a version.
-    pub const TEXT_MODEL: &str = "anthropic/claude-4.5-haiku";
+    /// See the note on `openrouter::TEXT_MODEL`. An official model, so it is called by slug rather
+    /// than pinned to a version. Its schema has an `effort` knob whose `low` setting turns thinking
+    /// off, which `complete_text` sends.
+    pub const TEXT_MODEL: &str = "anthropic/claude-sonnet-5";
     /// philz1337x/clarity-upscaler
     pub const UPSCALE_VERSION: &str = "dfad41707589d68ecdccd1dfa600d55a208f9310748e44bfe35b4a6291453d5e";
     /// 851-labs/background-remover

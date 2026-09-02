@@ -2357,7 +2357,7 @@ async fn text_request_posts_any_llm_with_the_instruction_as_the_system_prompt_in
     let request = &server.received_requests().await.unwrap()[0];
     assert_eq!(request.headers.get("authorization").unwrap(), "Key test-key");
     let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
-    assert_eq!(body["model"], "anthropic/claude-haiku-4.5");
+    assert_eq!(body["model"], "anthropic/claude-sonnet-4.5");
     assert_eq!(body["prompt"], "apple");
     assert_eq!(body["system_prompt"], "rewrite it");
     assert_eq!(body["max_tokens"], 400);

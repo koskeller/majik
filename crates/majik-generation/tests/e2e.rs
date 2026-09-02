@@ -71,13 +71,15 @@ fn improved(descriptor: &'static ProviderDescriptor, generation_type: &Generatio
     text
 }
 
-/// What goes into the prompt field: the instruction demands the rewritten prompt alone.
+/// What goes into the prompt field: the instruction demands the edited prompt alone. The prompts
+/// the tests send carry a spelling or grammar slip, so a correct edit differs from the original
+/// without having to be longer than it — the instruction asks for the smallest edit.
 #[track_caller]
 fn assert_is_a_bare_prompt(who: &str, original: &str, improved: &str) {
     let text = improved.trim();
     assert!(!text.is_empty(), "{who}: empty rewrite");
     assert!(text != original, "{who}: the model echoed the prompt back");
-    assert!(text.len() > original.len(), "{who}: the rewrite added nothing: {text:?}");
+    assert!(text.len() <= original.len() * 2 + 40, "{who}: the edit grew the prompt into a rewrite: {text:?}");
     assert!(!text.starts_with('"') && !text.starts_with('\''), "{who}: wrapped in quotes: {text:?}");
     assert!(!text.contains("```"), "{who}: markdown fence: {text:?}");
     let lower = text.to_lowercase();
@@ -115,7 +117,7 @@ macro_rules! improve_tests {
             #[ignore = $why]
             fn rewrites_an_image_prompt() {
                 let Some(_key) = key($key_var) else { return };
-                let prompt = "a cat";
+                let prompt = "cat siting on windowsil in sun light";
                 let text = improved($descriptor, &image("gemini-2.5-flash"), prompt, &[]);
                 assert_is_a_bare_prompt($descriptor.display_name, prompt, &text);
             }
@@ -126,7 +128,7 @@ macro_rules! improve_tests {
             #[ignore = $why]
             fn leaves_the_settings_out_of_the_prompt() {
                 let Some(_key) = key($key_var) else { return };
-                let text = improved($descriptor, &image("gemini-2.5-flash"), "a cat", &[]).to_lowercase();
+                let text = improved($descriptor, &image("gemini-2.5-flash"), "cat siting on windowsil in sun light", &[]).to_lowercase();
                 for banned in ["aspect ratio", "4:5", "resolution"] {
                     assert!(!text.contains(banned), "{}: the rewrite restates {banned:?}: {text:?}", $descriptor.display_name);
                 }
@@ -137,7 +139,7 @@ macro_rules! improve_tests {
             #[ignore = $why]
             fn rewrites_with_reference_images_attached() {
                 let Some(_key) = key($key_var) else { return };
-                let prompt = "make it snowy";
+                let prompt = "make it snowy and the cat wear hat";
                 let roles = [AssetRole::ReferenceImage, AssetRole::ReferenceImage];
                 let text = improved($descriptor, &image("gemini-2.5-flash"), prompt, &roles);
                 assert_is_a_bare_prompt($descriptor.display_name, prompt, &text);
@@ -155,7 +157,7 @@ macro_rules! improve_tests {
                     eprintln!("SKIP: {} declares no prompt cap for this model", $descriptor.display_name);
                     return;
                 };
-                let prompt = "a cat";
+                let prompt = "cat walk slow across the room";
                 let text = improved($descriptor, &generation_type, prompt, &[]);
                 assert_is_a_bare_prompt($descriptor.display_name, prompt, &text);
                 assert!(text.chars().count() <= limit, "{}: {} characters over a {limit} cap", $descriptor.display_name, text.chars().count());
