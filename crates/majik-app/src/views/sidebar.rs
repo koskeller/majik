@@ -52,10 +52,11 @@ impl SidebarView {
             let input = dialog_input.clone();
             let library = library.clone();
             let this = this.clone();
+            let field = input.clone();
             dialog
                 .title("New Album")
                 .w(px(380.))
-                .child(Input::new(&input))
+                .content(move |content, _, _| content.py_1().child(Input::new(&field)))
                 .on_ok(move |_, _, cx| {
                     let name = input.read(cx).value().trim().to_string();
                     if name.is_empty() {
@@ -79,7 +80,8 @@ impl SidebarView {
             let input = dialog_input.clone();
             let library = library.clone();
             let id = id.clone();
-            dialog.title("Rename Album").w(px(380.)).child(Input::new(&input)).on_ok(move |_, _, cx| {
+            let field = input.clone();
+            dialog.title("Rename Album").w(px(380.)).content(move |content, _, _| content.py_1().child(Input::new(&field))).on_ok(move |_, _, cx| {
                 let name = input.read(cx).value().trim().to_string();
                 if name.is_empty() {
                     return false;
@@ -149,11 +151,10 @@ impl SidebarView {
 
 impl Render for SidebarView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let albums: Vec<(AlbumId, String, usize)> =
-            self.library.read(cx).lib.albums().iter().map(|a| (a.id.clone(), a.name.clone(), a.items.len())).collect();
+        let albums: Vec<(AlbumId, String)> = self.library.read(cx).lib.albums().iter().map(|a| (a.id.clone(), a.name.clone())).collect();
 
         let mut album_menu = self.menu(cx);
-        for (id, name, count) in albums {
+        for (id, name) in albums {
             let this = cx.weak_entity();
             let (rid, rname) = (id.clone(), name.clone());
             let (did, dname) = (id.clone(), name.clone());
@@ -177,8 +178,7 @@ impl Render for SidebarView {
                     }))
                 })
             };
-            let label: SharedString = if count > 0 { format!("{name}  ·  {count}").into() } else { name.clone().into() };
-            album_menu = album_menu.drop_target(self.item(label, "album", FeedFilter::Album(id.clone()), cx).suffix(suffix), id);
+            album_menu = album_menu.drop_target(self.item(name, "album", FeedFilter::Album(id.clone()), cx).suffix(suffix), id);
         }
         album_menu = album_menu.child(
             SidebarMenuItem::new("New Album…").icon(icon("folder-plus")).on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
