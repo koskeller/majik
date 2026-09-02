@@ -8,10 +8,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-/// Majik's own dark palette (`assets/themes/majik.json`): charcoal, not black. gpui-component's
+/// Majik's own dark palette (`assets/themes/majik.json`): graphite, not black. gpui-component's
 /// stock dark theme is shadcn's web palette on a `#0a0a0a` ground; media tools (Lightroom,
 /// Ableton, Blender, Unity) sit three to five stops lighter so a dark image keeps its edge and
-/// the chrome can step below the canvas. Keys the file leaves out keep the stock dark values.
+/// the chrome can step below the canvas; this is Unity's #383838 ground. Keys the file leaves out keep the stock dark values.
 const THEME: &str = include_str!("../assets/themes/majik.json");
 const DARK_THEME: &str = "Majik Dark";
 
@@ -523,17 +523,17 @@ mod theme_tests {
         });
     }
 
-    /// The point of the palette: a charcoal ground instead of shadcn's near-black.
+    /// The point of the palette: a graphite ground instead of shadcn's near-black.
     #[gpui::test]
-    fn dark_mode_is_charcoal_not_black(cx: &mut TestAppContext) {
+    fn dark_mode_is_graphite_not_black(cx: &mut TestAppContext) {
         install(cx);
         cx.update(|cx| {
             Theme::change(ThemeMode::Dark, None, cx);
             let theme = cx.theme();
-            assert_eq!(theme.background, gpui::rgb(0x2a2a2a).into(), "feed ground");
-            assert_eq!(theme.sidebar, gpui::rgb(0x232323).into(), "chrome a step below the feed");
-            assert_eq!(theme.foreground, gpui::rgb(0xd9d9d9).into(), "grey text, not white");
-            assert_eq!(theme.border, gpui::rgb(0x1c1c1c).into(), "seams darker than the surface");
+            assert_eq!(theme.background, gpui::rgb(0x383838).into(), "feed ground");
+            assert_eq!(theme.sidebar, gpui::rgb(0x2e2e2e).into(), "chrome a step below the feed");
+            assert_eq!(theme.foreground, gpui::rgb(0xd6d6d6).into(), "grey text, not white");
+            assert_eq!(theme.border, gpui::rgb(0x232323).into(), "seams darker than the surface");
         });
     }
 
@@ -555,7 +555,7 @@ mod theme_tests {
         cx.update(|cx| {
             Theme::change(ThemeMode::Light, None, cx);
             Theme::change(ThemeMode::Dark, None, cx);
-            assert_eq!(cx.theme().background, gpui::rgb(0x2a2a2a).into());
+            assert_eq!(cx.theme().background, gpui::rgb(0x383838).into());
             assert_eq!(cx.theme().theme_name().as_ref(), DARK_THEME);
         });
     }
