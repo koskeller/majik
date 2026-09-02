@@ -31,8 +31,8 @@ pub fn safe_index(current: usize, count: usize) -> usize {
 
 /// Zoom levels are minimum tile widths (px); the column count is whatever fits the feed, so a tile
 /// never shrinks below its level when the window narrows. At the default window (1100 px, sidebar
-/// open) they give 9 / 7 / 5 / 4 / 3 columns.
-pub const ZOOM_LEVELS: [u32; 5] = [90, 120, 160, 200, 240];
+/// open) they give 7 / 5 / 4 / 3 / 2 columns.
+pub const ZOOM_LEVELS: [u32; 5] = [120, 160, 200, 240, 300];
 pub const DEFAULT_ZOOM: u32 = 160;
 /// Gutter between grid cells.
 pub const GRID_GAP: f32 = 2.;
@@ -115,9 +115,10 @@ mod tests {
     fn zoom_steps() {
         assert_eq!(zoom_in(160), 200);
         assert_eq!(zoom_in(200), 240);
-        assert_eq!(zoom_in(240), 240, "clamped at the largest tile");
+        assert_eq!(zoom_in(240), 300);
+        assert_eq!(zoom_in(300), 300, "clamped at the largest tile");
         assert_eq!(zoom_out(160), 120);
-        assert_eq!(zoom_out(90), 90, "clamped at the smallest tile");
+        assert_eq!(zoom_out(120), 120, "clamped at the smallest tile");
         assert_eq!(sanitize_zoom(120), 120);
         assert_eq!(sanitize_zoom(100), DEFAULT_ZOOM, "unknown levels fall back");
     }
@@ -127,13 +128,13 @@ mod tests {
         assert_eq!(columns_for(0., 160), 1, "unmeasured or tiny widths still get a column");
         assert_eq!(columns_for(100., 160), 1);
         // The default 1100 px window with the sidebar open.
-        assert_eq!(ZOOM_LEVELS.map(|t| columns_for(866., t)), [9, 7, 5, 4, 3]);
+        assert_eq!(ZOOM_LEVELS.map(|t| columns_for(866., t)), [7, 5, 4, 3, 2]);
         // Exactly n tiles and n − 1 gutters fit; one pixel less drops a column.
         let exact = 4. * 160. + 3. * GRID_GAP;
         assert_eq!(columns_for(exact, 160), 4);
         assert_eq!(columns_for(exact - 1., 160), 3);
         // From the largest tile up: below that a single column is all there is.
-        for width in (240..3000).step_by(7) {
+        for width in (300..3000).step_by(7) {
             let width = width as f32;
             for tile in ZOOM_LEVELS {
                 let columns = columns_for(width, tile);

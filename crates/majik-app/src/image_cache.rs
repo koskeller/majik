@@ -27,13 +27,13 @@ use std::sync::Arc;
 /// A thumbnail is 400 px on its long edge (`majik_core::thumbnails::THUMB_MAX`) and decodes to
 /// BGRA, so one costs at most 400 × 400 × 4 = 640 KB. The budget has to exceed what a single frame
 /// draws, or a frame would evict a tile it is about to ask for again and decode in a loop. At the
-/// smallest zoom (`majik_core::feed::ZOOM_LEVELS[0]` = 90 px, a pitch of ~92 px) a W × H viewport
-/// draws roughly (W / 92) × (H / 92 + 3) tiles — the `+ 3` being the row of overscan the grid keeps
+/// smallest zoom (`majik_core::feed::ZOOM_LEVELS[0]` = 120 px, a pitch of ~122 px) a W × H viewport
+/// draws roughly (W / 122) × (H / 122 + 3) tiles — the `+ 3` being the row of overscan the grid keeps
 /// on each side:
 ///
-/// - 2048 × 1121 (the window this was measured on) ≈ 22 × 16 = 352 tiles ≈ 225 MB
-/// - 2560 × 1440 ≈ 27 × 19 = 513 tiles ≈ 328 MB
-/// - 3008 × 1692 (6K XDR at default scaling) ≈ 32 × 22 = 704 tiles ≈ 450 MB
+/// - 2048 × 1121 (the window this was measured on) ≈ 17 × 12 = 204 tiles ≈ 131 MB
+/// - 2560 × 1440 ≈ 21 × 15 = 315 tiles ≈ 202 MB
+/// - 3008 × 1692 (6K XDR at default scaling) ≈ 25 × 17 = 425 tiles ≈ 272 MB
 ///
 /// 512 MB covers all three, with room to spare in practice: cells fill the width and most
 /// thumbnails are not square, so 640 KB is the maximum rather than the average. Raise it for a

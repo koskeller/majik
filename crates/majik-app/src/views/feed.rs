@@ -2186,14 +2186,17 @@ mod tests {
             f.motion.tick(now(cx));
             assert!(!f.motion.is_animating());
         });
-        // Zooming at the limit is a no-op.
         vcx.dispatch_action(super::super::super::actions::ZoomIn);
         view.update(vcx, |f, _| assert_eq!(f.zoom, 240));
         vcx.background_executor.advance_clock(Duration::from_millis(300));
         vcx.dispatch_action(super::super::super::actions::ZoomIn);
+        view.update(vcx, |f, _| assert_eq!(f.zoom, 300));
+        // Zooming at the limit is a no-op.
+        vcx.background_executor.advance_clock(Duration::from_millis(300));
+        vcx.dispatch_action(super::super::super::actions::ZoomIn);
         view.update(vcx, |f, cx| {
             f.motion.tick(now(cx));
-            assert_eq!((f.zoom, cx.global::<Config>().grid_zoom), (240, 240));
+            assert_eq!((f.zoom, cx.global::<Config>().grid_zoom), (300, 300));
             assert!(!f.motion.is_animating());
         });
     }
