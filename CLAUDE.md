@@ -288,5 +288,10 @@ whole behaviour end to end, the way Zed tests its editor, and `cargo test --work
 **Process**
 - Non-trivial changes come with their tests in the same commit (see above).
 - Commit finished work on `main` without being asked; never `git push` unless the user asks.
+- **Several agents often build features in this tree at the same time.** Other modified files in
+  `git status` are someone else's work in progress: leave them alone, and commit only the files you
+  changed — stage them by path, never `git add -A` / `git commit -a`. If their half-done change
+  stops the workspace from building or testing, wait for it to land and try again rather than
+  fixing or reverting it.
 - Commit / PR titles: imperative, capitalized, no conventional-commit prefix, optionally
   `crate: Summary` (e.g. `composer: Always show remove badge on asset cards`).
