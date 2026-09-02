@@ -1491,6 +1491,7 @@ impl Render for FeedView {
         self.last_rendered = rendered;
         let grid = gpui::div()
             .id("feed-grid")
+            .debug_selector(|| "feed-grid".into())
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
@@ -1562,7 +1563,9 @@ impl Render for FeedView {
                     .min_h_0()
                     .relative()
                     .p(px(GAP))
-                    .child(gpui::div().absolute().inset_0().child(measure_then(self.content_size.clone(), cx.weak_entity(), Self::fit_columns)))
+                    // Measured inside the padding, which is the box the grid gets; the row is
+                    // laid out to fill exactly this width, so the last column ends at the edge.
+                    .child(gpui::div().absolute().inset(px(GAP)).child(measure_then(self.content_size.clone(), cx.weak_entity(), Self::fit_columns)))
                     .child(grid)
                     .children(empty),
             )
@@ -1946,6 +1949,26 @@ mod tests {
             let frame = view.update(vcx, |f, _| f.cell_bounds(id).expect("cell drawn"));
             let selector: &'static str = Box::leak(format!("thumb-{}", id.media().expect("a generation")).into_boxed_str());
             assert_eq!(vcx.debug_bounds(selector).expect("the thumbnail is drawn"), frame, "{id}");
+        }
+    }
+
+    /// The cells fill the grid's width exactly, so the last column's right edge (and its selection
+    /// ring) is inside the grid that clips it. The width was measured on a box that included the
+    /// grid's padding, which laid the row out 4 px wider than the grid.
+    #[gpui::test]
+    fn the_last_column_ends_at_the_grids_edge(cx: &mut TestAppContext) {
+        let (view, vcx, _env) = feed_window!(cx, 8);
+        for width in [800., 1100., 640.] {
+            vcx.simulate_resize(gpui::size(px(width), px(600.)));
+            vcx.run_until_parked();
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            let grid = vcx.debug_bounds("feed-grid").expect("the grid is drawn");
+            view.update(vcx, |f, _| {
+                let right = f.ids.iter().filter_map(|id| f.cell_bounds(id)).map(|b| b.right()).fold(px(0.), Pixels::max);
+                assert!(right <= grid.right() + px(0.5), "at {width} px: the row ends at {right:?}, the grid at {:?}", grid.right());
+                let left = f.ids.iter().filter_map(|id| f.cell_bounds(id)).map(|b| b.left()).fold(px(f32::MAX), Pixels::min);
+                assert!(left >= grid.left() - px(0.5), "at {width} px: the row starts at {left:?}, the grid at {:?}", grid.left());
+            });
         }
     }
 
