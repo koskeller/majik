@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use gpui_component::button::{ButtonVariants as _};
 use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
-use gpui_component::{v_flex, ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _};
+use gpui_component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _};
 use majik_core::model::{Asset, AssetId, Entry, EntryId, GenerationId, Generation, MediaType, Status};
 use std::path::PathBuf;
 use majik_core::{feed, thumbnails, FeedFilter, MediaFilter, Modifiers, Selection};
@@ -171,13 +171,32 @@ const GAP: f32 = feed::GRID_GAP;
 /// Height of the badges in a cell's bottom corners (favourite, duration, HD).
 const CELL_BADGE_HEIGHT: Pixels = px(18.);
 
-/// A pill in a cell's bottom corner: one height, one inset from the edges and one backdrop for
-/// every badge, whether it holds an icon or text. The caller picks the corner (`.left_1()` /
-/// `.right_1()`) and the content.
+/// A cell's bottom-corner badge strip. The caller picks the corner (`.left_1()` / `.right_1()`)
+/// and fills it with [`cell_badge`]s: they lay out side by side, so a clip that is also upscaled
+/// shows its length and HD next to each other instead of one on top of the other.
+fn cell_badges() -> gpui::Div {
+    h_flex().absolute().bottom_1().gap_1()
+}
+
+/// The badges a cell draws in its bottom-right corner, in order: how long a clip runs, then HD
+/// when its output came out of an upscaler. An upscaled clip carries both, which is why they sit
+/// in a strip rather than in the corner on top of each other.
+fn right_badges(duration_secs: Option<f64>, media_type: MediaType, is_upscaled: bool) -> Vec<SharedString> {
+    let mut badges = Vec::new();
+    if let Some(secs) = duration_secs.filter(|_| media_type != MediaType::Image) {
+        badges.push(format_duration(secs).into());
+    }
+    if is_upscaled {
+        badges.push("HD".into());
+    }
+    badges
+}
+
+/// A pill in a badge strip: one height and one backdrop for every badge, whether it holds an icon
+/// or text.
 fn cell_badge() -> gpui::Div {
     gpui::div()
-        .absolute()
-        .bottom_1()
+        .flex_none()
         .h(CELL_BADGE_HEIGHT)
         .min_w(CELL_BADGE_HEIGHT)
         .px_1p5()
@@ -822,6 +841,7 @@ impl FeedView {
             (_, None, _) => v_flex().size_full().items_center().justify_center().child(icon("image").size_6().text_color(muted_fg)).into_any_element(),
         };
 
+        let badges = right_badges(item.duration_secs, item.media_type, item.is_upscaled);
         gpui::div()
             .w(relative(frame_w))
             .h(relative(frame_h))
@@ -830,9 +850,8 @@ impl FeedView {
             .overflow_hidden()
             .bg(muted)
             .child(content)
-            .when(item.is_favorite, |d| d.child(cell_badge().left_1().child(icon("heart").size_3())))
-            .when_some(item.duration_secs.filter(|_| item.media_type != MediaType::Image), |d, secs| d.child(cell_badge().right_1().child(format_duration(secs))))
-            .when(item.is_upscaled, |d| d.child(cell_badge().right_1().child("HD")))
+            .when(item.is_favorite, |d| d.child(cell_badges().left_1().child(cell_badge().child(icon("heart").size_3()))))
+            .when(!badges.is_empty(), |d| d.child(cell_badges().right_1().children(badges.into_iter().map(|badge| cell_badge().child(badge)))))
             .when(selected, |d| d.child(gpui::div().absolute().inset_0().rounded_sm().border_3().border_color(accent)))
     }
 
@@ -859,6 +878,7 @@ impl FeedView {
             }
             (_, None, _) => v_flex().size_full().items_center().justify_center().child(icon("image").size_6().text_color(muted_fg)).into_any_element(),
         };
+        let badges = right_badges(asset.duration_secs, asset.kind, false);
         gpui::div()
             .w(relative(frame_w))
             .h(relative(frame_h))
@@ -867,7 +887,7 @@ impl FeedView {
             .overflow_hidden()
             .bg(muted)
             .child(content)
-            .when_some(asset.duration_secs.filter(|_| asset.kind != MediaType::Image), |d, secs| d.child(cell_badge().right_1().child(format_duration(secs))))
+            .when(!badges.is_empty(), |d| d.child(cell_badges().right_1().children(badges.into_iter().map(|badge| cell_badge().child(badge)))))
             .when(selected, |d| d.child(gpui::div().absolute().inset_0().rounded_sm().border_3().border_color(accent)))
     }
 
@@ -2729,6 +2749,18 @@ mod tests {
         // Favorites feed now has exactly one item.
         let favs = env.library.read_with(vcx, |m, _| m.lib.feed(&FeedFilter::Favorites, MediaFilter::All).len());
         assert_eq!(favs, 1);
+    }
+
+    /// An upscaled clip carries both badges, and they are two pills in one strip — before this,
+    /// HD and the length were both pinned to the bottom-right corner and drew on top of each other.
+    #[test]
+    fn an_upscaled_clip_shows_its_length_and_hd_side_by_side() {
+        assert_eq!(right_badges(Some(5.0), MediaType::Video, true), vec!["0:05", "HD"], "length first, HD outermost");
+        assert_eq!(right_badges(Some(5.0), MediaType::Video, false), vec!["0:05"]);
+        assert_eq!(right_badges(None, MediaType::Image, true), vec!["HD"]);
+        assert_eq!(right_badges(None, MediaType::Image, false), Vec::<SharedString>::new(), "a plain image gets no strip at all");
+        assert_eq!(right_badges(Some(5.0), MediaType::Image, false), Vec::<SharedString>::new(), "a still has no length to state");
+        assert_eq!(right_badges(Some(75.0), MediaType::Audio, false), vec!["1:15"]);
     }
 
     /// The toast names what actually reached the clipboard: the files when the platform carried
