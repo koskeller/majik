@@ -9,7 +9,7 @@ use std::rc::Rc;
 use gpui_component::button::{ButtonVariants as _};
 use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::{v_flex, ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _};
-use majik_core::model::{Asset, AssetId, Entry, EntryId, GenerationId, Generation, MediaType, Status, ToolId};
+use majik_core::model::{Asset, AssetId, Entry, EntryId, GenerationId, Generation, MediaType, Status};
 use std::path::PathBuf;
 use majik_core::{feed, thumbnails, FeedFilter, MediaFilter, Modifiers, Selection};
 use std::collections::HashMap;
@@ -686,22 +686,6 @@ impl FeedView {
         }
     }
 
-    fn run_tool(&mut self, tool: ToolId, window: &mut Window, cx: &mut Context<Self>) {
-        let provider = crate::state::selected_provider(cx).id.clone();
-        if !crate::state::tool_supported(tool, cx) {
-            crate::ui::toast(window, format!("{} isn't available with {provider}.", tool.label()), cx);
-            return;
-        }
-        let ids: Vec<_> = self.selected_items(cx).iter().filter(|i| tool.is_eligible(i)).map(|i| i.id.clone()).collect();
-        if ids.is_empty() {
-            crate::ui::toast(window, "No eligible images selected.", cx);
-            return;
-        }
-        let album = self.current_album();
-        let n = self.library.update(cx, |m, cx| m.run_tool(tool, &ids, provider, album, cx));
-        crate::ui::toast(window, format!("{}: processing {n} image(s)…", tool.label()), cx);
-    }
-
     fn retry(&mut self, _: &Retry, _: &mut Window, cx: &mut Context<Self>) {
         let ids = self.selected_ids();
         self.library.update(cx, |m, cx| m.retry(&ids, cx));
@@ -959,14 +943,14 @@ impl FeedView {
                     cx.notify();
                 }),
             )
-            .context_menu(move |menu, window, cx| {
+            .context_menu(move |menu, _, cx| {
                 let Some(feed) = feed.upgrade() else { return menu };
                 feed.update(cx, |this, cx| {
                     this.selection.right_click(&id_menu, ix);
                     cx.notify();
                 });
                 let info = feed.read(cx).menu_info(cx);
-                build_context_menu(info, menu, window, cx)
+                build_context_menu(info, menu)
             })
     }
 
@@ -1002,7 +986,6 @@ enum MenuEntryKind {
     AddToAlbum(Vec<GenerationId>),
     RemoveFromAlbum(majik_core::model::AlbumId, Vec<GenerationId>),
     CancelGeneration(Vec<GenerationId>),
-    Submenu(Vec<MenuEntry>),
     Separator,
 }
 
@@ -1046,9 +1029,9 @@ fn export_menu_entries() -> Vec<MenuEntry> {
 }
 
 /// The context menu for whatever is selected: generations, assets, or both.
-fn selection_menu_entries(info: &MenuInfo, cx: &App) -> Vec<MenuEntry> {
+fn selection_menu_entries(info: &MenuInfo) -> Vec<MenuEntry> {
     match (info.items.is_empty(), info.assets.is_empty()) {
-        (false, true) => context_menu_entries(&info.items, info.album.as_ref(), cx),
+        (false, true) => context_menu_entries(&info.items, info.album.as_ref()),
         (true, false) => asset_menu_entries(&info.assets, info.assets_deletable),
         (false, false) => export_menu_entries(),
         (true, true) => Vec::new(),
@@ -1061,13 +1044,14 @@ fn selection_menu_entries(info: &MenuInfo, cx: &App) -> Vec<MenuEntry> {
 /// entirely. There is no Use Image; an item is dragged into the composer instead. A single
 /// generating item offers Cancel instead of Recreate. Items whose file went missing get Retry,
 /// which regenerates in place, and Delete, like failed ones.
-fn context_menu_entries(items: &[Generation], in_album: Option<&majik_core::model::AlbumId>, cx: &App) -> Vec<MenuEntry> {
+/// The tools (Upscale, Remove Background) are not here either: they run from the composer's
+/// tool tabs.
+fn context_menu_entries(items: &[Generation], in_album: Option<&majik_core::model::AlbumId>) -> Vec<MenuEntry> {
     let n = items.len();
     let ids: Vec<GenerationId> = items.iter().map(|i| i.id.clone()).collect();
     let all_completed = n > 0 && items.iter().all(|i| i.status == Status::Completed);
     let all_failed = n > 0 && items.iter().all(|i| i.status == Status::Failed);
     let all_missing = n > 0 && items.iter().all(|i| i.status == Status::Missing);
-    let tool_enabled = |tool: ToolId| crate::state::tool_available(tool, items, cx);
 
     let mut entries = Vec::new();
     if all_completed {
@@ -1080,15 +1064,7 @@ fn context_menu_entries(items: &[Generation], in_album: Option<&majik_core::mode
         if n == 1 {
             entries.push(MenuEntry::action("Recreate", Recreate).enabled(items.iter().any(|i| i.can_recreate())));
         }
-        let enhance = vec![
-            MenuEntry::action("Upscale", Upscale).enabled(tool_enabled(ToolId::Upscale)),
-            MenuEntry::action("Remove Background", RemoveBackground).enabled(tool_enabled(ToolId::RemoveBackground)),
-        ];
-        entries.extend([
-            MenuEntry::custom("Enhance", MenuEntryKind::Submenu(enhance)),
-            MenuEntry::separator(),
-            MenuEntry::custom("Add to Album…", MenuEntryKind::AddToAlbum(ids.clone())),
-        ]);
+        entries.extend([MenuEntry::separator(), MenuEntry::custom("Add to Album…", MenuEntryKind::AddToAlbum(ids.clone()))]);
         if let Some(album) = in_album {
             entries.push(MenuEntry::custom("Remove from Album", MenuEntryKind::RemoveFromAlbum(album.clone(), ids.clone())));
         }
@@ -1114,25 +1090,19 @@ fn context_menu_entries(items: &[Generation], in_album: Option<&majik_core::mode
     entries
 }
 
-fn build_context_menu(info: MenuInfo, menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
-    let entries = selection_menu_entries(&info, cx);
+fn build_context_menu(info: MenuInfo, menu: PopupMenu) -> PopupMenu {
+    let entries = selection_menu_entries(&info);
     let menu = menu.action_context(info.focus.clone());
-    render_menu_entries(&entries, &info.library, menu, window, cx)
+    render_menu_entries(&entries, &info.library, menu)
 }
 
-fn render_menu_entries(entries: &[MenuEntry], library: &Entity<LibraryModel>, mut menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
+fn render_menu_entries(entries: &[MenuEntry], library: &Entity<LibraryModel>, mut menu: PopupMenu) -> PopupMenu {
     for entry in entries {
         let label = entry.label.clone();
         let disabled = !entry.enabled;
         menu = match &entry.kind {
             MenuEntryKind::Separator => menu.separator(),
             MenuEntryKind::Action(action) => menu.menu_with_disabled(label, action.boxed_clone(), disabled),
-            MenuEntryKind::Submenu(children) => {
-                let library = library.clone();
-                // `submenu` wants an `Fn`, so the children are shared with the closure rather than moved.
-                let children: Rc<[MenuEntry]> = children.iter().map(clone_entry).collect();
-                menu.submenu(label, window, cx, move |menu, window, cx| render_menu_entries(&children, &library, menu, window, cx))
-            }
             MenuEntryKind::AddToAlbum(ids) => {
                 let ids = ids.clone();
                 menu.item(PopupMenuItem::new(label).disabled(disabled).on_click(move |_, window, cx| {
@@ -1154,18 +1124,6 @@ fn render_menu_entries(entries: &[MenuEntry], library: &Entity<LibraryModel>, mu
         };
     }
     menu
-}
-
-fn clone_entry(entry: &MenuEntry) -> MenuEntry {
-    let kind = match &entry.kind {
-        MenuEntryKind::Action(action) => MenuEntryKind::Action(action.boxed_clone()),
-        MenuEntryKind::AddToAlbum(ids) => MenuEntryKind::AddToAlbum(ids.clone()),
-        MenuEntryKind::RemoveFromAlbum(album, ids) => MenuEntryKind::RemoveFromAlbum(album.clone(), ids.clone()),
-        MenuEntryKind::CancelGeneration(ids) => MenuEntryKind::CancelGeneration(ids.clone()),
-        MenuEntryKind::Submenu(children) => MenuEntryKind::Submenu(children.iter().map(clone_entry).collect()),
-        MenuEntryKind::Separator => MenuEntryKind::Separator,
-    };
-    MenuEntry { label: entry.label.clone(), enabled: entry.enabled, kind }
 }
 
 /// A file the export actions (Copy / Save / Reveal) work on — a generation's output or any
@@ -1494,8 +1452,6 @@ impl Render for FeedView {
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::recreate))
             .on_action(cx.listener(Self::retry))
-            .on_action(cx.listener(|this, _: &Upscale, w, cx| this.run_tool(ToolId::Upscale, w, cx)))
-            .on_action(cx.listener(|this, _: &RemoveBackground, w, cx| this.run_tool(ToolId::RemoveBackground, w, cx)))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
@@ -2570,7 +2526,7 @@ mod tests {
             let first = feed.ids.iter().position(|i| i == &ids[0]).expect("entry is in the feed");
             feed.selection.right_click(&ids[0], first);
             let info = feed.menu_info(cx);
-            selection_menu_entries(&info, cx)
+            selection_menu_entries(&info)
         })
     }
 
@@ -2627,7 +2583,7 @@ mod tests {
         let import = crate::test_support::seed_asset(&env.library, vcx, MediaType::Image, 3);
         assets_feed(&view, vcx);
         let entries = entries_menu(&view, vcx, &[EntryId::Asset(import)]);
-        assert_menu(&entries, &["Copy", "Save…", "Delete"], &["Recreate", "Favorite", "Enhance/Upscale", "Add to Album…", "Open"]);
+        assert_menu(&entries, &["Copy", "Save…", "Delete"], &["Recreate", "Favorite", "Add to Album…", "Open"]);
         let sound = crate::test_support::seed_asset(&env.library, vcx, MediaType::Audio, 1);
         vcx.run_until_parked();
         let entries = entries_menu(&view, vcx, &[EntryId::Asset(sound)]);
@@ -2652,7 +2608,7 @@ mod tests {
             f.selection.ids.insert(EntryId::Generation(item.clone()));
             f.selection.ids.insert(EntryId::Asset(output));
             let info = f.menu_info(cx);
-            assert_menu(&selection_menu_entries(&info, cx), &["Copy", "Save…"], &["Delete", "Recreate"]);
+            assert_menu(&selection_menu_entries(&info), &["Copy", "Save…"], &["Delete", "Recreate"]);
         });
     }
 
@@ -2704,22 +2660,6 @@ mod tests {
         assert_eq!(vcx.update(|_, cx| crate::ui::toast_generation(cx)), toasts + 2, "told about the file that isn't media");
         view.update(vcx, |f, _| assert_eq!(f.ids.len(), 1, "the same image again is the same asset"));
         env.library.read_with(vcx, |m, _| assert!(m.lib.assets()[0].path.starts_with(m.lib.assets_dir())));
-    }
-
-    #[gpui::test]
-    fn tool_with_a_provider_lacking_it_toasts_instead_of_queuing(cx: &mut TestAppContext) {
-        let env = env(cx, 2, "OpenRouter");
-        let (view, vcx) = cx.add_window_view(FeedView::new);
-        vcx.run_until_parked();
-        view.update(vcx, |f, cx| {
-            f.selection.select_all(&f.ids);
-            cx.notify();
-        });
-        let before = vcx.update(|_, cx| crate::ui::toast_generation(cx));
-        vcx.dispatch_action(Upscale);
-        vcx.run_until_parked();
-        assert_eq!(vcx.update(|_, cx| crate::ui::toast_generation(cx)), before + 1, "told the user instead of failing a row");
-        env.library.read_with(vcx, |m, _| assert!(m.lib.generations().iter().all(|i| i.tool.is_none()), "no doomed row was queued"));
     }
 
     #[gpui::test]
@@ -2840,7 +2780,6 @@ mod tests {
 #[cfg(test)]
 mod context_menu_tests {
     use super::*;
-    use crate::config::update_config;
     use crate::test_support::{env, seed_item, Seed, TestEnv};
     use gpui::{Modifiers as GModifiers, MouseButton, MouseDownEvent, Point, TestAppContext, VisualTestContext};
 
@@ -2876,7 +2815,7 @@ mod context_menu_tests {
             feed.selection.right_click(&anchor, first);
             let info = feed.menu_info(cx);
             assert_eq!(info.items.len(), ids.len(), "menu is built for the whole selection");
-            selection_menu_entries(&info, cx)
+            selection_menu_entries(&info)
         })
     }
 
@@ -2886,9 +2825,6 @@ mod context_menu_tests {
         for entry in entries {
             match &entry.kind {
                 MenuEntryKind::Separator => {}
-                MenuEntryKind::Submenu(children) if entry.enabled => {
-                    out.extend(actionable(children).into_iter().map(|c| format!("{}/{c}", entry.label)));
-                }
                 _ if entry.enabled => out.push(entry.label.to_string()),
                 _ => {}
             }
@@ -2912,8 +2848,6 @@ mod context_menu_tests {
         "Copy",
         "Save…",
         "Recreate",
-        "Enhance/Upscale",
-        "Enhance/Remove Background",
         "Add to Album…",
         "Favorite",
         "Delete",
@@ -2935,7 +2869,7 @@ mod context_menu_tests {
         let id = seed_item(&env.library, vcx, Seed { upscaled: true, ..Seed::default() });
         let entries = menu_for(&view, vcx, &[id]);
         // An upscale stores its request like any generation, so it recreates (onto the Upscale tab).
-        assert_menu(&entries, &["Enhance/Remove Background", "Recreate", "Delete"], &["Enhance/Upscale"]);
+        assert_menu(&entries, &["Recreate", "Delete"], &["Retry"]);
     }
 
     #[gpui::test]
@@ -2943,7 +2877,7 @@ mod context_menu_tests {
         let (view, vcx, env) = feed(cx);
         let id = seed_item(&env.library, vcx, Seed { recreatable: false, ..Seed::default() });
         let entries = menu_for(&view, vcx, &[id]);
-        assert_menu(&entries, &["Enhance/Upscale", "Enhance/Remove Background", "Delete"], &["Recreate"]);
+        assert_menu(&entries, &["Open", "Copy", "Delete"], &["Recreate"]);
     }
 
     #[gpui::test]
@@ -2951,11 +2885,7 @@ mod context_menu_tests {
         let (view, vcx, env) = feed(cx);
         let id = seed_item(&env.library, vcx, Seed { media_type: MediaType::Video, ..Seed::default() });
         let entries = menu_for(&view, vcx, &[id]);
-        assert_menu(
-            &entries,
-            &["Open", "Copy", "Save…", "Recreate", "Add to Album…", "Favorite", "Delete"],
-            &["Enhance/Upscale", "Enhance/Remove Background"],
-        );
+        assert_menu(&entries, &["Open", "Copy", "Save…", "Recreate", "Add to Album…", "Favorite", "Delete"], &["Retry", "Cancel Generation"]);
     }
 
     #[gpui::test]
@@ -2963,11 +2893,7 @@ mod context_menu_tests {
         let (view, vcx, env) = feed(cx);
         let id = seed_item(&env.library, vcx, Seed { media_type: MediaType::Audio, ..Seed::default() });
         let entries = menu_for(&view, vcx, &[id]);
-        assert_menu(
-            &entries,
-            &["Open", "Copy", "Save…", "Recreate", "Add to Album…", "Favorite", "Delete"],
-            &["Enhance/Upscale", "Enhance/Remove Background"],
-        );
+        assert_menu(&entries, &["Open", "Copy", "Save…", "Recreate", "Add to Album…", "Favorite", "Delete"], &["Retry", "Cancel Generation"]);
     }
 
     #[gpui::test]
@@ -3002,15 +2928,6 @@ mod context_menu_tests {
         });
         let entries = menu_for(&view, vcx, &[id]);
         assert_menu(&entries, &["Add to Album…"], &["Remove from Album"]);
-    }
-
-    #[gpui::test]
-    fn single_image_with_a_provider_without_tools(cx: &mut TestAppContext) {
-        let (view, vcx, env) = feed(cx);
-        vcx.update(|_, cx| update_config(cx, |c| c.provider = "OpenRouter".into()));
-        let id = seed_item(&env.library, vcx, Seed::default());
-        let entries = menu_for(&view, vcx, &[id]);
-        assert_menu(&entries, &["Recreate", "Delete"], &["Enhance/Upscale", "Enhance/Remove Background"]);
     }
 
     // ----- single, not completed --------------------------------------------
@@ -3062,7 +2979,7 @@ mod context_menu_tests {
         let done = seed_item(&env.library, vcx, Seed::default());
         let missing = seed_item(&env.library, vcx, Seed { status: Status::Missing, ..Seed::default() });
         let entries = menu_for(&view, vcx, &[done, missing]);
-        assert_menu(&entries, &["Delete Selected"], &["Retry Selected", "Copy", "Open", "Favorite", "Add to Album…", "Enhance/Upscale"]);
+        assert_menu(&entries, &["Delete Selected"], &["Retry Selected", "Copy", "Open", "Favorite", "Add to Album…"]);
     }
 
     #[gpui::test]
@@ -3087,7 +3004,7 @@ mod context_menu_tests {
         let entries = menu_for(&view, vcx, &[a, b]);
         assert_menu(
             &entries,
-            &["Copy", "Save…", "Enhance/Upscale", "Enhance/Remove Background", "Add to Album…", "Favorite", "Delete Selected"],
+            &["Copy", "Save…", "Add to Album…", "Favorite", "Delete Selected"],
             &["Open", "Recreate", "Delete"],
         );
     }
@@ -3102,7 +3019,7 @@ mod context_menu_tests {
         assert_menu(
             &entries,
             &["Copy", "Save…", "Add to Album…", "Favorite", "Delete Selected"],
-            &["Open", "Recreate", "Enhance/Upscale", "Enhance/Remove Background", "Delete"],
+            &["Open", "Recreate", "Delete"],
         );
     }
 
@@ -3112,29 +3029,8 @@ mod context_menu_tests {
         let image = seed_item(&env.library, vcx, Seed::default());
         let video = seed_item(&env.library, vcx, Seed { media_type: MediaType::Video, ..Seed::default() });
         let entries = menu_for(&view, vcx, &[image, video]);
-        // Enhance stays: the tools run on the eligible images of the selection.
-        assert_menu(&entries, &["Enhance/Upscale", "Enhance/Remove Background", "Delete Selected"], &["Open", "Recreate", "Delete"]);
-    }
-
-    #[gpui::test]
-    fn two_images_one_already_upscaled(cx: &mut TestAppContext) {
-        let (view, vcx, env) = feed(cx);
-        // A plain and an upscaled image only meet in Favorites or an album.
-        let plain = seed_item(&env.library, vcx, Seed { favorite: true, ..Seed::default() });
-        let upscaled = seed_item(&env.library, vcx, Seed { upscaled: true, recreatable: false, favorite: true, ..Seed::default() });
-        view.update(vcx, |feed, cx| feed.set_filter(FeedFilter::Favorites, cx));
-        let entries = menu_for(&view, vcx, &[plain, upscaled]);
-        assert_menu(&entries, &["Enhance/Upscale", "Enhance/Remove Background"], &[]);
-    }
-
-    #[gpui::test]
-    fn two_upscaled_images(cx: &mut TestAppContext) {
-        let (view, vcx, env) = feed(cx);
-        let upscaled = Seed { upscaled: true, ..Seed::default() };
-        let a = seed_item(&env.library, vcx, upscaled);
-        let b = seed_item(&env.library, vcx, upscaled);
-        let entries = menu_for(&view, vcx, &[a, b]);
-        assert_menu(&entries, &["Enhance/Remove Background"], &["Enhance/Upscale"]);
+        // A mixed selection still exports, files and deletes together.
+        assert_menu(&entries, &["Copy", "Save…", "Add to Album…", "Favorite", "Delete Selected"], &["Open", "Recreate", "Delete"]);
     }
 
     #[gpui::test]
@@ -3202,7 +3098,7 @@ mod context_menu_tests {
         assert_menu(
             &entries,
             &["Delete Selected"],
-            &["Delete", "Retry", "Retry Selected", "Copy", "Open", "Cancel Generation", "Favorite", "Add to Album…", "Enhance/Upscale"],
+            &["Delete", "Retry", "Retry Selected", "Copy", "Open", "Cancel Generation", "Favorite", "Add to Album…"],
         );
     }
 
@@ -3215,7 +3111,7 @@ mod context_menu_tests {
         assert_menu(
             &entries,
             &["Cancel Generation", "Delete Selected"],
-            &["Cancel Generations", "Delete", "Retry", "Copy", "Open", "Favorite", "Add to Album…", "Enhance/Upscale"],
+            &["Cancel Generations", "Delete", "Retry", "Copy", "Open", "Favorite", "Add to Album…"],
         );
     }
 }

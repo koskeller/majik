@@ -116,9 +116,4 @@ impl ProviderDescriptor {
     pub fn tool_models(&self, kind: ToolId) -> Vec<&ToolModel> {
         self.supported_tool_models.iter().filter(|m| m.kind == kind).collect()
     }
-
-    /// The model the direct-run entry points (context menus) use: the first one declared.
-    pub fn default_tool_model(&self, kind: ToolId) -> Option<&ToolModel> {
-        self.supported_tool_models.iter().find(|m| m.kind == kind)
-    }
 }

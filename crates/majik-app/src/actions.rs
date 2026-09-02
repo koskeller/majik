@@ -39,8 +39,6 @@ actions!(
         ToggleThumbnailShape,
         ShowInfo,
         Recreate,
-        Upscale,
-        RemoveBackground,
         Retry,
         NextItem,
         PrevItem,
@@ -327,8 +325,6 @@ pub fn menus(state: MenuState) -> Vec<Menu> {
                 item("Recreate", &Recreate, media),
                 item("Favorite", &ToggleFavorite, media),
                 MenuItem::separator(),
-                item("Upscale", &Upscale, media),
-                item("Remove Background", &RemoveBackground, media),
                 item("Retry", &Retry, media),
                 MenuItem::separator(),
                 item("Delete", &DeleteMedia, media),
@@ -479,14 +475,14 @@ mod tests {
         for name in ["New Generation", "New Album…", "Import…", "Favorites", "Assets", "Square / Aspect Ratio", "Select All", "Zoom In"] {
             assert!(!greyed(&feed, name), "{name} works on a feed");
         }
-        for name in ["Open", "Save…", "Copy", "Delete", "Recreate", "Upscale", "Clear Selection", "Show Info", "Play / Pause", "Generate", "Paste", "Improve Prompt"] {
+        for name in ["Open", "Save…", "Copy", "Delete", "Recreate", "Retry", "Clear Selection", "Show Info", "Play / Pause", "Generate", "Paste", "Improve Prompt"] {
             assert!(greyed(&feed, name), "{name} needs more than an empty feed");
         }
 
         // A selection makes the media items work; they act on the detail's item just as well.
         let selected = menus(MenuState { library: true, selection: true, ..Default::default() });
         let detail = menus(MenuState { library: true, detail_open: true, ..Default::default() });
-        for name in ["Open", "Save…", "Copy", "Delete", "Recreate", "Upscale", "Remove Background", "Retry", "Favorite"] {
+        for name in ["Open", "Save…", "Copy", "Delete", "Recreate", "Retry", "Favorite"] {
             assert!(!greyed(&selected, name), "{name} acts on the selection");
         }
         for name in ["Save…", "Copy", "Delete", "Recreate", "Show Info", "Play / Pause", "Next Item", "Previous Item", "Back"] {

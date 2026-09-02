@@ -628,8 +628,9 @@ impl LibraryModel {
         Some(AssetInput::new(role, content_type, bytes))
     }
 
-    /// Run a tool with the composer's selected model over library assets, one row per asset. This
-    /// is what the composer's tool tabs use. Assets that aren't readable images are skipped.
+    /// Run a tool with the composer's selected model over library assets, one row per asset.
+    /// Assets that aren't readable images are skipped. A row references the asset it ran over,
+    /// so a tool over a generation's output shares that asset rather than copying it.
     pub fn run_tool_on_assets(&mut self, model: &ToolModel, assets: &[AssetId], provider: ProviderId, album: Option<AlbumId>, cx: &mut Context<Self>) -> usize {
         let mut n = 0;
         for id in assets {
@@ -638,31 +639,6 @@ impl LibraryModel {
                 continue;
             }
             self.queue_request(Request::tool(provider.clone(), model, input), &[(id.clone(), AssetRole::ReferenceImage.raw())], album.as_ref());
-            n += 1;
-        }
-        self.changed(cx);
-        n
-    }
-
-    /// Run a tool over completed library images with the provider's default model. This is what
-    /// the context menus use. The tool row references the source's output asset directly.
-    pub fn run_tool(&mut self, tool: ToolId, ids: &[GenerationId], provider: ProviderId, album: Option<AlbumId>, cx: &mut Context<Self>) -> usize {
-        // Without a model the job could only fail at the provider; the menus disable the entry
-        // (`tool_available`), so this only catches the menu bar's unconditional actions.
-        let Some(model) = ProviderRegistry::shared().descriptor(&provider).and_then(|d| d.default_tool_model(tool)).cloned() else {
-            tracing::warn!(target: "majik", "{}: {provider} has no model for it", tool.label());
-            return 0;
-        };
-        let sources: Vec<Asset> = ids
-            .iter()
-            .filter_map(|id| self.lib.get(id))
-            .filter(|it| tool.is_eligible(it))
-            .filter_map(|it| self.lib.asset(it.output_asset_id.as_ref()?).cloned())
-            .collect();
-        let mut n = 0;
-        for asset in sources {
-            let Some(input) = self.asset_input(&asset, AssetRole::ReferenceImage) else { continue };
-            self.queue_request(Request::tool(provider.clone(), &model, input), &[(asset.id, AssetRole::ReferenceImage.raw())], album.as_ref());
             n += 1;
         }
         self.changed(cx);
@@ -691,17 +667,6 @@ pub fn selected_provider(cx: &App) -> &'static ProviderDescriptor {
         return d;
     }
     ProviderRegistry::shared().descriptor(&picked).unwrap_or_else(majik_providers::fal::descriptor)
-}
-
-/// Whether the selected provider has a model for `tool`.
-pub fn tool_supported(tool: ToolId, cx: &App) -> bool {
-    selected_provider(cx).supports_tool(tool)
-}
-
-/// Whether `tool` can run on any of `items` right now: the selected provider has a model for it
-/// and at least one item is eligible. Every menu entry that offers a tool uses this.
-pub fn tool_available(tool: ToolId, items: &[Generation], cx: &App) -> bool {
-    tool_supported(tool, cx) && items.iter().any(|item| tool.is_eligible(item))
 }
 
 #[cfg(test)]
@@ -932,8 +897,8 @@ mod tests {
     #[gpui::test]
     fn retry_of_a_tool_row_without_its_input_reports_the_failure(cx: &mut TestAppContext) {
         let e = env(cx, 1, "Mock");
-        let ids: Vec<_> = e.library.read_with(cx, |m, _| m.lib.generations().iter().map(|i| i.id.clone()).collect());
-        e.library.update(cx, |m, cx| m.run_tool(ToolId::Upscale, &ids, ProviderId::mock(), None, cx));
+        let output = e.library.read_with(cx, |m, _| m.lib.generations()[0].output_asset_id.clone().unwrap());
+        e.library.update(cx, |m, cx| m.run_tool_on_assets(&catalog::tool::MOCK_UPSCALE, &[output], ProviderId::mock(), None, cx));
         let row = e.library.read_with(cx, |m, _| m.lib.generations().iter().find(|i| i.tool.is_some()).unwrap().id.clone());
         // The job failed and the source image vanished from the folder behind the app's back.
         e.library.update(cx, |m, _| {
@@ -1193,15 +1158,6 @@ mod tests {
     }
 
     #[gpui::test]
-    fn run_tool_refuses_a_provider_without_a_model_for_it(cx: &mut TestAppContext) {
-        let e = env(cx, 1, "OpenRouter");
-        let ids: Vec<_> = e.library.read_with(cx, |m, _| m.lib.generations().iter().map(|i| i.id.clone()).collect());
-        let n = e.library.update(cx, |m, cx| m.run_tool(ToolId::Upscale, &ids, ProviderId::open_router(), None, cx));
-        assert_eq!(n, 0, "OpenRouter has no upscaler");
-        e.library.read_with(cx, |m, _| assert!(m.lib.generations().iter().all(|i| i.tool.is_none()), "no doomed row was queued"));
-    }
-
-    #[gpui::test]
     fn available_providers_are_those_with_a_key_or_needing_none(cx: &mut TestAppContext) {
         let _e = env(cx, 0, "Mock");
         let names = |cx: &mut TestAppContext| cx.update(|cx| available_providers(cx).iter().map(|d| d.display_name).collect::<Vec<_>>());
@@ -1236,29 +1192,6 @@ mod tests {
     }
 
     #[gpui::test]
-    fn tool_available_needs_a_provider_model_and_an_eligible_item(cx: &mut TestAppContext) {
-        let e = env(cx, 1, "Mock");
-        let item = e.library.read_with(cx, |m, _| m.lib.generations()[0].clone());
-        cx.update(|cx| {
-            assert!(tool_available(ToolId::Upscale, std::slice::from_ref(&item), cx));
-            assert!(!tool_available(ToolId::Upscale, &[], cx), "nothing eligible");
-            cx.global_mut::<crate::config::Config>().provider = "OpenRouter".into();
-            assert!(!tool_available(ToolId::Upscale, std::slice::from_ref(&item), cx), "OpenRouter has no upscaler");
-        });
-    }
-
-    #[gpui::test]
-    fn run_tool_creates_upscale_placeholder_for_eligible_images(cx: &mut TestAppContext) {
-        let e = env(cx, 3, "Mock");
-        // Seeded images are completed images → eligible for upscale.
-        let ids: Vec<_> = e.library.read_with(cx, |m, _| m.lib.generations().iter().map(|i| i.id.clone()).collect());
-        let n = e.library.update(cx, |m, cx| m.run_tool(ToolId::Upscale, &ids, ProviderId::mock(), None, cx));
-        assert_eq!(n, ids.len(), "one tool row per eligible image");
-        let tool_rows = e.library.read_with(cx, |m, _| m.lib.generations().iter().filter(|i| i.tool == Some(ToolId::Upscale) && i.status == Status::Generating).count());
-        assert_eq!(tool_rows, ids.len());
-    }
-
-    #[gpui::test]
     fn run_tool_on_assets_stores_selected_tool_model_name_and_skips_non_images(cx: &mut TestAppContext) {
         let e = env(cx, 0, "Mock");
         let (image, sound) = e.library.update(cx, |m, cx| {
@@ -1275,7 +1208,9 @@ mod tests {
         assert_eq!(rows[0].status, Status::Generating);
         let stored = rows[0].request_json.as_deref().and_then(Request::from_json).expect("a tool row stores its request");
         assert_eq!(stored.generation_type, GenerationType::for_tool_model(model));
-        assert!(rows[0].can_recreate());
+        assert_eq!(stored.provider, ProviderId::mock());
+        assert!(stored.prompt.is_empty() && rows[0].prompt().is_none(), "tools have no prompt to show");
+        assert!(rows[0].can_recreate() && rows[0].can_retry());
         e.library.read_with(cx, |m, _| {
             let inputs = m.lib.inputs(&rows[0].id);
             assert_eq!(inputs.len(), 1);
@@ -1325,27 +1260,11 @@ mod tests {
     }
 
     #[gpui::test]
-    fn tool_rows_carry_their_request_with_the_providers_default_model(cx: &mut TestAppContext) {
-        let e = env(cx, 1, "Mock");
-        let source = e.library.read_with(cx, |m, _| m.lib.generations()[0].id.clone());
-        e.library.update(cx, |m, cx| m.run_tool(ToolId::Upscale, std::slice::from_ref(&source), ProviderId::mock(), None, cx));
-        e.library.read_with(cx, |m, _| {
-            let row = m.lib.generations().iter().find(|i| i.tool == Some(ToolId::Upscale)).expect("the tool row");
-            let stored = row.request_json.as_deref().and_then(Request::from_json).expect("stores its request");
-            assert_eq!(stored.generation_type.tool(), Some(ToolId::Upscale));
-            assert_eq!(stored.generation_type.model_id(), "mock-upscale", "the provider's default upscaler");
-            assert_eq!(stored.provider, ProviderId::mock());
-            assert!(stored.prompt.is_empty() && row.prompt().is_none(), "tools have no prompt to show");
-            assert!(row.can_recreate() && row.can_retry());
-        });
-    }
-
-    #[gpui::test]
     fn retry_of_a_tool_row_replays_its_request_over_its_input(cx: &mut TestAppContext) {
         let e = env(cx, 1, "Mock");
-        let source = e.library.read_with(cx, |m, _| m.lib.generations()[0].id.clone());
+        let output = e.library.read_with(cx, |m, _| m.lib.generations()[0].output_asset_id.clone().unwrap());
         let row = e.library.update(cx, |m, cx| {
-            m.run_tool(ToolId::RemoveBackground, std::slice::from_ref(&source), ProviderId::mock(), None, cx);
+            m.run_tool_on_assets(&catalog::tool::MOCK_REMOVE_BACKGROUND, &[output], ProviderId::mock(), None, cx);
             let row = m.lib.generations().iter().find(|i| i.tool.is_some()).unwrap().id.clone();
             m.lib.fail_generation(&row, "boom");
             row
@@ -1363,13 +1282,10 @@ mod tests {
     }
 
     #[gpui::test]
-    fn run_tool_on_a_library_image_references_its_output_asset(cx: &mut TestAppContext) {
+    fn a_tool_over_a_library_output_references_that_asset(cx: &mut TestAppContext) {
         let e = env(cx, 1, "Mock");
-        let (source, output) = e.library.read_with(cx, |m, _| {
-            let item = &m.lib.generations()[0];
-            (item.id.clone(), item.output_asset_id.clone().unwrap())
-        });
-        e.library.update(cx, |m, cx| m.run_tool(ToolId::Upscale, std::slice::from_ref(&source), ProviderId::mock(), None, cx));
+        let output = e.library.read_with(cx, |m, _| m.lib.generations()[0].output_asset_id.clone().unwrap());
+        e.library.update(cx, |m, cx| m.run_tool_on_assets(&catalog::tool::MOCK_UPSCALE, std::slice::from_ref(&output), ProviderId::mock(), None, cx));
         e.library.read_with(cx, |m, _| {
             let row = m.lib.generations().iter().find(|i| i.tool.is_some()).unwrap();
             assert_eq!(m.lib.inputs(&row.id)[0].1.id, output, "no copy: the tool row points at the same asset");
@@ -1405,19 +1321,6 @@ mod tests {
         assert_eq!(a, b);
         e.library.read_with(cx, |m, _| assert_eq!(m.lib.assets().len(), 1));
         assert!(e.library.update(cx, |m, cx| m.import_asset("text/plain", b"x", cx)).is_err());
-    }
-
-    #[gpui::test]
-    fn run_tool_skips_ineligible_and_already_upscaled(cx: &mut TestAppContext) {
-        let e = env(cx, 0, "Mock");
-        // A generating (not completed) row is not eligible.
-        let id = e.library.update(cx, |m, cx| {
-            let id = m.lib.add_generating(MediaType::Image, None, None, Some("Mock".into()), None);
-            let _ = &cx;
-            id
-        });
-        let n = e.library.update(cx, |m, cx| m.run_tool(ToolId::Upscale, &[id], ProviderId::mock(), None, cx));
-        assert_eq!(n, 0, "generating rows are not tool-eligible");
     }
 
     #[gpui::test]
@@ -1671,8 +1574,8 @@ mod album_tests {
     fn tool_rows_appear_in_library_feed(cx: &mut TestAppContext) {
         use majik_core::model::ToolId;
         let e = env(cx, 2, "Mock");
-        let ids: Vec<_> = e.library.read_with(cx, |m, _| m.lib.generations().iter().map(|i| i.id.clone()).collect());
-        e.library.update(cx, |m, cx| m.run_tool(ToolId::Upscale, &ids, ProviderId::mock(), None, cx));
+        let outputs: Vec<_> = e.library.read_with(cx, |m, _| m.lib.generations().iter().filter_map(|i| i.output_asset_id.clone()).collect());
+        e.library.update(cx, |m, cx| m.run_tool_on_assets(&catalog::tool::MOCK_UPSCALE, &outputs, ProviderId::mock(), None, cx));
         e.library.read_with(cx, |m, _| {
             let feed = m.lib.feed(&FeedFilter::Library, MediaFilter::All);
             assert_eq!(feed.len(), 4, "the 2 originals and their 2 tool rows sit in the same feed");

@@ -1268,10 +1268,7 @@ fn descriptor_tool_models_filters_by_kind() {
     assert!(d.supports_tool(ToolId::Upscale));
     assert!(d.supports_tool(ToolId::RemoveBackground));
     assert_eq!(d.tool_models(ToolId::Upscale), vec![&tool::TOPAZ_UPSCALE, &tool::CLARITY_UPSCALER]);
-    assert_eq!(d.default_tool_model(ToolId::Upscale), Some(&tool::TOPAZ_UPSCALE));
-    assert_eq!(d.default_tool_model(ToolId::RemoveBackground), Some(&tool::REMBG));
     d.supported_tool_models.clear();
     assert!(!d.supports_tool(ToolId::Upscale));
     assert!(d.tool_models(ToolId::Upscale).is_empty());
-    assert_eq!(d.default_tool_model(ToolId::Upscale), None);
 }

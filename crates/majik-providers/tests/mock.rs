@@ -3,7 +3,6 @@
 use std::time::Instant;
 
 use majik_providers::catalog;
-use majik_providers::ToolId;
 use majik_providers::mock::{self, image_renderer, parse_directives, video_renderer, MockClient};
 use majik_providers::{
     AspectRatio, AudioGenerationSettings, AudioModel, AudioProviderClient, AudioVoice, GenerationError, ImageModel, ImageProviderClient,
@@ -233,8 +232,6 @@ mod mock_descriptor {
         assert!(d.requires_api_key);
         assert_eq!(d.is_user_selectable, cfg!(debug_assertions));
         assert_eq!(d.supported_tool_models, vec![catalog::tool::MOCK_UPSCALE.clone(), catalog::tool::MOCK_REMOVE_BACKGROUND.clone()]);
-        assert_eq!(d.default_tool_model(ToolId::Upscale).map(|m| m.name), Some("Mock Upscale"));
-        assert_eq!(d.default_tool_model(ToolId::RemoveBackground).map(|m| m.name), Some("Mock Remove Background"));
         assert_eq!(d.api_key_placeholder, "mock-any-key");
     }
 

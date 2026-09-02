@@ -169,17 +169,6 @@ impl ToolId {
             ToolId::RemoveBackground => "Remove Background",
         }
     }
-
-    /// Whether the tool can run on `item`: only a completed image, and Upscale only once.
-    pub fn is_eligible(self, item: &Generation) -> bool {
-        if item.media_type != MediaType::Image || item.status != Status::Completed {
-            return false;
-        }
-        match self {
-            ToolId::Upscale => !item.is_upscaled,
-            ToolId::RemoveBackground => true,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -10,7 +10,6 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use majik_providers::catalog;
 use majik_providers::ClientOptions;
-use majik_providers::ToolId;
 use majik_providers::fal::capabilities::{self as caps, ids};
 use majik_providers::fal::models::*;
 use majik_providers::fal::{
@@ -1343,8 +1342,6 @@ fn descriptor_shape() {
     assert_eq!(d.supported_image_models[0].id, ids::GEMINI_3_PRO);
     assert_eq!(d.supported_video_models[0].id, ids::VEO_31);
     assert_eq!(d.supported_tool_models, vec![catalog::tool::TOPAZ_UPSCALE.clone(), catalog::tool::BRIA_BACKGROUND_REMOVE.clone()]);
-    assert_eq!(d.default_tool_model(ToolId::Upscale).map(|m| m.name), Some("Topaz Upscale"));
-    assert_eq!(d.default_tool_model(ToolId::RemoveBackground).map(|m| m.name), Some("BRIA Background Remove"));
     assert!(d.supports_video_generation());
     assert!(d.supports_audio_generation());
     assert!((d.make_video_client)(&ClientOptions::new("k")).is_some());

@@ -1323,8 +1323,8 @@ mod tests {
     fn recreate_of_an_upscale_row_opens_the_upscale_tab_with_its_input(cx: &mut TestAppContext) {
         let e = env(cx, 0, "Mock");
         cx.update(|cx| cx.global_mut::<Config>().onboarding_completed = true);
-        // What the Upscale menu leaves behind: a tool row whose request names the model and whose
-        // one input is the image it ran over.
+        // What the composer's Upscale tab leaves behind: a tool row whose request names the model
+        // and whose one input is the image it ran over.
         let input = seed_asset(&e.library, cx, MediaType::Image, 9);
         let request = Request::tool(ProviderId::mock(), &catalog::tool::MOCK_UPSCALE, AssetInput::new(AssetRole::ReferenceImage, "image/png", vec![]));
         seed_request(&e.library, cx, &request, &[("reference_image", input.clone())]);

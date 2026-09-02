@@ -971,21 +971,6 @@ impl DetailView {
         }
     }
 
-    fn run_tool(&mut self, tool: ToolId, window: &mut Window, cx: &mut Context<Self>) {
-        let provider = crate::state::selected_provider(cx).id.clone();
-        if !crate::state::tool_supported(tool, cx) {
-            crate::ui::toast(window, format!("{} isn't available with {provider}.", tool.label()), cx);
-            return;
-        }
-        match self.generation(cx) {
-            Some(item) if tool.is_eligible(&item) => {
-                self.library.update(cx, |m, cx| m.run_tool(tool, std::slice::from_ref(&item.id), provider, None, cx));
-                crate::ui::toast(window, format!("{}: processing…", tool.label()), cx);
-            }
-            _ => crate::ui::toast(window, "Not eligible for this tool.", cx),
-        }
-    }
-
     fn retry(&mut self, _: &Retry, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(item) = self.generation(cx) {
             self.library.update(cx, |m, cx| m.retry(std::slice::from_ref(&item.id), cx));
@@ -1439,8 +1424,6 @@ impl Render for DetailView {
                 let has_prompt = self.prompt().is_some();
                 let has_file = item.file().is_some();
                 let deletable = is_generation || subject_asset.as_ref().is_some_and(|a| !self.library.read(cx).lib.is_referenced(a));
-                let upscalable = is_generation && crate::state::tool_available(ToolId::Upscale, std::slice::from_ref(&item), cx);
-                let background_removable = is_generation && crate::state::tool_available(ToolId::RemoveBackground, std::slice::from_ref(&item), cx);
                 move |menu, _, _| {
                     let mk = |label: &'static str, f: fn(&mut DetailView, &mut Window, &mut Context<DetailView>), this: gpui::WeakEntity<DetailView>, enabled: bool| {
                         PopupMenuItem::new(label).disabled(!enabled).on_click(move |_, window, cx| {
@@ -1458,9 +1441,6 @@ impl Render for DetailView {
                             }
                         }, this.clone(), has_prompt))
                             .menu_with_disabled("Recreate", Box::new(Recreate), !can_recreate)
-                            .separator()
-                            .menu_with_disabled("Upscale", Box::new(Upscale), !upscalable)
-                            .menu_with_disabled("Remove Background", Box::new(RemoveBackground), !background_removable)
                     } else {
                         menu
                     };
@@ -1647,8 +1627,6 @@ impl Render for DetailView {
             .on_action(cx.listener(Self::zoom_out))
             .on_action(cx.listener(Self::reset_zoom))
             .on_action(cx.listener(Self::toggle_playback))
-            .on_action(cx.listener(|this, _: &Upscale, w, cx| this.run_tool(ToolId::Upscale, w, cx)))
-            .on_action(cx.listener(|this, _: &RemoveBackground, w, cx| this.run_tool(ToolId::RemoveBackground, w, cx)))
             .child(body)
             .children(travelling)
             .into_any_element()
@@ -2105,7 +2083,7 @@ mod tests {
         assert_eq!(handed.borrow().iter().map(|p| p.recreate.clone()).collect::<Vec<_>>(), vec![Some(id)]);
     }
 
-    /// An upscale row over an imported image, as the Upscale menu leaves it.
+    /// An upscale row over an imported image, as the composer's Upscale tab leaves it.
     fn upscaled(env: &crate::test_support::TestEnv, cx: &mut TestAppContext) -> (GenerationId, majik_core::model::AssetId) {
         let input = seed_asset(&env.library, cx, MediaType::Image, 7);
         let request = Request::tool(ProviderId::mock(), &catalog::tool::MOCK_UPSCALE, majik_generation::AssetInput::new(majik_providers::AssetRole::ReferenceImage, "image/png", vec![]));
@@ -2471,17 +2449,6 @@ mod tests {
         detail.update(vcx, |d, cx| d.go(1, cx));
         vcx.run_until_parked();
         detail.read_with(vcx, |d, _| assert!(d.audio.is_none() && d.audio_for.is_none(), "leaving the item hard-stops its player"));
-    }
-
-    #[gpui::test]
-    fn enhance_refuses_a_provider_without_the_tool(cx: &mut TestAppContext) {
-        let (detail, vcx, env, _ids) = detail_window!(cx, 1, 0);
-        vcx.update(|_, cx| cx.global_mut::<crate::config::Config>().provider = "OpenRouter".into());
-        let before = vcx.update(|_, cx| crate::ui::toast_generation(cx));
-        detail.update_in(vcx, |d, w, cx| d.run_tool(ToolId::Upscale, w, cx));
-        vcx.run_until_parked();
-        assert_eq!(vcx.update(|_, cx| crate::ui::toast_generation(cx)), before + 1, "told the user instead of queuing a doomed row");
-        env.library.read_with(vcx, |m, _| assert!(m.lib.generations().iter().all(|i| i.tool.is_none()), "no tool row was queued"));
     }
 
     #[test]
