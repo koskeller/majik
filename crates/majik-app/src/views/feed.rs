@@ -1093,7 +1093,8 @@ fn selection_menu_entries(info: &MenuInfo) -> Vec<MenuEntry> {
 /// the app, and files leave it through Save, Copy and drag. Rows that don't apply to the selection
 /// stay visible but disabled (single selection), except that a multi-selection drops Recreate
 /// entirely. There is no Use Image; an item is dragged into the composer instead. A single
-/// generating item offers Cancel instead of Recreate. Items whose file went missing get Retry,
+/// generating item offers Cancel and, since its request is already stored, Recreate too, so a
+/// variation can be queued without waiting for it. Items whose file went missing get Retry,
 /// which regenerates in place, and Delete, like failed ones; a single one of either also gets
 /// Recreate, so the request can be changed in the composer before it runs again.
 /// The tools (Upscale, Remove Background) are not here either: they run from the composer's
@@ -1137,6 +1138,9 @@ fn context_menu_entries(items: &[Generation], in_album: Option<&majik_core::mode
         if !generating.is_empty() {
             let label = if generating.len() > 1 { "Cancel Generations" } else { "Cancel Generation" };
             entries.push(MenuEntry::custom(label, MenuEntryKind::CancelGeneration(generating)));
+        }
+        if n == 1 {
+            entries.push(MenuEntry::action("Recreate", Recreate).enabled(items.iter().any(|i| i.can_recreate())));
         }
         entries.push(MenuEntry::action(if n > 1 { "Delete Selected" } else { "Delete" }, DeleteMedia));
     }
@@ -3327,9 +3331,19 @@ mod context_menu_tests {
         let entries = menu_for(&view, vcx, &[id]);
         assert_menu(
             &entries,
-            &["Cancel Generation", "Delete"],
-            &["Cancel Generations", "Delete Selected", "Retry", "Open", "Copy", "Recreate", "Favorite", "Add to Album…"],
+            &["Cancel Generation", "Recreate", "Delete"],
+            &["Cancel Generations", "Delete Selected", "Retry", "Open", "Copy", "Favorite", "Add to Album…"],
         );
+        assert!(entries.iter().find(|e| e.label == "Recreate").unwrap().enabled, "a row the app queued stores its request");
+    }
+
+    #[gpui::test]
+    fn single_generating_without_a_request_has_recreate_disabled(cx: &mut TestAppContext) {
+        let (view, vcx, env) = feed(cx);
+        let id = seed_item(&env.library, vcx, Seed { status: Status::Generating, recreatable: false, ..Seed::default() });
+        let entries = menu_for(&view, vcx, &[id]);
+        assert_menu(&entries, &["Cancel Generation", "Delete"], &["Recreate", "Retry"]);
+        assert!(entries.iter().any(|e| e.label == "Recreate" && !e.enabled), "the row is shown but greyed: nothing stored to replay");
     }
 
     // ----- multiple, all completed ------------------------------------------
@@ -3424,7 +3438,7 @@ mod context_menu_tests {
         let a = seed_item(&env.library, vcx, generating);
         let b = seed_item(&env.library, vcx, generating);
         let entries = menu_for(&view, vcx, &[a, b]);
-        assert_menu(&entries, &["Cancel Generations", "Delete Selected"], &["Cancel Generation", "Delete", "Retry Selected", "Open", "Favorite"]);
+        assert_menu(&entries, &["Cancel Generations", "Delete Selected"], &["Cancel Generation", "Delete", "Recreate", "Retry Selected", "Open", "Favorite"]);
     }
 
     #[gpui::test]
@@ -3449,7 +3463,7 @@ mod context_menu_tests {
         assert_menu(
             &entries,
             &["Cancel Generation", "Delete Selected"],
-            &["Cancel Generations", "Delete", "Retry", "Copy", "Open", "Favorite", "Add to Album…"],
+            &["Cancel Generations", "Delete", "Recreate", "Retry", "Copy", "Open", "Favorite", "Add to Album…"],
         );
     }
 }

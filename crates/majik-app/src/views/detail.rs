@@ -2236,6 +2236,27 @@ mod tests {
         assert_eq!(handed.borrow().iter().map(|p| p.recreate.clone()).collect::<Vec<_>>(), vec![Some(id)]);
     }
 
+    #[gpui::test]
+    fn recreate_works_while_the_item_is_still_generating(cx: &mut TestAppContext) {
+        let env = env(cx, 0, "Mock");
+        let id = seed_item(&env.library, cx, Seed { status: Status::Generating, ..Seed::default() });
+        let (detail, vcx) = rendered_detail_on(cx, &env, &id);
+        assert!(vcx.debug_bounds("image-controls").is_some(), "the controls, Recreate among them, float over the spinner");
+        let handed: Rc<RefCell<Vec<PendingCompose>>> = Default::default();
+        let h = handed.clone();
+        vcx.update(|_, cx| {
+            cx.subscribe(&detail, move |_, ev: &DetailEvent, _| {
+                if let DetailEvent::Compose(pending) = ev {
+                    h.borrow_mut().push(pending.clone());
+                }
+            })
+            .detach();
+        });
+        detail.update_in(vcx, |d, w, cx| d.recreate(&Recreate, w, cx));
+        vcx.run_until_parked();
+        assert_eq!(handed.borrow().iter().map(|p| p.recreate.clone()).collect::<Vec<_>>(), vec![Some(id)], "a queued row's request is already stored");
+    }
+
     /// An upscale row over an imported image, as the composer's Upscale tab leaves it.
     fn upscaled(env: &crate::test_support::TestEnv, cx: &mut TestAppContext) -> (GenerationId, majik_core::model::AssetId) {
         let input = seed_asset(&env.library, cx, MediaType::Image, 7);
