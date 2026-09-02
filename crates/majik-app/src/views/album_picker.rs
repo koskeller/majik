@@ -15,9 +15,12 @@ use crate::state::{self, LibraryModel};
 pub fn open_album_picker(ids: Vec<GenerationId>, window: &mut Window, cx: &mut App) {
     let input = cx.new(|cx| InputState::new(window, cx).placeholder("New album name"));
     let library = state::library(cx);
-    window.open_dialog(cx, move |dialog, _window, cx| {
+    window.open_dialog(cx, move |dialog, _window, _cx| {
         let ids = ids.clone();
-        dialog.title(if ids.len() == 1 { "Add to Album".to_string() } else { format!("Add {} items to Album", ids.len()) }).w(px(420.)).child(render(&library, &input, ids, cx))
+        let library = library.clone();
+        let input = input.clone();
+        let title = if ids.len() == 1 { "Add to Album".to_string() } else { format!("Add {} items to Album", ids.len()) };
+        dialog.title(title).w(px(420.)).content(move |content, _, cx| content.py_1().child(render(&library, &input, ids.clone(), cx)))
     });
 }
 
