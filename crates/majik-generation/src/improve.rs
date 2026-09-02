@@ -69,7 +69,7 @@ pub fn instruction(generation_type: &GenerationType, provider: &ProviderDescript
     let mut lines = vec![
         "You rewrite prompts for AI media generation.".to_string(),
         format!("Rewrite the user's prompt into one strong prompt for {} by {manufacturer}, {media} generation model.", generation_type.model_name()),
-        "Keep the user's subject, intent, named styles, people and any text to be rendered. Add concrete visual detail: composition, lighting, materials, colour, camera and lens, mood.".to_string(),
+        "Keep the user's subject, intent, named styles, people and any text to be rendered. Add only the concrete visual detail that changes the result — composition, lighting, materials, colour, camera, mood — in a few precise sentences. No filler, no strings of adjectives, no saying the same thing twice.".to_string(),
     ];
 
     if let GenerationType::Video(settings) = generation_type {
@@ -114,7 +114,7 @@ pub fn instruction(generation_type: &GenerationType, provider: &ProviderDescript
     // A terse prompt ("make it snowy") over references the rewriter cannot see invites a clarifying
     // question, and the answer goes straight into the prompt field. There is nobody to answer it.
     lines.push(
-        "Reply with the rewritten prompt only: one paragraph, plain text, no quotes, no preamble, no alternatives. Never ask a question or request more detail — if the prompt is terse or leans on something you cannot see, write the best prompt you can from what it gives you."
+        "Reply with the rewritten prompt only: one short paragraph, plain text, no quotes, no preamble, no alternatives. Never ask a question or request more detail — if the prompt is terse or leans on something you cannot see, write the best prompt you can from what it gives you."
             .to_string(),
     );
     lines.join("\n")
@@ -182,6 +182,16 @@ mod tests {
         assert!(text.ends_with("write the best prompt you can from what it gives you."), "the answer format comes last: {text}");
         assert!(text.contains("Never ask a question"), "there is nobody to answer one: {text}");
         assert!(!text.contains("reference image"), "nothing attached, nothing said: {text}");
+    }
+
+    /// A rewrite that pads the prompt out is worse than the original; the instruction asks for a
+    /// short one in as many words.
+    #[test]
+    fn the_instruction_asks_for_a_concise_rewrite() {
+        let text = instruction(&image(), provider(), &[]);
+        assert!(text.contains("in a few precise sentences"), "{text}");
+        assert!(text.contains("No filler, no strings of adjectives"), "{text}");
+        assert!(text.contains("one short paragraph"), "{text}");
     }
 
     #[test]

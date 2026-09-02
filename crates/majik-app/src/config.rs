@@ -2,6 +2,7 @@
 //! Library state lives in the library DB.
 
 use gpui::{App, Global};
+use majik_core::model::MediaType;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -188,9 +189,10 @@ pub struct Config {
     /// Feed cells crop thumbnails to squares or show them whole (Photos' "Square / Aspect Ratio").
     #[serde(default)]
     pub thumbnail_shape: ThumbnailShape,
-    /// Composer draft prompt (global, not per provider or tab).
+    /// The composer's unsent prompts, one per media tab and shared across providers: an image
+    /// prompt and a video prompt are different texts, and switching tabs shows each its own.
     #[serde(default)]
-    pub draft_prompt: String,
+    pub draft_prompts: DraftPrompts,
     /// Skip animations (`App::set_reduce_motion`). GPUI doesn't read the OS setting, so this is an
     /// in-app preference instead.
     #[serde(default)]
@@ -269,7 +271,7 @@ impl Default for Config {
             onboarding_completed: false,
             grid_zoom: default_zoom(),
             thumbnail_shape: ThumbnailShape::default(),
-            draft_prompt: String::new(),
+            draft_prompts: DraftPrompts::default(),
             reduce_motion: false,
             library_frame: None,
             settings_frame: None,
@@ -284,6 +286,35 @@ impl Default for Config {
 impl Global for Config {}
 
 use std::sync::OnceLock;
+
+/// See [`Config::draft_prompts`]. Tool tabs have no prompt, so there is no slot for them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftPrompts {
+    #[serde(default)]
+    pub image: String,
+    #[serde(default)]
+    pub video: String,
+    #[serde(default)]
+    pub audio: String,
+}
+
+impl DraftPrompts {
+    pub fn get(&self, media: MediaType) -> &str {
+        match media {
+            MediaType::Image => &self.image,
+            MediaType::Video => &self.video,
+            MediaType::Audio => &self.audio,
+        }
+    }
+
+    pub fn get_mut(&mut self, media: MediaType) -> &mut String {
+        match media {
+            MediaType::Image => &mut self.image,
+            MediaType::Video => &mut self.video,
+            MediaType::Audio => &mut self.audio,
+        }
+    }
+}
 
 /// Directory for `config.json` / `drafts.json`. Set once by `main`; when unset (tests, headless),
 /// preferences live only in the GPUI global and nothing touches disk.

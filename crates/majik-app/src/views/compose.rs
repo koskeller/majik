@@ -79,14 +79,16 @@ impl ComposeView {
         let provider = state::selected_provider(cx);
         let drafts = Drafts::load();
         let state = ComposerState::new(provider, &drafts.get(provider.id.as_str()));
-        let draft = cx.global::<Config>().draft_prompt.clone();
+        let draft = draft_prompt(state.tab, cx);
         let dialogue = state.tab == ComposeTab::Media(MediaType::Audio) && state.audio.speaker2.is_some();
         let prompt = cx.new(|cx| TextareaState::new(window, cx).placeholder(placeholder(state.tab, dialogue)).default_value(draft));
         cx.subscribe_in(&prompt, window, |this, _, ev: &InputEvent, window, cx| match ev {
             InputEvent::PressEnter { secondary: true, .. } => this.generate(window, cx),
             InputEvent::Change => {
                 let text = this.prompt.read(cx).value().to_string();
-                update_config(cx, |c| c.draft_prompt = text);
+                if let ComposeTab::Media(media) = this.state.tab {
+                    update_config(cx, |c| *c.draft_prompts.get_mut(media) = text);
+                }
                 cx.notify();
             }
             _ => {}
@@ -209,10 +211,21 @@ impl ComposeView {
         let provider_name = self.state.provider.display_name;
         match self.state.load_recreate(&request, inputs) {
             RecreateOutcome::Loaded { state, warning } => {
+                let leaving = self.state.tab;
                 self.state = *state;
                 self.reset_transients();
                 self.refresh_placeholder(window, cx);
                 if request.generation_type.takes_prompt() {
+                    // The row's prompt becomes its tab's draft; what was typed on the tab being
+                    // left is put away first, as `set_tab` does.
+                    if let (true, ComposeTab::Media(media)) = (leaving != self.state.tab, leaving) {
+                        let text = self.prompt.read(cx).value().to_string();
+                        update_config(cx, |c| *c.draft_prompts.get_mut(media) = text);
+                    }
+                    if let ComposeTab::Media(media) = self.state.tab {
+                        let text = request.prompt.clone();
+                        update_config(cx, |c| *c.draft_prompts.get_mut(media) = text);
+                    }
                     self.prompt.update(cx, |s, cx| s.set_value(request.prompt, window, cx));
                 }
                 if let Some(warning) = warning {
@@ -334,7 +347,8 @@ impl ComposeView {
     }
 
     fn set_tab(&mut self, tab: ComposeTab, window: &mut Window, cx: &mut Context<Self>) {
-        let changed = self.state.tab != tab;
+        let leaving = self.state.tab;
+        let changed = leaving != tab;
         if changed {
             self.improving = None;
         }
@@ -343,6 +357,17 @@ impl ComposeView {
         }
         if changed {
             self.reset_transients();
+            // Each media tab keeps its own prompt. The field is saved as it is typed, but a value
+            // set programmatically (a recreate, a test) raises no change event, so the text being
+            // left is put away here before the new tab's is shown.
+            if let ComposeTab::Media(media) = leaving {
+                let text = self.prompt.read(cx).value().to_string();
+                update_config(cx, |c| *c.draft_prompts.get_mut(media) = text);
+            }
+            if let ComposeTab::Media(_) = tab {
+                let draft = draft_prompt(tab, cx);
+                self.prompt.update(cx, |s, cx| s.set_value(draft, window, cx));
+            }
         }
         self.refresh_placeholder(window, cx);
         cx.notify();
@@ -570,7 +595,9 @@ impl ComposeView {
             m.generate(requests, &inputs, album, cx);
         });
         self.prompt.update(cx, |s, cx| s.set_value("", window, cx));
-        update_config(cx, |c| c.draft_prompt.clear());
+        if let ComposeTab::Media(media) = self.state.tab {
+            update_config(cx, |c| c.draft_prompts.get_mut(media).clear());
+        }
         self.state.clear_active_assets();
         crate::ui::toast(window, format!("Generating {total} item(s) with {}…", self.state.provider.display_name), cx);
         cx.notify();
@@ -989,6 +1016,14 @@ fn plural(tab: ComposeTab) -> &'static str {
     }
 }
 
+/// The saved prompt of `tab`, empty for a tool tab (which has none).
+fn draft_prompt(tab: ComposeTab, cx: &App) -> String {
+    match tab {
+        ComposeTab::Media(media) => cx.global::<Config>().draft_prompts.get(media).to_string(),
+        ComposeTab::Tool(_) => String::new(),
+    }
+}
+
 fn placeholder(tab: ComposeTab, dialogue: bool) -> &'static str {
     match (tab, dialogue) {
         (ComposeTab::Media(MediaType::Image), _) => "Describe an image…",
@@ -1376,7 +1411,9 @@ impl Render for ComposeView {
                             .border_1()
                             .border_color(if prompt_focused { ring } else { border })
                             .p_1()
-                            .child(Textarea::new(&self.prompt).appearance(false).readonly(improving).w_full().flex_1().min_h_0())
+                            // A step up from the panel's controls: the prompt is what the user reads and
+                            // edits most, and the pickers around it stay at the smaller size.
+                            .child(Textarea::new(&self.prompt).appearance(false).readonly(improving).text_base().w_full().flex_1().min_h_0())
                             .children(improve_button);
                         let prompt = v_flex().flex_1().min_h_0().gap_2().child(prompt).children(self.render_reference_tags(cx));
                         // The prompt takes whatever height the panel has left over, so the field is
@@ -1617,7 +1654,69 @@ mod tests {
         answer_rewrite(&rewrites, vcx, Ok("  a tabby cat on a windowsill  "));
 
         view.update(vcx, |v, cx| assert_eq!(v.prompt_text(cx), "a tabby cat on a windowsill", "trimmed into the field"));
-        vcx.update(|_, cx| assert_eq!(cx.global::<Config>().draft_prompt, "a tabby cat on a windowsill", "the draft follows the edit"));
+        vcx.update(|_, cx| assert_eq!(cx.global::<Config>().draft_prompts.image, "a tabby cat on a windowsill", "the draft follows the edit"));
+    }
+
+    /// The image, video and audio tabs each keep their own prompt, like their other settings.
+    #[gpui::test]
+    fn each_media_tab_keeps_its_own_prompt(cx: &mut TestAppContext) {
+        let (view, vcx, _e) = compose_window!(cx, "Mock");
+        set_prompt(&view, vcx, "a cat");
+        switch_to(&view, vcx, MediaType::Video);
+        view.update(vcx, |v, cx| assert_eq!(v.prompt_text(cx), "", "the video tab starts with its own, empty prompt"));
+        set_prompt(&view, vcx, "a cat walking");
+        switch_to(&view, vcx, MediaType::Audio);
+        set_prompt(&view, vcx, "meow");
+
+        switch_to(&view, vcx, MediaType::Image);
+        view.update(vcx, |v, cx| assert_eq!(v.prompt_text(cx), "a cat"));
+        switch_to(&view, vcx, MediaType::Video);
+        view.update(vcx, |v, cx| assert_eq!(v.prompt_text(cx), "a cat walking"));
+        vcx.update(|_, cx| {
+            let drafts = &cx.global::<Config>().draft_prompts;
+            assert_eq!((drafts.image.as_str(), drafts.video.as_str(), drafts.audio.as_str()), ("a cat", "a cat walking", "meow"), "every tab's draft is saved");
+        });
+
+        // Generating on one tab clears that tab's prompt and no other.
+        view.update_in(vcx, |v, w, cx| v.generate(w, cx));
+        vcx.run_until_parked();
+        view.update(vcx, |v, cx| assert_eq!(v.prompt_text(cx), ""));
+        vcx.update(|_, cx| {
+            let drafts = &cx.global::<Config>().draft_prompts;
+            assert_eq!((drafts.image.as_str(), drafts.video.as_str()), ("a cat", ""));
+        });
+        switch_to(&view, vcx, MediaType::Image);
+        view.update(vcx, |v, cx| assert_eq!(v.prompt_text(cx), "a cat", "the image prompt was not touched"));
+    }
+
+    /// Recreating a video row from the image tab moves the row's prompt into the video slot and
+    /// leaves the image prompt where it was.
+    #[gpui::test]
+    fn recreate_keeps_the_prompt_of_the_tab_it_left(cx: &mut TestAppContext) {
+        let (view, vcx, _e) = compose_window!(cx, "Mock");
+        set_prompt(&view, vcx, "a cat");
+        recreate(&view, vcx, video_request(&majik_providers::catalog::video::ALL[0], 5), vec![]);
+        view.update(vcx, |v, cx| {
+            assert_eq!(v.state.tab, ComposeTab::Media(MediaType::Video));
+            assert_eq!(v.prompt_text(cx), "recreated video");
+        });
+        vcx.update(|_, cx| assert_eq!(cx.global::<Config>().draft_prompts.video, "recreated video", "the row's prompt is the video draft now"));
+        switch_to(&view, vcx, MediaType::Image);
+        view.update(vcx, |v, cx| assert_eq!(v.prompt_text(cx), "a cat"));
+    }
+
+    /// A fresh panel opens on the image tab with the image prompt, not whatever was typed last.
+    #[gpui::test]
+    fn a_new_panel_restores_the_prompt_of_its_tab(cx: &mut TestAppContext) {
+        let (view, vcx, _e) = compose_window!(cx, "Mock");
+        set_prompt(&view, vcx, "a cat");
+        switch_to(&view, vcx, MediaType::Video);
+        set_prompt(&view, vcx, "a cat walking");
+        let fresh = vcx.new_window_entity(ComposeView::new);
+        fresh.update(vcx, |v, cx| {
+            assert_eq!(v.state.tab, ComposeTab::Media(MediaType::Image));
+            assert_eq!(v.prompt_text(cx), "a cat");
+        });
     }
 
     #[gpui::test]
@@ -1696,6 +1795,7 @@ mod tests {
         switch_to(&view, vcx, MediaType::Video);
         view.update(vcx, |v, _| assert!(v.improving.is_none(), "the rewrite was for the image model"));
 
+        set_prompt(&view, vcx, "a cat walking");
         view.update_in(vcx, |v, w, cx| v.improve(w, cx));
         view.update(vcx, |v, _| assert!(v.improving.is_some()));
         view.update(vcx, |v, cx| v.select_model(1, cx));
