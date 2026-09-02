@@ -6,6 +6,7 @@
 
 use gpui::{prelude::*, px, App, Entity, ScrollStrategy, Task, WeakEntity, Window};
 use gpui_component::list::{List, ListDelegate, ListItem, ListState};
+use crate::ui::Raised as _;
 use gpui_component::{h_flex, v_flex, ActiveTheme as _, IndexPath, Selectable, WindowExt as _};
 use majik_core::model::{MediaType, ToolId};
 use majik_providers::{ImageResolution, ProviderDescriptor, VideoResolution};
@@ -311,7 +312,7 @@ pub fn open_model_picker(compose: WeakEntity<ComposeView>, provider: &'static Pr
     // scrolling to the current model counts as a scroll. The padding is the list's, not the
     // dialog's, so the highlighted card keeps clear of the edges and the rows still scroll under
     // the search field.
-    window.open_dialog(cx, move |dialog, _window, _cx| dialog.title("Choose a model").w(px(560.)).child(List::new(&list_for_dialog).search_placeholder("Search models").scrollbar_visible(false).px_2().py_1().max_h(px(520.))));
+    window.open_dialog(cx, move |dialog, _window, cx| dialog.raised(cx).title("Choose a model").w(px(560.)).child(List::new(&list_for_dialog).search_placeholder("Search models").scrollbar_visible(false).px_2().py_1().max_h(px(520.))));
     // `open_dialog` focuses the dialog itself; the search field has to win.
     list.update(cx, |list, cx| list.focus(window, cx));
     list

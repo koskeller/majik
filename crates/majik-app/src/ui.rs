@@ -35,6 +35,19 @@ pub fn install_theme(cx: &mut App) {
     Theme::change(mode, None, cx);
 }
 
+/// A dialog is a raised surface like a menu or a popover, so it takes the popover colour.
+/// gpui-component paints it on the window ground, which put the model picker on a different grey
+/// from the settings menus beside it.
+pub trait Raised: Sized {
+    fn raised(self, cx: &App) -> Self;
+}
+
+impl Raised for gpui_component::dialog::Dialog {
+    fn raised(self, cx: &App) -> Self {
+        self.bg(cx.theme().popover)
+    }
+}
+
 /// HugeIcons icon from the embedded asset bundle (`packaging/icons.json` maps the name to its export).
 pub fn icon(name: &'static str) -> Icon {
     Icon::default().path(format!("icons/{name}.svg"))

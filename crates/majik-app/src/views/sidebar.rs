@@ -12,7 +12,7 @@ use majik_core::model::AlbumId;
 use majik_core::FeedFilter;
 
 use crate::state::{self, DraggedAssets, LibraryModel};
-use crate::ui::{button, icon};
+use crate::ui::{button, icon, Raised as _};
 
 pub enum SidebarEvent {
     Select(FeedFilter),
@@ -48,7 +48,8 @@ impl SidebarView {
         let library = self.library.clone();
         let this = cx.weak_entity();
         let dialog_input = input.clone();
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let dialog = dialog.raised(cx);
             let input = dialog_input.clone();
             let library = library.clone();
             let this = this.clone();
@@ -76,7 +77,8 @@ impl SidebarView {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Album name").default_value(current));
         let library = self.library.clone();
         let dialog_input = input.clone();
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let dialog = dialog.raised(cx);
             let input = dialog_input.clone();
             let library = library.clone();
             let id = id.clone();

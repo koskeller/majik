@@ -3,7 +3,7 @@
 
 use gpui::{prelude::*, px, App, Entity, SharedString, Window};
 use gpui_component::button::{ButtonVariants as _};
-use crate::ui::button;
+use crate::ui::{button, Raised as _};
 use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Input, InputState};
 use gpui_component::scroll::ScrollableElement as _;
@@ -15,7 +15,8 @@ use crate::state::{self, LibraryModel};
 pub fn open_album_picker(ids: Vec<GenerationId>, window: &mut Window, cx: &mut App) {
     let input = cx.new(|cx| InputState::new(window, cx).placeholder("New album name"));
     let library = state::library(cx);
-    window.open_dialog(cx, move |dialog, _window, _cx| {
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let dialog = dialog.raised(cx);
         let ids = ids.clone();
         let library = library.clone();
         let input = input.clone();

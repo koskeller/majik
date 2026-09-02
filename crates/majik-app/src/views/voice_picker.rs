@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::ui::{button, icon};
+use crate::ui::{button, icon, Raised as _};
 use crate::views::compose::ComposeView;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -171,7 +171,7 @@ pub fn open_voice_picker(compose: WeakEntity<ComposeView>, speaker: Speaker, voi
         let compose = compose.clone();
         let voices = voices.clone();
         let current = current.clone();
-        dialog.title(title).w(px(560.)).child(render(&state, compose, speaker, voices, current, allow_none, cx)).on_close({
+        dialog.raised(cx).title(title).w(px(560.)).child(render(&state, compose, speaker, voices, current, allow_none, cx)).on_close({
             let state = state_close.clone();
             move |_, _, cx| state.update(cx, |s, _| s.stop())
         })
