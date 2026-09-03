@@ -1025,6 +1025,20 @@ fn fill_asset_dimensions(asset: &mut Asset) -> bool {
 mod tests {
     use super::*;
 
+    /// The app saves the screen to reopen on as a `FeedFilter` in its `config.json`, and drops
+    /// the whole file when any field fails to parse, so the wire shape is pinned here, in the
+    /// crate CI tests on every push.
+    #[test]
+    fn a_feed_filter_round_trips_through_json_in_its_saved_shape() {
+        let album = FeedFilter::Album(AlbumId("a1".into()));
+        let json = serde_json::to_string(&album).unwrap();
+        assert_eq!(json, r#"{"album":"a1"}"#);
+        assert_eq!(serde_json::from_str::<FeedFilter>(&json).unwrap(), album);
+        assert_eq!(serde_json::to_string(&FeedFilter::Favorites).unwrap(), r#""favorites""#);
+        assert_eq!(serde_json::to_string(&FeedFilter::Assets).unwrap(), r#""assets""#);
+        assert_eq!(serde_json::from_str::<FeedFilter>(r#""library""#).unwrap(), FeedFilter::Library);
+    }
+
     fn png(seed: u8) -> Vec<u8> {
         crate::images::solid_png(4, 4, [seed, seed, seed])
     }
