@@ -15,7 +15,7 @@
 //! invisible to the budget forever, which is the leak this cache exists to stop.
 
 use futures::FutureExt as _;
-use gpui::{App, AppContext as _, Asset as _, AssetLogger, Entity, ImageAssetLoader, ImageCache, ImageCacheError, ImageCacheItem, RenderImage, Resource, WeakEntity, Window};
+use gpui::{App, AppContext as _, Asset as _, AssetLogger, Entity, EntityId, ImageAssetLoader, ImageCache, ImageCacheError, ImageCacheItem, RenderImage, Resource, WeakEntity, Window};
 use image::imageops::FilterType;
 use majik_core::thumbnails::Fit;
 use smallvec::SmallVec;
@@ -199,10 +199,26 @@ impl LruImageCache {
     pub fn loaded(&mut self, resource: &Resource) -> Option<Arc<RenderImage>> {
         self.entries.get_mut(&gpui::hash(resource))?.item.get()?.ok()
     }
-}
 
-impl ImageCache for LruImageCache {
-    fn load(&mut self, resource: &Resource, window: &mut Window, cx: &mut App) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
+    /// Whether the cache has an entry for a resource at all: decoding, decoded, or failed. The
+    /// feed asks this about the picture a cell is drawing, and [`Self::warm`] about the one it
+    /// wants instead, and switches only when the first is false or the second is true — so a cell
+    /// never goes back to drawing nothing while a sharper tier decodes. Unlike a load, this is
+    /// not a use: it leaves the entry's recency alone.
+    pub fn holds(&self, resource: &Resource) -> bool {
+        self.entries.contains_key(&gpui::hash(resource))
+    }
+
+    /// Whether a resource is decoded and drawable this frame. If it is not, the decode is started
+    /// (or is already in flight, or already failed and remembered), `view` is notified on the
+    /// frame it lands, and this returns false. `view` is the entity to redraw, which lets a view
+    /// ask from its own render without going through gpui's rendered-view stack.
+    pub fn warm(&mut self, resource: &Resource, view: EntityId, window: &mut Window, cx: &mut App) -> bool {
+        matches!(self.load_for(resource, view, window, cx), Some(Ok(_)))
+    }
+
+    /// [`ImageCache::load`] on behalf of `view`, the entity to notify when the decode lands.
+    fn load_for(&mut self, resource: &Resource, view: EntityId, window: &mut Window, cx: &mut App) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
         let key = gpui::hash(resource);
         self.tick += 1;
         if let Some(entry) = self.entries.get_mut(&key) {
@@ -224,9 +240,25 @@ impl ImageCache for LruImageCache {
                 cx.background_executor().spawn(decode).shared()
             }
         };
+        self.start(key, task, view, window, cx);
+        None
+    }
+
+    /// An entry whose decode finishes only when the test sends its image, so a test can see the
+    /// frames drawn while a picture is still decoding; the real executor finishes every decode
+    /// inside `run_until_parked`. Lands through the same path as a real decode.
+    #[cfg(test)]
+    pub fn hold_pending_for_test(&mut self, resource: &Resource, view: EntityId, window: &mut Window, cx: &mut App) -> futures::channel::oneshot::Sender<Arc<RenderImage>> {
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        let task = cx.background_executor().spawn(async move { receiver.await.map_err(|_| ImageCacheError::Io(Arc::new(std::io::Error::other("the test dropped the decode")))) }).shared();
+        self.start(gpui::hash(resource), task, view, window, cx);
+        sender
+    }
+
+    /// Hold a decode in flight and, when it finishes, charge it and redraw `view`.
+    fn start(&mut self, key: u64, task: gpui::ImageLoadingTask, view: EntityId, window: &mut Window, cx: &mut App) {
         self.entries.insert(key, Entry { item: ImageCacheItem::Loading(task.clone()), bytes: 0, last_used: self.tick });
 
-        let view = window.current_view();
         let cache = self.this.clone();
         window
             .spawn(cx, async move |cx| {
@@ -245,8 +277,13 @@ impl ImageCache for LruImageCache {
                 cx.on_next_frame(move |_, cx| cx.notify(view));
             })
             .detach();
+    }
+}
 
-        None
+impl ImageCache for LruImageCache {
+    fn load(&mut self, resource: &Resource, window: &mut Window, cx: &mut App) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
+        let view = window.current_view();
+        self.load_for(resource, view, window, cx)
     }
 }
 
@@ -445,6 +482,70 @@ mod tests {
         let (bytes, budget, len) = cache.read_with(vcx, |cache, _| (cache.bytes(), cache.budget(), cache.len()));
         assert!(bytes <= budget, "{bytes} bytes against a {budget} budget once the decodes landed");
         assert_eq!(len, 1, "the rest were evicted");
+    }
+
+    /// Asks the cache for one picture from its own render, the way the feed asks for the tier a
+    /// cell wants, and keeps what it was told each frame.
+    struct Warmer {
+        cache: Entity<LruImageCache>,
+        path: PathBuf,
+        answers: Vec<bool>,
+    }
+
+    impl Render for Warmer {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let view = cx.entity_id();
+            let ready = self.cache.update(cx, |cache, cx| cache.warm(&resource(&self.path), view, window, cx));
+            self.answers.push(ready);
+            gpui::div()
+        }
+    }
+
+    #[gpui::test]
+    fn warm_starts_the_decode_and_reports_ready_only_once_it_has_finished(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let a = image_file(dir.path(), "a.png", [200, 30, 30]);
+        let cache = cx.update(|cx| LruImageCache::with_budget(8 * IMAGE_BYTES, cx));
+        let (warmer, vcx) = cx.add_window_view({
+            let cache = cache.clone();
+            let path = a.clone();
+            |_window, _cx| Warmer { cache, path, answers: Vec::new() }
+        });
+
+        // The first frame asks, is told no, and has started the decode.
+        warmer.read_with(vcx, |warmer, _| assert_eq!(warmer.answers, vec![false], "not decoded on the frame that asked"));
+        cache.read_with(vcx, |cache, _| assert!(cache.holds(&resource(&a)), "and the decode was started"));
+
+        // The decode lands, the view is redrawn, and the same question is answered yes.
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.simulate_next_frame(cx));
+        vcx.run_until_parked();
+        warmer.read_with(vcx, |warmer, _| assert_eq!(warmer.answers.last(), Some(&true), "ready on the frame after the decode landed: {:?}", warmer.answers));
+        cache.read_with(vcx, |cache, _| assert_eq!(cache.bytes(), IMAGE_BYTES, "charged like any other decode"));
+    }
+
+    /// Asking whether a picture is held is not drawing it, so it must not keep that picture alive
+    /// over one that is actually drawn.
+    #[gpui::test]
+    fn holds_reports_an_entry_without_renewing_it(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b, c) = (image_file(dir.path(), "a.png", [200, 30, 30]), image_file(dir.path(), "b.png", [30, 200, 30]), image_file(dir.path(), "c.png", [30, 30, 200]));
+        let (probe, vcx, cache) = probe(cx, 2 * IMAGE_BYTES);
+
+        draw(&probe, vcx, &[&a, &b]);
+        cache.read_with(vcx, |cache, _| {
+            assert!(cache.holds(&resource(&a)));
+            assert!(cache.holds(&resource(&a)), "asked twice, the way a cell asks every frame");
+            assert!(!cache.holds(&resource(&c)), "never asked for");
+        });
+
+        draw(&probe, vcx, &[&c]);
+
+        cache.update(vcx, |cache, _| {
+            assert!(cache.loaded(&resource(&a)).is_none(), "`holds` did not count as a use: `a` was still the least recently drawn");
+            assert!(cache.loaded(&resource(&b)).is_some());
+            assert!(cache.loaded(&resource(&c)).is_some());
+        });
     }
 
     #[gpui::test]

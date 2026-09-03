@@ -764,16 +764,40 @@ impl FeedView {
         !matches!(self.filter, FeedFilter::Favorites | FeedFilter::Assets)
     }
 
-    /// The thumbnail to draw in a cell: the large tier once the cell outgrows the standard one for
-    /// a picture of this shape, so big tiles stop being a stretched 400 px image. Falls back to
-    /// the standard tier until the large one has been rendered — see
+    /// The thumbnail a cell wants: the large tier once the cell outgrows the standard one for a
+    /// picture of this shape, so big tiles stop being a stretched 400 px image. Falls back to the
+    /// standard tier until the large one has been rendered — see
     /// [`LibraryModel::request_large_thumbnails`], which the zoom, scroll and library-change
-    /// paths drive.
+    /// paths drive. What the cell actually draws this frame is [`Self::thumbnail_to_draw`].
     fn thumbnail_for_cell(&self, standard: &std::path::Path, aspect_ratio: Option<f32>, cx: &App) -> PathBuf {
         if self.tier_for_cell(aspect_ratio) == thumbnails::THUMB_MAX {
             return standard.to_path_buf();
         }
         state::library(cx).read(cx).large_thumbnail(standard).map(std::path::Path::to_path_buf).unwrap_or_else(|| standard.to_path_buf())
+    }
+
+    /// The thumbnail a cell draws this frame. A tier the cell wants but the cache has not decoded
+    /// yet would paint nothing — gpui's image element draws no placeholder on a cache miss — so
+    /// the cell would blink to its grey frame while the sharper file decodes. Instead the picture
+    /// the cell is already showing stays until the wanted one is ready, and the cache is asked to
+    /// decode the wanted one now (it redraws this view when it lands). A cell holding neither,
+    /// scrolled in or just cleared by a zoom, goes straight to the tier it wants rather than
+    /// decoding the standard one only to replace it.
+    fn thumbnail_to_draw(&self, standard: &std::path::Path, aspect_ratio: Option<f32>, window: &mut Window, cx: &mut Context<Self>) -> PathBuf {
+        let wanted = self.thumbnail_for_cell(standard, aspect_ratio, cx);
+        if wanted == standard {
+            return wanted;
+        }
+        let view = cx.entity_id();
+        let (ready, held) = self.image_cache.update(cx, |cache, cx| {
+            let ready = cache.warm(&gpui::Resource::Path(wanted.clone().into()), view, window, cx);
+            (ready, cache.holds(&gpui::Resource::Path(standard.to_path_buf().into())))
+        });
+        if ready || !held {
+            wanted
+        } else {
+            standard.to_path_buf()
+        }
     }
 
     /// How the cells draw their pictures: square cells fill and crop, full-aspect cells letterbox.
@@ -847,7 +871,7 @@ impl FeedView {
     /// The visual cell: thumbnail / spinner / badges / selection ring, sized by
     /// [`Self::frame_fractions`] so the caller centres it in the cell. No listeners, so exit ghosts
     /// and the zoom crossfade can draw it too.
-    fn render_cell_body(&self, item: &Generation, thumbnail_opacity: f32, cx: &mut Context<Self>) -> gpui::Div {
+    fn render_cell_body(&self, item: &Generation, thumbnail_opacity: f32, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
         let selected = self.selection.contains(&EntryId::Generation(item.id.clone()));
         let (frame_w, frame_h) = self.frame_fractions(item.aspect_ratio_f32());
         let theme = cx.theme();
@@ -886,7 +910,7 @@ impl FeedView {
                 .into_any_element(),
             (_, _, MediaType::Audio) => v_flex().size_full().items_center().justify_center().child(icon("audio-lines").size_8().text_color(muted_fg)).into_any_element(),
             (_, Some(thumb), _) => {
-                let thumb = self.thumbnail_for_cell(thumb, item.aspect_ratio_f32(), cx);
+                let thumb = self.thumbnail_to_draw(thumb, item.aspect_ratio_f32(), window, cx);
                 let selector = format!("thumb-{}", item.id);
                 gpui::div().size_full().opacity(thumbnail_opacity).child(cover_image(thumb).debug_selector(move || selector.clone())).into_any_element()
             }
@@ -908,7 +932,7 @@ impl FeedView {
 
     /// An asset's cell: its thumbnail (audio: an icon; a file that went missing: an error), a
     /// duration badge and the selection ring — no generation state, no favourite, no HD.
-    fn render_asset_body(&self, asset: &Asset, thumbnail_opacity: f32, cx: &mut Context<Self>) -> gpui::Div {
+    fn render_asset_body(&self, asset: &Asset, thumbnail_opacity: f32, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
         let selected = self.selection.contains(&EntryId::Asset(asset.id.clone()));
         let (frame_w, frame_h) = self.frame_fractions(asset.aspect_ratio_f32());
         let theme = cx.theme();
@@ -924,7 +948,7 @@ impl FeedView {
                 .into_any_element(),
             (_, _, MediaType::Audio) => v_flex().size_full().items_center().justify_center().child(icon("audio-lines").size_8().text_color(muted_fg)).into_any_element(),
             (_, Some(thumb), _) => {
-                let thumb = self.thumbnail_for_cell(thumb, asset.aspect_ratio_f32(), cx);
+                let thumb = self.thumbnail_to_draw(thumb, asset.aspect_ratio_f32(), window, cx);
                 gpui::div().size_full().opacity(thumbnail_opacity).child(cover_image(thumb)).into_any_element()
             }
             (_, None, _) => v_flex().size_full().items_center().justify_center().child(icon("image").size_6().text_color(muted_fg)).into_any_element(),
@@ -941,10 +965,10 @@ impl FeedView {
             .when(selected, |d| d.child(gpui::div().absolute().inset_0().border_3().border_color(accent)))
     }
 
-    fn render_snapshot_body(&self, snapshot: &CellSnapshot, thumbnail_opacity: f32, cx: &mut Context<Self>) -> gpui::Div {
+    fn render_snapshot_body(&self, snapshot: &CellSnapshot, thumbnail_opacity: f32, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
         match snapshot {
-            CellSnapshot::Media(item) => self.render_cell_body(item, thumbnail_opacity, cx),
-            CellSnapshot::Asset(asset) => self.render_asset_body(asset, thumbnail_opacity, cx),
+            CellSnapshot::Media(item) => self.render_cell_body(item, thumbnail_opacity, window, cx),
+            CellSnapshot::Asset(asset) => self.render_asset_body(asset, thumbnail_opacity, window, cx),
         }
     }
 
@@ -968,7 +992,8 @@ impl FeedView {
     }
 
     /// Interactive cell around [`Self::render_cell_body`]: selection, drag-out and the context menu.
-    fn render_cell(&self, ix: usize, snapshot: &CellSnapshot, visual: Visual, style: CellStyle, thumbnail_opacity: f32, cx: &mut Context<Self>) -> impl IntoElement {
+    #[allow(clippy::too_many_arguments)]
+    fn render_cell(&self, ix: usize, snapshot: &CellSnapshot, visual: Visual, style: CellStyle, thumbnail_opacity: f32, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let id = snapshot.id();
         let id_right = id.clone();
         let id_menu = id.clone();
@@ -978,7 +1003,7 @@ impl FeedView {
         let entry = snapshot.entry();
         let drag_preview_img = entry.file().and_then(|file| crate::ui::picture_for(entry.kind(), entry.thumbnail(), file));
         let body = self
-            .render_snapshot_body(snapshot, thumbnail_opacity, cx)
+            .render_snapshot_body(snapshot, thumbnail_opacity, window, cx)
             .child(gpui::div().absolute().inset_0().child(record_bounds(self.cell_bounds.clone(), id.clone())));
 
         // Keyed by id, not index, so element state survives neighbours being removed.
@@ -1031,8 +1056,8 @@ impl FeedView {
     }
 
     /// A removed item still fading where it was, drawn from its render snapshot.
-    fn render_ghost(&self, ix: usize, ghost: &Ghost<CellSnapshot, EntryId>, style: CellStyle, cx: &mut Context<Self>) -> impl IntoElement {
-        let body = self.render_snapshot_body(&ghost.snapshot, 1.0, cx);
+    fn render_ghost(&self, ix: usize, ghost: &Ghost<CellSnapshot, EntryId>, style: CellStyle, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let body = self.render_snapshot_body(&ghost.snapshot, 1.0, window, cx);
         Self::cell_slot(("ghost", ix), ghost.from, style).child(body)
     }
 }
@@ -1507,7 +1532,7 @@ impl Render for FeedView {
                 continue;
             }
             let thumbnail_opacity = self.motion.thumbnail_opacity(&id, now);
-            cells.push(self.render_cell(ix, &snapshot, visual, style, thumbnail_opacity, cx).into_any_element());
+            cells.push(self.render_cell(ix, &snapshot, visual, style, thumbnail_opacity, window, cx).into_any_element());
             rendered.insert(id, snapshot);
         }
         let ghosts: Vec<gpui::AnyElement> = self
@@ -1515,7 +1540,7 @@ impl Render for FeedView {
             .ghosts()
             .enumerate()
             .filter(|(_, g)| visible(&g.from))
-            .map(|(ix, g)| self.render_ghost(ix, g, self.motion.ghost_style(g, now), cx).into_any_element())
+            .map(|(ix, g)| self.render_ghost(ix, g, self.motion.ghost_style(g, now), window, cx).into_any_element())
             .collect();
         self.last_rendered = rendered;
         let grid = gpui::div()
@@ -2678,6 +2703,100 @@ mod tests {
         view.update(vcx, |feed, cx| {
             assert_eq!(feed.shape, ThumbnailShape::AspectRatio);
             assert_eq!(feed.thumbnail_for_cell(&portrait, Some(90. / 160.), cx), portrait);
+        });
+    }
+
+    /// A zoomed-in feed with its standard tiers decoded and on screen, and the large tier of the
+    /// first picture known to the library but still decoding.
+    struct LargeTierInFlight {
+        view: Entity<FeedView>,
+        cache: Entity<LruImageCache>,
+        standard: PathBuf,
+        large: PathBuf,
+        /// Finishes the large tier's decode with the image it is sent.
+        decode: futures::channel::oneshot::Sender<std::sync::Arc<gpui::RenderImage>>,
+    }
+
+    fn feed_with_a_large_tier_in_flight(cx: &mut TestAppContext) -> (LargeTierInFlight, &mut VisualTestContext) {
+        let (view, vcx, env) = feed_window!(cx, 2);
+        env.library.update(vcx, |m, cx| m.start_thumbnails(cx));
+        vcx.run_until_parked();
+        let standard = env.library.read_with(vcx, |m, _| m.lib.assets()[0].thumbnail.clone().expect("thumbnailed"));
+        vcx.simulate_resize(gpui::size(px(800.), px(600.)));
+        vcx.dispatch_action(ZoomIn);
+        vcx.dispatch_action(ZoomIn);
+        vcx.run_until_parked();
+        // Two frames: the first asks the cache for the standard tiers, the second draws them.
+        for _ in 0..2 {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            vcx.run_until_parked();
+        }
+        let cache = view.update(vcx, |feed, _| feed.image_cache());
+        cache.update(vcx, |cache, _| assert!(cache.loaded(&resource(&standard)).is_some(), "the standard tier is on screen"));
+        view.update(vcx, |feed, cx| {
+            assert_eq!(feed.tier_for_cell(None), thumbnails::THUMB_LARGE, "the cells outgrew it");
+            assert_eq!(feed.thumbnail_for_cell(&standard, None, cx), standard, "but nothing larger exists yet");
+        });
+
+        // Park the large tier's decode before the library can publish the file, then let the
+        // settle timer render and publish it.
+        let large = thumbnails::sized_thumb_path(&standard, thumbnails::THUMB_LARGE).expect("a thumbnail path");
+        let view_id = view.entity_id();
+        let sender = vcx.update(|window, cx| cache.update(cx, |cache, cx| cache.hold_pending_for_test(&resource(&large), view_id, window, cx)));
+        vcx.background_executor.advance_clock(LARGE_TIER_SETTLE * 2);
+        vcx.run_until_parked();
+        view.update(vcx, |feed, cx| assert_eq!(feed.thumbnail_for_cell(&standard, None, cx), large, "the cell wants the large tier now"));
+        (LargeTierInFlight { view, cache, standard, large, decode: sender }, vcx)
+    }
+
+    fn resource(path: &Path) -> gpui::Resource {
+        gpui::Resource::Path(path.to_path_buf().into())
+    }
+
+    /// The large tier used to replace the standard one the moment the library had rendered it,
+    /// which was a new cache key: the cell painted nothing until the decode landed, a grey blink
+    /// on every cell a quarter-second after each scroll.
+    #[gpui::test]
+    fn the_large_tier_waits_for_its_decode_before_replacing_the_standard_one(cx: &mut TestAppContext) {
+        let (LargeTierInFlight { view, cache, standard, large, decode }, vcx) = feed_with_a_large_tier_in_flight(cx);
+
+        let drawn = vcx.update(|window, cx| view.update(cx, |feed, cx| feed.thumbnail_to_draw(&standard, None, window, cx)));
+        assert_eq!(drawn, standard, "the standard tier stays on screen while the large one decodes");
+        cache.read_with(vcx, |cache, _| assert!(cache.holds(&resource(&large)), "and the large one is being decoded"));
+
+        // A frame drawn meanwhile does not change that.
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        vcx.run_until_parked();
+        let drawn = vcx.update(|window, cx| view.update(cx, |feed, cx| feed.thumbnail_to_draw(&standard, None, window, cx)));
+        assert_eq!(drawn, standard);
+
+        // The decode lands: the cell switches on the frame the cache redraws the feed for.
+        let image = cache.update(vcx, |cache, _| cache.loaded(&resource(&standard))).expect("decoded");
+        assert!(decode.send(image).is_ok(), "the decode is awaited");
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.simulate_next_frame(cx));
+        vcx.run_until_parked();
+        let drawn = vcx.update(|window, cx| view.update(cx, |feed, cx| feed.thumbnail_to_draw(&standard, None, window, cx)));
+        assert_eq!(drawn, large, "the large tier replaces it once it can be drawn");
+    }
+
+    /// A cell holding neither tier — scrolled in, or every tile dropped by a zoom step — has
+    /// nothing to keep on screen, so it asks for the tier it wants rather than decoding the
+    /// standard one only to replace it a moment later.
+    #[gpui::test]
+    fn a_cell_holding_no_tier_draws_the_large_one_straight_away(cx: &mut TestAppContext) {
+        let (LargeTierInFlight { view, cache, standard, large, decode: _decode }, vcx) = feed_with_a_large_tier_in_flight(cx);
+
+        let drawn = vcx.update(|window, cx| {
+            // A zoom step drops everything held, the pending large decode included.
+            cache.update(cx, |cache, cx| cache.set_target(1, Fit::Contain, window, cx));
+            assert_eq!(cache.read(cx).len(), 0);
+            view.update(cx, |feed, cx| feed.thumbnail_to_draw(&standard, None, window, cx))
+        });
+        assert_eq!(drawn, large, "nothing to keep, so the wanted tier is asked for directly");
+        cache.read_with(vcx, |cache, _| {
+            assert!(cache.holds(&resource(&large)), "its decode has started");
+            assert!(!cache.holds(&resource(&standard)), "and the standard tier was not decoded for nothing");
         });
     }
 
