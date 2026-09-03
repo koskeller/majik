@@ -45,7 +45,7 @@ impl ComposeTab {
         match self {
             ComposeTab::Media(MediaType::Image) => "image-frame",
             ComposeTab::Media(MediaType::Video) => "video-ai",
-            ComposeTab::Media(MediaType::Audio) => "audio-lines",
+            ComposeTab::Media(MediaType::Audio) => "audio-ai",
             ComposeTab::Tool(ToolId::Upscale) => "four-k",
             ComposeTab::Tool(ToolId::RemoveBackground) => "background-eraser",
         }

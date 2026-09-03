@@ -250,11 +250,14 @@ pub fn segmented(id: impl Into<ElementId>, items: impl IntoIterator<Item = (impl
     segmented_group(id, toggles, selected, on_select).small()
 }
 
-/// [`segmented`] drawn as glyphs, each item's label its tooltip, at the medium control height and
-/// filling the row: the composer's type row, where five labels beside icons would not fit the
-/// panel at its narrowest.
+/// [`segmented`] as a row of equal cells filling the width, each a glyph over a small caption:
+/// the composer's type row, where five labels beside icons would not fit the panel at its
+/// narrowest.
 pub fn segmented_icons(id: impl Into<ElementId>, items: impl IntoIterator<Item = (impl Into<ElementId>, &'static str, impl Into<SharedString>)>, selected: usize, on_select: impl Fn(usize, &mut Window, &mut App) + 'static) -> ToggleGroup {
-    let toggles = items.into_iter().map(|(id, glyph, label)| Toggle::new(id).icon(icon(glyph).size_5()).tooltip(label).flex_1());
+    let toggles = items.into_iter().map(|(id, glyph, label)| {
+        let cell = gpui_component::v_flex().items_center().gap_1().child(icon(glyph).size_5()).child(div().text_xs().whitespace_nowrap().child(label.into()));
+        Toggle::new(id).child(cell).flex_1().h_auto().px_1().py_1p5()
+    });
     segmented_group(id, toggles, selected, on_select).w_full()
 }
 
