@@ -25,9 +25,11 @@ use crate::ui::{button, chip, color_to, duration_badges, enter_card, exit_card, 
 /// Asset cards are `ASSET_CARD` square.
 const ASSET_CARD: Pixels = px(84.);
 /// Most images one request may ask for.
-/// The prompt box is at least this tall (about eight lines); it grows into whatever height the
-/// panel has left and scrolls inside past that.
-const PROMPT_HEIGHT: Pixels = px(180.);
+/// The prompt box takes whatever height the panel has left and scrolls inside past that, and
+/// shrinks with the window down to this floor: two lines of text over the Improve row. Anything
+/// taller pushes the footer under the box at the window's minimum height, because the sections
+/// above the prompt (tabs, model, options, references) don't give up height.
+const PROMPT_MIN_HEIGHT: Pixels = px(72.);
 /// How long a removed card keeps shrinking before it is dropped (matches `ui::exit_card`).
 const CARD_EXIT: Duration = crate::ui::MOTION_FAST;
 
@@ -1382,13 +1384,15 @@ impl Render for ComposeView {
                 d.text_xs().text_color(muted_fg).child(format!("→ {name} album"))
             }))
             .child(
-                button("generate")
-                    .icon(icon(glyph))
-                    .label(if total > 1 { format!("{verb} {total}") } else { verb.to_string() })
-                    .primary()
-                    .disabled(!can || self.improving.is_some())
-                    .tooltip_with_action("Generate", &Generate, Some("Compose"))
-                    .on_click(cx.listener(|v, _, window, cx| v.generate(window, cx))),
+                gpui::div().debug_selector(|| "generate-button".into()).child(
+                    button("generate")
+                        .icon(icon(glyph))
+                        .label(if total > 1 { format!("{verb} {total}") } else { verb.to_string() })
+                        .primary()
+                        .disabled(!can || self.improving.is_some())
+                        .tooltip_with_action("Generate", &Generate, Some("Compose"))
+                        .on_click(cx.listener(|v, _, window, cx| v.generate(window, cx))),
+                ),
             );
         // Right-aligned under the button it prices, in the same muted caption style as the album
         // hint beside it.
@@ -1475,9 +1479,10 @@ impl Render for ComposeView {
                             h_flex().justify_end().items_center().p_1().child(control)
                         });
                         let prompt = v_flex()
+                            .debug_selector(|| "prompt-box".into())
                             .flex_1()
                             .w_full()
-                            .min_h(PROMPT_HEIGHT)
+                            .min_h(PROMPT_MIN_HEIGHT)
                             .rounded_md()
                             .border_1()
                             .border_color(if prompt_focused { ring } else { border })
@@ -2473,6 +2478,26 @@ mod tests {
             v.insert_handle("@Image2".into(), w, cx);
         });
         assert_eq!(view.read_with(vcx, |v, cx| v.prompt_text(cx)), "@Image1 waves at @Image2 ");
+    }
+
+    /// At the window's minimum height with the panel at its narrowest, the prompt box gives up its
+    /// height rather than run under the footer: Generate and the estimate sit below it, inside the
+    /// window, and the box keeps room for a couple of lines and its Improve row.
+    #[gpui::test]
+    fn a_short_window_shrinks_the_prompt_box_instead_of_overlapping_the_footer(cx: &mut TestAppContext) {
+        let (view, vcx, _e) = compose_window!(cx, "Mock");
+        let window_size = gpui::size(px(380.), px(600.));
+        vcx.simulate_resize(window_size);
+        for media in [MediaType::Image, MediaType::Video, MediaType::Audio] {
+            view.update_in(vcx, |v, window, cx| v.set_media_type(media, window, cx));
+            vcx.run_until_parked();
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            let prompt = vcx.debug_bounds("prompt-box").expect("the prompt box is drawn");
+            let generate = vcx.debug_bounds("generate-button").expect("the Generate button is drawn");
+            assert!(generate.origin.y >= prompt.bottom(), "{media:?}: Generate under the prompt box: {generate:?} vs {prompt:?}");
+            assert!(generate.bottom() <= window_size.height, "{media:?}: Generate inside the window: {generate:?}");
+            assert!(prompt.size.height >= PROMPT_MIN_HEIGHT, "{media:?}: the box keeps its floor: {:?}", prompt.size.height);
+        }
     }
 
     /// A clip is built between its frames, so those pickers lead the row — whatever order the
