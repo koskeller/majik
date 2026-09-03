@@ -552,6 +552,21 @@ mod tests {
     }
 
     #[test]
+    fn the_bundle_plist_names_both_icon_formats() {
+        // `bundle-mac` ships two icons: `Majik.icns` (CFBundleIconFile, macOS 11–15 and every
+        // non-Apple consumer) and the Icon Composer package compiled into Assets.car
+        // (CFBundleIconName, macOS 26's layered icon). Both names are `Majik`; the compile step
+        // passes the same name to actool, so a rename here has to reach the script too.
+        let plist = include_str!("../../../packaging/Info.plist");
+        assert!(plist.contains("<key>CFBundleIconFile</key><string>Majik</string>"));
+        assert!(plist.contains("<key>CFBundleIconName</key><string>Majik</string>"));
+        let bundle_mac = include_str!("../../../script/bundle-mac");
+        assert!(bundle_mac.contains("--app-icon Majik"), "script/bundle-mac compiles the icon under another name");
+        let icon = include_str!("../../../packaging/Majik.icon/icon.json");
+        assert!(icon.contains("\"image-name\""), "packaging/Majik.icon is not an Icon Composer package");
+    }
+
+    #[test]
     fn the_bundle_plist_templates_the_version() {
         let plist = include_str!("../../../packaging/Info.plist");
         // `script/bundle-mac` substitutes both CFBundleVersion and CFBundleShortVersionString.

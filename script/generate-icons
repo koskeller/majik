@@ -3,16 +3,27 @@
 # hand — the outputs are committed so the Linux and Windows CI jobs need no macOS tooling.
 #
 #   script/generate-icons
+#
+# The master is the flat, square, edge-to-edge artwork (the same image `packaging/Majik.icon`, the
+# Icon Composer package the macOS 26 icon is compiled from, carries as its layer). The rounded
+# corners are not in the file: `script/lib/render-icon.swift` lays the artwork into Apple's icon
+# shape first, and every size below is scaled from that render, so all three platforms get the same
+# icon and the artwork is edited in one place.
 set -euo pipefail
 # shellcheck source=script/lib/release.sh
 source "$(dirname "$0")/lib/release.sh"
 cd "$(repo_root)"
 
-master="packaging/icon-master.png"
-[[ -f "$master" ]] || { echo "Missing ${master}." >&2; exit 1; }
+artwork="packaging/icon-master.png"
+[[ -f "$artwork" ]] || { echo "Missing ${artwork}." >&2; exit 1; }
+
+work="$(mktemp -d)"
+master="$work/icon-1024.png"
+echo "Rendering ${artwork} into the app-icon shape"
+swift script/lib/render-icon.swift "$artwork" "$master"
 
 echo "macOS: packaging/Majik.icns"
-iconset="$(mktemp -d)/Majik.iconset"
+iconset="$work/Majik.iconset"
 mkdir -p "$iconset"
 for size in 16 32 128 256 512; do
     sips -z $size $size "$master" --out "$iconset/icon_${size}x${size}.png" > /dev/null

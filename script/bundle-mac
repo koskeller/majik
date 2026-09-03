@@ -45,6 +45,18 @@ sed "s/__VERSION__/${version}/g" packaging/Info.plist > "$app/Contents/Info.plis
 plutil -lint "$app/Contents/Info.plist" > /dev/null
 cp "$binary" "$app/Contents/MacOS/majik"
 cp packaging/Majik.icns "$app/Contents/Resources/Majik.icns"
+# macOS 26 draws the layered Liquid Glass icon from the compiled Icon Composer package
+# (`CFBundleIconName` → Assets.car); older releases fall back to the icns above. actool ships inside
+# Xcode.app, not the Command Line Tools, so a machine without Xcode cannot produce a bundle.
+if ! actool="$(xcrun --find actool 2> /dev/null)"; then
+    echo "actool not found: install Xcode (it is not in the Command Line Tools) to bundle the app icon." >&2
+    exit 1
+fi
+icon_build="$(mktemp -d)"
+# actool also writes a Majik.icns here, but it stops at 256 px; the one copied above has every size.
+"$actool" packaging/Majik.icon --compile "$icon_build" --app-icon Majik --platform macosx \
+    --minimum-deployment-target 11.0 --output-partial-info-plist "$icon_build/icon.plist" > /dev/null
+cp "$icon_build/Assets.car" "$app/Contents/Resources/Assets.car"
 # GPL-3 asks that the licence travel with every binary we hand out.
 cp LICENSE NOTICE "$app/Contents/Resources/"
 
