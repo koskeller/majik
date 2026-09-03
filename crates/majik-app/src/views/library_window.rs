@@ -161,6 +161,15 @@ pub(crate) fn notification_copy(completed: usize, failed: usize) -> (String, Str
     (title, parts.join(" · "))
 }
 
+/// The saved screen, or the Library once the album it named is gone (deleted, or a different
+/// library folder); the next switch overwrites the stale value.
+fn saved_screen(config: &Config, library: &majik_core::Library) -> FeedFilter {
+    match &config.screen {
+        FeedFilter::Album(id) if library.album(id).is_none() => FeedFilter::Library,
+        screen => screen.clone(),
+    }
+}
+
 impl LibraryWindow {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let sidebar = cx.new(SidebarView::new);
@@ -174,17 +183,22 @@ impl LibraryWindow {
         cx.subscribe(&sidebar, |this, _, ev: &SidebarEvent, cx| match ev {
             SidebarEvent::Select(filter) => {
                 this.detail = None;
-                this.feed.update(cx, |f, cx| f.set_filter(filter.clone(), cx));
-                let album = match filter {
-                    FeedFilter::Album(id) => Some(id.clone()),
-                    _ => None,
-                };
-                this.compose.update(cx, |c, cx| c.set_album(album, cx));
+                Self::move_to(&this.feed, &this.compose, filter, cx);
+                update_config(cx, |c| c.screen = filter.clone());
                 cx.notify();
             }
             SidebarEvent::OpenSettings => crate::windows::open_settings(Default::default(), cx),
         })
         .detach();
+
+        // Reopen on the screen the window last showed. The sidebar's row is set directly rather
+        // than through `select`, which would emit into a window that isn't built yet.
+        let library = crate::state::library(cx);
+        let screen = saved_screen(cx.global::<Config>(), &library.read(cx).lib);
+        if screen != FeedFilter::Library {
+            sidebar.update(cx, |sidebar, _| sidebar.selected = screen.clone());
+            Self::move_to(&feed, &compose, &screen, cx);
+        }
 
         cx.subscribe_in(&feed, window, |this, _, ev: &FeedEvent, window, cx| match ev {
             FeedEvent::Open { ids, index, origin } => {
@@ -261,7 +275,6 @@ impl LibraryWindow {
 
         cx.observe_window_appearance(window, |_, window, cx| follow_system_appearance(window, cx)).detach();
 
-        let library = crate::state::library(cx);
         cx.subscribe_in(&library, window, |this, _, ev: &LibraryEvent, window, cx| match ev {
             LibraryEvent::GenerationFinished { ok } => this.note_finished(*ok, window, cx),
             LibraryEvent::Error { message } => crate::ui::toast(window, message.clone(), cx),
@@ -295,6 +308,17 @@ impl LibraryWindow {
             menu_bar: AppMenuBar::new(cx),
             menu_state: MenuState::default(),
         }
+    }
+
+    /// Point the feed and the composer's album target at `filter`: what selecting a sidebar row
+    /// does, and what reopening on a saved screen does.
+    fn move_to(feed: &Entity<FeedView>, compose: &Entity<ComposeView>, filter: &FeedFilter, cx: &mut App) {
+        feed.update(cx, |f, cx| f.set_filter(filter.clone(), cx));
+        let album = match filter {
+            FeedFilter::Album(id) => Some(id.clone()),
+            _ => None,
+        };
+        compose.update(cx, |c, cx| c.set_album(album, cx));
     }
 
     fn panel(&self, side: Side) -> &SidePanel {
@@ -1431,5 +1455,118 @@ mod tests {
     #[gpui::test]
     fn composer_drag_while_the_sidebar_is_hidden_keeps_the_composer_width(cx: &mut TestAppContext) {
         drag_while_other_hidden(cx, Side::Sidebar, Side::Composer, px(520.));
+    }
+
+    fn screen(window: &Entity<LibraryWindow>, vcx: &mut VisualTestContext) -> (FeedFilter, FeedFilter) {
+        window.read_with(vcx, |w, cx| (w.feed.read(cx).filter().clone(), w.sidebar.read(cx).selected.clone()))
+    }
+
+    fn saved_screen_in_config(vcx: &mut VisualTestContext) -> FeedFilter {
+        vcx.update(|_, cx| cx.global::<Config>().screen.clone())
+    }
+
+    fn create_album(e: &TestEnv, vcx: &mut VisualTestContext, name: &str) -> majik_core::model::AlbumId {
+        e.library.update(vcx, |m, cx| m.create_album(name.into(), cx))
+    }
+
+    #[gpui::test]
+    fn reopens_on_the_last_screen(cx: &mut TestAppContext) {
+        for (keys, expected) in [("secondary-2", FeedFilter::Favorites), ("secondary-3", FeedFilter::Assets)] {
+            let (_e, window, vcx) = library(cx, 1);
+            assert_eq!(screen(&window, vcx), (FeedFilter::Library, FeedFilter::Library), "a fresh config opens on the Library");
+            vcx.simulate_keystrokes(keys);
+            draw(vcx);
+            assert_eq!(saved_screen_in_config(vcx), expected, "{keys} is remembered as it happens");
+
+            // Relaunch: a second window over the same config.
+            let (window, vcx) = root_window(cx);
+            draw(vcx);
+            assert_eq!(screen(&window, vcx), (expected.clone(), expected.clone()), "{keys} comes back, feed and sidebar row alike");
+        }
+    }
+
+    #[gpui::test]
+    fn switching_back_to_the_library_is_remembered_too(cx: &mut TestAppContext) {
+        let (_e, _window, vcx) = library(cx, 1);
+        vcx.simulate_keystrokes("secondary-2");
+        vcx.simulate_keystrokes("secondary-1");
+        draw(vcx);
+        assert_eq!(saved_screen_in_config(vcx), FeedFilter::Library);
+        let (window, vcx) = root_window(cx);
+        draw(vcx);
+        assert_eq!(screen(&window, vcx), (FeedFilter::Library, FeedFilter::Library));
+    }
+
+    #[gpui::test]
+    fn reopens_on_the_last_album_and_generates_into_it(cx: &mut TestAppContext) {
+        let (e, window, vcx) = library(cx, 0);
+        let album = create_album(&e, vcx, "Cats");
+        let sidebar = window.read_with(vcx, |w, _| w.sidebar.clone());
+        sidebar.update(vcx, |s, cx| s.select(FeedFilter::Album(album.clone()), cx));
+        draw(vcx);
+        assert_eq!(saved_screen_in_config(vcx), FeedFilter::Album(album.clone()));
+
+        let (window, vcx) = root_window(cx);
+        draw(vcx);
+        let expected = FeedFilter::Album(album.clone());
+        assert_eq!(screen(&window, vcx), (expected.clone(), expected), "the album comes back");
+        // The composer targets the restored album exactly as if its row had been clicked.
+        vcx.simulate_keystrokes("secondary-n");
+        vcx.simulate_input("a cat");
+        vcx.simulate_keystrokes("secondary-enter");
+        e.library.read_with(vcx, |m, _| {
+            let generating = m.lib.in_flight();
+            assert_eq!(generating.len(), 1);
+            assert!(m.lib.album(&album).expect("album").items.contains(&generating[0].id), "landed in the restored album");
+        });
+    }
+
+    #[gpui::test]
+    fn a_deleted_album_falls_back_to_the_library_on_relaunch(cx: &mut TestAppContext) {
+        let (e, window, vcx) = library(cx, 1);
+        let album = create_album(&e, vcx, "Cats");
+        let sidebar = window.read_with(vcx, |w, _| w.sidebar.clone());
+        sidebar.update(vcx, |s, cx| s.select(FeedFilter::Album(album.clone()), cx));
+        draw(vcx);
+        // Gone behind the window's back (the model path, as a sync or another window would do it),
+        // so the saved screen still names it.
+        e.library.update(vcx, |m, cx| m.delete_album(&album, cx));
+        assert_eq!(saved_screen_in_config(vcx), FeedFilter::Album(album.clone()));
+
+        let (window, vcx) = root_window(cx);
+        draw(vcx);
+        assert_eq!(screen(&window, vcx), (FeedFilter::Library, FeedFilter::Library), "never opens on an unavailable album");
+    }
+
+    #[gpui::test]
+    fn a_screen_from_another_library_falls_back_to_the_library(cx: &mut TestAppContext) {
+        let _e = env(cx, 1, "Mock");
+        cx.update(|cx| {
+            let config = cx.global_mut::<Config>();
+            config.onboarding_completed = true;
+            config.screen = FeedFilter::Album(majik_core::model::AlbumId("from-another-library".into()));
+        });
+        let (window, vcx) = root_window(cx);
+        draw(vcx);
+        assert_eq!(screen(&window, vcx), (FeedFilter::Library, FeedFilter::Library));
+        // The stale value is left alone until the next switch overwrites it.
+        vcx.simulate_keystrokes("secondary-2");
+        draw(vcx);
+        assert_eq!(saved_screen_in_config(vcx), FeedFilter::Favorites);
+    }
+
+    #[gpui::test]
+    fn deleting_the_current_album_persists_the_library_screen(cx: &mut TestAppContext) {
+        let (e, window, vcx) = library(cx, 0);
+        let album = create_album(&e, vcx, "Cats");
+        let sidebar = window.read_with(vcx, |w, _| w.sidebar.clone());
+        sidebar.update(vcx, |s, cx| s.select(FeedFilter::Album(album.clone()), cx));
+        draw(vcx);
+        // What the sidebar's Delete confirmation does once answered.
+        e.library.update(vcx, |m, cx| m.delete_album(&album, cx));
+        sidebar.update(vcx, |s, cx| s.select(FeedFilter::Library, cx));
+        draw(vcx);
+        assert_eq!(saved_screen_in_config(vcx), FeedFilter::Library);
+        assert_eq!(screen(&window, vcx), (FeedFilter::Library, FeedFilter::Library));
     }
 }

@@ -27,8 +27,10 @@ use crate::{now_ms, thumbnails, video};
 pub const CACHE_DIR_NAME: &str = ".majik";
 const DB_FILE: &str = "library.db";
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FeedFilter {
+    #[default]
     Library,
     Favorites,
     Album(AlbumId),

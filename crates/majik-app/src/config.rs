@@ -4,6 +4,7 @@
 use crate::composer_state::ComposeTab;
 use gpui::{App, Global};
 use majik_core::model::{MediaType, ToolId};
+use majik_core::FeedFilter;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -218,6 +219,10 @@ pub struct Config {
     pub compose_panel_open: bool,
     #[serde(default)]
     pub compose_panel_width: Option<f32>,
+    /// The screen the Library window last showed; it opens there again, falling back to the
+    /// Library once a saved album is gone (see `LibraryWindow::new`).
+    #[serde(default)]
+    pub screen: FeedFilter,
     /// The folder the last Save wrote to; the next save panel opens there (falling back to the
     /// home folder while unset or once the folder is gone).
     #[serde(default)]
@@ -289,6 +294,7 @@ impl Default for Config {
             sidebar_width: None,
             compose_panel_open: true,
             compose_panel_width: None,
+            screen: FeedFilter::Library,
             save_directory: None,
         }
     }
@@ -643,5 +649,20 @@ mod tests {
     fn config_without_recent_models_deserializes_to_none_recorded() {
         let config: Config = serde_json::from_str(r#"{"provider":"fal"}"#).unwrap();
         assert_eq!(config.recent_models, RecentModels::default());
+    }
+
+    #[test]
+    fn config_without_a_screen_opens_on_the_library() {
+        let config: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(config.screen, FeedFilter::Library);
+    }
+
+    #[test]
+    fn an_album_screen_round_trips_through_json() {
+        let screen = FeedFilter::Album(majik_core::model::AlbumId("a1".into()));
+        let json = serde_json::to_string(&screen).unwrap();
+        assert_eq!(json, r#"{"album":"a1"}"#);
+        assert_eq!(serde_json::from_str::<FeedFilter>(&json).unwrap(), screen);
+        assert_eq!(serde_json::to_string(&FeedFilter::Favorites).unwrap(), r#""favorites""#);
     }
 }
