@@ -19,7 +19,7 @@ use majik_providers::{ImageResolution, ProviderDescriptor, VideoResolution};
 
 use crate::composer_state::ComposeTab;
 use crate::config::Config;
-use crate::ui::{icon, logo_tile};
+use crate::ui::{icon, logo_tile, tint};
 use crate::views::compose::ComposeView;
 
 #[derive(Clone, Debug)]
@@ -294,11 +294,11 @@ impl Selectable for ModelListItem {
 impl RenderOnce for ModelListItem {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
-        let (muted, muted_fg, primary) = (theme.muted, theme.muted_foreground, theme.primary);
+        let (chip_fill, muted_fg, primary) = (tint(cx), theme.muted_foreground, theme.primary);
         let tile = logo_tile(self.row.logo, self.row.manufacturer, LOGO_SIZE, cx);
         let mut chips = h_flex().min_w_0().gap_1().flex_nowrap().overflow_hidden();
         for chip in &self.row.chips {
-            chips = chips.child(gpui::div().flex_none().px_1p5().py_0p5().rounded_full().bg(muted).text_xs().whitespace_nowrap().text_color(muted_fg).child(chip.clone()));
+            chips = chips.child(gpui::div().flex_none().px_1p5().py_0p5().rounded_full().bg(chip_fill).text_xs().whitespace_nowrap().text_color(muted_fg).child(chip.clone()));
         }
         self.base.h(px(ROW_HEIGHT)).px_2().py_0().rounded_md().overflow_hidden().child(
             h_flex()
@@ -356,7 +356,7 @@ pub fn open_model_picker(compose: WeakEntity<ComposeView>, provider: &'static Pr
             .px_3()
             .gap_2()
             .rounded_md()
-            .bg(cx.theme().muted)
+            .bg(tint(cx))
             .items_center()
             .child(icon("search").size_4().flex_none().text_color(cx.theme().muted_foreground))
             .child(Input::new(&search_for_dialog).appearance(false).cleanable(true).p_0().flex_1());
@@ -457,6 +457,19 @@ mod tests {
 
     fn image_index(id: &str) -> usize {
         image::ALL.iter().position(|m| m.id == id).expect("model in the Mock catalog")
+    }
+
+    #[gpui::test]
+    fn a_click_outside_closes_the_picker_and_keeps_the_model(cx: &mut TestAppContext) {
+        let (view, vcx) = compose_window(cx);
+        let flux_pro = image_index("flux-2-pro");
+        select_model(&view, vcx, flux_pro);
+        let _list = open(&view, vcx);
+        assert!(dialog_open(vcx));
+        vcx.simulate_click(gpui::point(px(4.), px(200.)), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(!dialog_open(vcx), "the picker has no close button; a click on the backdrop dismisses it");
+        assert_eq!(model_index(&view, vcx), flux_pro);
     }
 
     #[gpui::test]

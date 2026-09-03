@@ -40,15 +40,33 @@ pub fn install_theme(cx: &mut App) {
 
 /// A dialog is a raised surface like a menu or a popover, so it takes the popover colour.
 /// gpui-component paints it on the window ground, which put the model picker on a different grey
-/// from the settings menus beside it.
+/// from the settings menus beside it. It is dismissed by Escape or a click outside, like a menu,
+/// so it carries no close button: the one gpui-component draws sat over the top-right corner of
+/// the content.
 pub trait Raised: Sized {
     fn raised(self, cx: &App) -> Self;
 }
 
 impl Raised for gpui_component::dialog::Dialog {
     fn raised(self, cx: &App) -> Self {
-        self.bg(cx.theme().popover)
+        // gpui-component's own backdrop press is dead at this revision: its listener sits on an
+        // unsized wrapper that the pointer is never over. This guard fills the dialog's box and
+        // turns a press outside it into the Cancel that Escape sends, so a dialog's on-cancel and
+        // on-close callbacks run the same way. The title bar's band is left to window dragging.
+        let click_out = div().absolute().inset_0().on_mouse_down_out(|event, window, cx| {
+            if event.button == gpui::MouseButton::Left && event.position.y >= gpui_component::TITLE_BAR_HEIGHT {
+                window.dispatch_action(Box::new(gpui_base::actions::Cancel), cx);
+            }
+        });
+        self.bg(cx.theme().popover).close_button(false).child(click_out)
     }
+}
+
+/// The fill of a chip or a field laid on a surface: a tenth of the foreground, so it stands off
+/// the ground it sits on in either mode. The theme's `muted` is the popover colour in dark, and
+/// a chip painted with it on a dialog disappears.
+pub fn tint(cx: &App) -> Hsla {
+    cx.theme().foreground.opacity(0.1)
 }
 
 /// A small control drawn straight on the panel: the composer's setting pickers and toggles. It

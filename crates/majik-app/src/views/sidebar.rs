@@ -425,6 +425,20 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_click_outside_the_new_album_dialog_closes_it(cx: &mut TestAppContext) {
+        let _e = env(cx, 0, "Mock");
+        let (view, vcx) = sidebar_window(cx);
+        view.update_in(vcx, |v, window, cx| {
+            v.open_new_album(window, cx);
+        });
+        vcx.run_until_parked();
+        assert!(vcx.update(|window, cx| window.has_active_dialog(cx)));
+        vcx.simulate_click(gpui::point(gpui::px(4.), gpui::px(200.)), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(!vcx.update(|window, cx| window.has_active_dialog(cx)), "the dialog has no close button; a click on the backdrop dismisses it");
+    }
+
+    #[gpui::test]
     fn rename_album_dialog_opens_with_the_name_field_focused(cx: &mut TestAppContext) {
         let e = env(cx, 0, "Mock");
         let (view, vcx) = sidebar_window(cx);
