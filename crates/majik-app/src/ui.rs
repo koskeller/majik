@@ -237,6 +237,50 @@ pub fn format_duration(secs: f64) -> String {
     }
 }
 
+/// Height of the badges in a thumbnail's bottom corners (favourite, duration, HD).
+pub const THUMB_BADGE_HEIGHT: Pixels = px(18.);
+
+/// A thumbnail's bottom-corner badge strip. The caller picks the corner (`.left_1()` /
+/// `.right_1()`, or the half-step insets a small card uses) and fills it with [`thumb_badge`]s:
+/// they lay out side by side, so a clip that is also upscaled shows its length and HD next to each
+/// other instead of one on top of the other.
+pub fn thumb_badges() -> Div {
+    gpui_component::h_flex().absolute().bottom_1().gap_1()
+}
+
+/// The badges a thumbnail draws in its bottom-right corner, in order: how long a clip or a track
+/// runs, then HD when its output came out of an upscaler. An upscaled clip carries both, which is
+/// why they sit in a strip rather than in the corner on top of each other. A still has no length
+/// to state, whatever its row says.
+pub fn duration_badges(duration_secs: Option<f64>, media_type: majik_core::model::MediaType, is_upscaled: bool) -> Vec<SharedString> {
+    let mut badges = Vec::new();
+    if let Some(secs) = duration_secs.filter(|_| media_type != majik_core::model::MediaType::Image) {
+        badges.push(format_duration(secs).into());
+    }
+    if is_upscaled {
+        badges.push("HD".into());
+    }
+    badges
+}
+
+/// A pill in a badge strip: one height and one backdrop for every badge, whether it holds an icon
+/// or text. `rounded_full` because a badge is a pill by nature, unlike the `rounded_sm` caption
+/// that may sit in the opposite corner.
+pub fn thumb_badge() -> Div {
+    div()
+        .flex_none()
+        .h(THUMB_BADGE_HEIGHT)
+        .min_w(THUMB_BADGE_HEIGHT)
+        .px_1p5()
+        .rounded_full()
+        .bg(gpui::black().opacity(0.55))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_xs()
+        .text_color(gpui::white())
+}
+
 pub fn format_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut v = bytes as f64;
@@ -566,6 +610,18 @@ mod tests {
     use super::*;
     use gpui::{CursorStyle, TestAppContext};
     use std::cell::Cell;
+
+    #[test]
+    fn duration_badges_state_a_length_for_clips_and_tracks_but_never_stills() {
+        use majik_core::model::MediaType;
+        assert_eq!(duration_badges(Some(5.0), MediaType::Video, true), vec!["0:05", "HD"], "length first, HD outermost");
+        assert_eq!(duration_badges(Some(5.0), MediaType::Video, false), vec!["0:05"]);
+        assert_eq!(duration_badges(None, MediaType::Image, true), vec!["HD"]);
+        assert_eq!(duration_badges(None, MediaType::Image, false), Vec::<SharedString>::new(), "a plain image gets no strip at all");
+        assert_eq!(duration_badges(Some(5.0), MediaType::Image, false), Vec::<SharedString>::new(), "a still has no length to state");
+        assert_eq!(duration_badges(Some(75.0), MediaType::Audio, false), vec!["1:15"]);
+        assert_eq!(duration_badges(None, MediaType::Video, false), Vec::<SharedString>::new(), "a clip not yet probed says nothing");
+    }
 
     #[test]
     fn only_a_still_picture_stands_in_for_its_own_thumbnail() {

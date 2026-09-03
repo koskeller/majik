@@ -20,7 +20,7 @@ use crate::composer_state::{unsupported_message, ComposeTab, ComposerState, Draf
 use crate::config::{update_config, Config};
 use crate::drafts::Drafts;
 use crate::state::{self, DraggedAssets, LibraryModel, PendingCompose};
-use crate::ui::{button, chip, color_to, enter_card, exit_card, icon, now, section_label, segmented, spin, Chip, MOTION_FAST};
+use crate::ui::{button, chip, color_to, duration_badges, enter_card, exit_card, icon, now, section_label, segmented, spin, thumb_badge, thumb_badges, Chip, MOTION_FAST};
 
 /// Asset cards are `ASSET_CARD` square.
 const ASSET_CARD: Pixels = px(84.);
@@ -871,11 +871,22 @@ impl ComposeView {
         chip(id).icon(icon(icon_name)).label(label).caret().tooltip(tooltip)
     }
 
+    /// What a card stamps in its bottom-right corner: how long a clip or a track runs, as the feed
+    /// does, so a reference video doesn't pass for a still. An image, an asset whose file is gone,
+    /// and a track the probe hasn't measured yet get nothing.
+    fn asset_badges(&self, asset: &DraftAsset, cx: &App) -> Vec<SharedString> {
+        match self.library.read(cx).lib.asset(&asset.asset).filter(|a| !a.missing) {
+            Some(stored) => duration_badges(stored.duration_secs, stored.kind, false),
+            None => Vec::new(),
+        }
+    }
+
     /// An asset thumbnail. With `remove_index` it carries the ⊗ badge; exit ghosts pass `None`.
     fn render_asset_card(&self, asset: &DraftAsset, remove_index: Option<usize>, cx: &mut Context<Self>) -> gpui::Div {
         let muted = cx.theme().muted;
         let stored = self.library.read(cx).lib.asset(&asset.asset).cloned();
         let is_audio = asset.role == AssetRole::Audio;
+        let badges = self.asset_badges(asset, cx);
         gpui::div()
             .relative()
             .w(ASSET_CARD)
@@ -902,6 +913,8 @@ impl ComposeView {
                 None => v_flex().size_full().items_center().justify_center().child(icon("file-x").size_5()).into_any_element(),
             })
             .child(gpui::div().absolute().bottom_0p5().left_0p5().px_1().rounded_sm().bg(gpui::black().opacity(0.5)).text_xs().text_color(gpui::white()).child(asset.role.display_name()))
+            // The length sits opposite the role caption, inset the same half step on this small card.
+            .when(!badges.is_empty(), |d| d.child(thumb_badges().bottom_0p5().right_0p5().children(badges.into_iter().map(|badge| thumb_badge().child(badge)))))
             // Always-visible remove badge (a clear dark circle); it does not depend on hover.
             .when_some(remove_index, |d, i| {
                 d.child(
@@ -2303,6 +2316,37 @@ mod tests {
         let id = asset.clone();
         view.update(vcx, move |v, cx| v.add_asset(id, role, cx));
         asset
+    }
+
+    /// A clip's card says how long it runs, as the feed's cell does; a still's says nothing.
+    #[gpui::test]
+    fn asset_card_shows_a_clips_length_but_not_a_stills(cx: &mut TestAppContext) {
+        let (view, vcx, _e) = compose_window!(cx, "Mock");
+        select_video_model(&view, vcx, "seedance-2.5");
+        let clip = add_clip(&view, vcx, AssetRole::ReferenceVideo);
+        let still = add(&view, vcx, "a.png", AssetRole::ReferenceImage);
+        view.update(vcx, |v, cx| {
+            let badges: Vec<(AssetId, Vec<SharedString>)> = v.state.active_assets().iter().map(|a| (a.asset.clone(), v.asset_badges(a, cx))).collect();
+            assert_eq!(badges, vec![(clip, vec!["0:02".into()]), (still, vec![])], "the mock clip runs two seconds; the still has no length to state");
+        });
+    }
+
+    /// The card stays when the file behind it is gone (so it can be removed), but no longer
+    /// claims a length it can't play.
+    #[gpui::test]
+    fn asset_card_drops_the_length_once_the_file_is_gone(cx: &mut TestAppContext) {
+        let (view, vcx, _e) = compose_window!(cx, "Mock");
+        select_video_model(&view, vcx, "seedance-2.5");
+        let clip = add_clip(&view, vcx, AssetRole::ReferenceVideo);
+        let library = view.read_with(vcx, |v, _| v.library.clone());
+        library.update(vcx, |m, _| {
+            std::fs::remove_file(&m.lib.asset(&clip).unwrap().path).unwrap();
+            m.lib.reload().unwrap();
+        });
+        view.update(vcx, |v, cx| {
+            let draft = v.state.active_assets()[0].clone();
+            assert!(v.asset_badges(&draft, cx).is_empty());
+        });
     }
 
     /// The handles are per role and per position, so the second image is `@Image2` whatever else is

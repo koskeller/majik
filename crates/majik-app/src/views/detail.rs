@@ -20,7 +20,7 @@ use crate::image_cache::{LruImageCache, DETAIL_IMAGE_BUDGET};
 use crate::morph::{Direction, Morph};
 use crate::paging::{self, Edges, Paging, Step};
 use crate::state::{self, LibraryModel, PendingCompose};
-use crate::ui::{BoundsSlot, bounds_slot, button, checkerboard, fade_to, format_bytes, format_date, format_duration, icon, measure, now, slot_size, spin};
+use crate::ui::{BoundsSlot, bounds_slot, button, checkerboard, duration_badges, fade_to, format_bytes, format_date, format_duration, icon, measure, now, slot_size, spin, thumb_badge, thumb_badges};
 use crate::views::feed::{copy_items, save_item, Exportable, SaveOutcome};
 
 pub enum DetailEvent {
@@ -189,13 +189,15 @@ impl EventEmitter<DetailEvent> for DetailView {}
 
 /// An input asset as the info panel shows it: its role and the picture that stands for it — the
 /// image itself, a video's thumbnail (an `img` of an mp4 draws nothing), or none for audio and for
-/// a video whose thumbnail hasn't been rendered yet, which get an icon card instead.
+/// a video whose thumbnail hasn't been rendered yet, which get an icon card instead — and how long
+/// it runs when it is a clip or a track, stamped on the card as the feed does.
 #[derive(Clone, Debug, PartialEq)]
 struct InfoAsset {
     role: String,
     kind: MediaType,
     path: std::path::PathBuf,
     picture: Option<std::path::PathBuf>,
+    duration_secs: Option<f64>,
 }
 
 fn item_pixel_size(item: &Generation) -> Option<(f32, f32)> {
@@ -909,7 +911,7 @@ impl DetailView {
             .into_iter()
             .map(|(link, asset)| {
                 let picture = crate::ui::picture_for(asset.kind, asset.thumbnail.as_deref(), &asset.path);
-                InfoAsset { role: link.role, kind: asset.kind, path: asset.path, picture }
+                InfoAsset { role: link.role, kind: asset.kind, path: asset.path, picture, duration_secs: asset.duration_secs }
             })
             .collect();
         self.info_assets = Some((item.id.clone(), assets));
@@ -1271,7 +1273,11 @@ impl DetailView {
                         card.child(v_flex().size_full().items_center().justify_center().child(icon(glyph).size_5()))
                     }
                 };
-                card.child(gpui::div().absolute().bottom_0p5().left_0p5().px_1().rounded_sm().bg(gpui::black().opacity(0.5)).text_xs().text_color(gpui::white()).child(caption)).into_any_element()
+                let badges = duration_badges(asset.duration_secs, asset.kind, false);
+                card.child(gpui::div().absolute().bottom_0p5().left_0p5().px_1().rounded_sm().bg(gpui::black().opacity(0.5)).text_xs().text_color(gpui::white()).child(caption))
+                    // The length sits opposite the role caption, inset the same half step.
+                    .when(!badges.is_empty(), |d| d.child(thumb_badges().bottom_0p5().right_0p5().children(badges.into_iter().map(|badge| thumb_badge().child(badge)))))
+                    .into_any_element()
             })
             .collect();
 
@@ -2093,6 +2099,7 @@ mod tests {
         let roles: Vec<&str> = assets.iter().map(|a| a.role.as_str()).collect();
         assert_eq!(roles, ["first_frame", "last_frame"], "role order, not attach order");
         assert!(assets.iter().all(|a| a.picture.as_ref().is_some_and(|p| p.is_file())), "every strip image is a stored asset file");
+        assert!(assets.iter().all(|a| a.duration_secs.is_none()), "a still has no length to stamp on its card");
     }
 
     #[gpui::test]
@@ -2108,6 +2115,7 @@ mod tests {
         assert_eq!(assets.len(), 1);
         assert_eq!((assets[0].kind, assets[0].picture.as_deref()), (MediaType::Video, Some(thumbnail.as_path())), "the card draws the thumbnail, never the mp4");
         assert_eq!(assets[0].path, asset.path, "the caption still knows the file");
+        assert_eq!(assets[0].duration_secs, Some(2.0), "the card stamps how long the clip runs, as the feed's cell does");
     }
 
     #[gpui::test]
