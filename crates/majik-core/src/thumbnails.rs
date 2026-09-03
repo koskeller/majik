@@ -102,10 +102,16 @@ pub fn thumb_key(path: &Path) -> Result<String> {
 /// Directory (blob-key prefix) every thumbnail lives under.
 pub const THUMBS_PREFIX: &str = ".majik/thumbs";
 
+/// What a video poster's name carries after the hash (`<hash>@poster.jpg`). It says which recipe
+/// made the file: the first frame, the one playback starts on. A poster without it was taken 0.1 s
+/// into the clip by an older build and is re-rendered on open (see `Library::reload`).
+pub const POSTER_MARK: &str = "@poster";
+
 /// Blob key for a thumbnail with the given hash, tier and extension. The standard tier keeps the
 /// bare `<hash>.<ext>` it has always had; the large tier is suffixed with what its size bounds
 /// (`<hash>@fill800.<ext>`), so the two live side by side and a file from before the large tier
-/// bounded the short edge is never mistaken for one.
+/// bounded the short edge is never mistaken for one. A video poster's `hash` already carries
+/// [`POSTER_MARK`], for the same reason.
 fn thumb_blob_key(hash: &str, tier: u32, ext: &str) -> String {
     match tier_fit(tier) {
         Fit::Contain => format!("{THUMBS_PREFIX}/{hash}.{ext}"),
@@ -160,7 +166,7 @@ pub fn ensure_thumbnail_sized(path: &Path, kind: MediaType, tier: u32, store: &d
             store.local_path(&key)
         }
         MediaType::Video => {
-            let key = thumb_blob_key(&hash, tier, "jpg");
+            let key = thumb_blob_key(&format!("{hash}{POSTER_MARK}"), tier, "jpg");
             if store.exists(&key) {
                 return store.local_path(&key);
             }
@@ -209,6 +215,11 @@ mod tests {
         let path = ensure_thumbnail(&item, library.blobs().as_ref()).unwrap();
         assert!(path.starts_with(dir.path().join(THUMBS_PREFIX)), "{}", path.display());
         assert_eq!(path.extension().and_then(|e| e.to_str()), Some("jpg"));
+        let name = path.file_name().unwrap().to_string_lossy();
+        assert!(name.ends_with("@poster.jpg"), "a poster says which recipe made it: {name}");
+        let large = ensure_thumbnail_sized(&item.path.clone().unwrap(), MediaType::Video, THUMB_LARGE, library.blobs().as_ref()).unwrap();
+        assert_eq!(sized_thumb_path(&path, THUMB_LARGE).as_deref(), Some(large.as_path()), "the large tier sits beside it");
+        assert!(large.file_name().unwrap().to_string_lossy().ends_with("@poster@fill800.jpg"));
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(&bytes[..2], &[0xFF, 0xD8], "not a JPEG");
         let poster = image::load_from_memory(&bytes).unwrap().to_rgb8();

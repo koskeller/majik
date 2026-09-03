@@ -277,7 +277,11 @@ impl Library {
                 }
             }
             if let Some(key) = asset.thumbnail.as_deref().and_then(thumbnails::thumb_key_for_path) {
-                if !self.blobs.exists(&key) {
+                // A video poster without the mark was taken 0.1 s into the clip by an older
+                // build, a different picture from the one playback starts on: forget it, so the
+                // sweep drops the file and `start_thumbnails` renders the first frame instead.
+                let stale_poster = asset.kind == MediaType::Video && !key.contains(thumbnails::POSTER_MARK);
+                if stale_poster || !self.blobs.exists(&key) {
                     asset.thumbnail = None;
                 }
             }
@@ -1647,6 +1651,31 @@ mod tests {
         assert!(!stale.exists(), "unreferenced thumbnail swept on reload");
         assert!(thumb_b.exists(), "referenced thumbnail kept");
         assert_eq!(lib.get(&b).unwrap().thumbnail.as_deref(), Some(thumb_b.as_path()));
+    }
+
+    /// Posters used to be the frame 0.1 s in; now they are the first frame, which is what the
+    /// detail opens on. A poster from before is told apart by its name and re-rendered.
+    #[test]
+    fn reload_rerenders_a_video_poster_made_before_the_first_frame_recipe() {
+        let (dir, mut lib) = temp_library(0);
+        let id = lib.add_generating(MediaType::Video, None, None, None, None);
+        lib.complete_generation(&id, &video::encode_solid_clip(64, 64, 1, [200, 100, 50]).unwrap(), false).unwrap();
+        let thumbs = dir.path().join(CACHE_DIR_NAME).join("thumbs");
+        std::fs::create_dir_all(&thumbs).unwrap();
+        let old = thumbs.join("0123456789abcdef01234567.jpg");
+        std::fs::write(&old, b"a poster taken 0.1 s in").unwrap();
+        lib.set_thumbnail(&id, old.clone());
+        assert_eq!(lib.get(&id).unwrap().thumbnail.as_deref(), Some(old.as_path()));
+
+        lib.reload().unwrap();
+        assert_eq!(lib.get(&id).unwrap().thumbnail, None, "the old poster is forgotten");
+        assert!(!old.exists(), "and its file swept");
+
+        let fresh = thumbnails::ensure_thumbnail(lib.get(&id).unwrap(), lib.blobs().as_ref()).unwrap();
+        assert!(fresh.file_name().unwrap().to_string_lossy().ends_with("@poster.jpg"), "{}", fresh.display());
+        lib.set_thumbnail(&id, fresh.clone());
+        lib.reload().unwrap();
+        assert_eq!(lib.get(&id).unwrap().thumbnail.as_deref(), Some(fresh.as_path()), "a first-frame poster survives reload");
     }
 
     #[test]

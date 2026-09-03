@@ -1863,6 +1863,32 @@ mod tests {
         assert_eq!(shown_pts(&detail, vcx), Some(0.0));
     }
 
+    /// The poster the detail opens on is the feed's thumbnail, and the first decoded frame replaces
+    /// it in place, so the two have to be the same picture: the first frame. A clip whose first
+    /// frame differs from the rest shows a poster taken anywhere else as a visible swap.
+    #[gpui::test]
+    fn the_video_poster_is_the_frame_the_player_first_shows(cx: &mut TestAppContext) {
+        use crate::test_support::{two_colour_clip, TWO_COLOUR_FIRST};
+        let (detail, vcx, env, video) = video_detail!(cx, Seed { bytes: Some(two_colour_clip()), ..Seed::default() });
+        env.library.update(vcx, |m, cx| m.start_thumbnails(cx));
+        vcx.run_until_parked();
+
+        let poster = env.library.read_with(vcx, |m, _| m.lib.get(&video).unwrap().thumbnail.clone()).expect("the poster is rendered");
+        assert!(poster.file_name().unwrap().to_string_lossy().ends_with("@poster.jpg"), "{}", poster.display());
+        let poster = image::open(&poster).unwrap().to_rgb8();
+        let poster_px = poster.get_pixel(poster.width() / 2, poster.height() / 2).0;
+
+        let frame_px = detail.read_with(vcx, |d, _| {
+            let frame = d.player.as_ref().and_then(|p| p.frame()).expect("first frame decoded");
+            let at = ((frame.height / 2 * frame.width + frame.width / 2) * 4) as usize;
+            let [b, g, r, _] = frame.bgra[at..at + 4] else { unreachable!() };
+            [r, g, b]
+        });
+        let close = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| (i32::from(*x) - i32::from(y)).abs() <= 12);
+        assert!(close(frame_px, TWO_COLOUR_FIRST), "playback starts on the first frame: {frame_px:?}");
+        assert!(close(poster_px, frame_px), "the poster is that same picture (JPEG aside): poster {poster_px:?}, frame {frame_px:?}");
+    }
+
     #[gpui::test(iterations = 5)]
     fn space_plays_and_frames_advance_with_the_clock(cx: &mut TestAppContext) {
         let (detail, vcx, _env, _video) = video_detail!(cx, Seed::default());

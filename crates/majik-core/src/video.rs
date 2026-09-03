@@ -83,9 +83,6 @@ impl Frame {
     }
 }
 
-/// The poster frame is taken this far into the clip.
-const POSTER_SECS: f64 = 0.1;
-
 /// Upper bound on samples fed per `frame_at` call so a scrub across a long GOP cannot stall the
 /// caller; the next call carries on from where this one stopped.
 const MAX_SAMPLES_PER_CALL: usize = 64;
@@ -226,12 +223,14 @@ impl Demuxed {
     }
 }
 
-/// The frame at ≈0.1 s (or the last one for shorter clips) fitted inside `max_dim`, never upscaled.
+/// The first picture of the clip — the one playback starts on, so the poster and the player's
+/// first frame are the same picture — fitted inside `max_dim`, never upscaled. The demuxer shifts
+/// composition times so the first picture is at 0 s (edit lists included).
 pub fn poster(path: &Path, max_dim: u32) -> Result<image::RgbaImage, VideoError> {
     let mut source = Source::open(path)?;
-    let frame = match source.frame_at(POSTER_SECS)? {
+    let frame = match source.frame_at(0.0)? {
         Some(frame) => frame,
-        // The first picture starts after the poster time (edit lists): take whatever is last.
+        // Nothing decoded within one call's sample budget: carry on to whatever comes out last.
         None => source.frame_at(source.duration())?.ok_or_else(|| VideoError::Decode("no picture decoded".into()))?,
     };
     let image = frame.to_rgba_image();
@@ -481,17 +480,26 @@ pub fn encode_solid_clip(width: u32, height: u32, seconds: u32, rgb: [u8; 3]) ->
 /// General form of [`encode_solid_clip`]: `frames` pictures at `fps`, a keyframe every
 /// `keyframe_every` frames (1 = all-intra).
 pub fn encode_clip(width: u32, height: u32, frames: u32, fps: u32, keyframe_every: u32, rgb: [u8; 3]) -> Result<Vec<u8>, VideoError> {
+    encode_clip_frames(width, height, fps, keyframe_every, &vec![rgb; frames as usize])
+}
+
+/// [`encode_clip`] with one solid colour per frame, for clips whose pictures differ: what tells the
+/// first frame apart from the ones after it.
+pub fn encode_clip_frames(width: u32, height: u32, fps: u32, keyframe_every: u32, colours: &[[u8; 3]]) -> Result<Vec<u8>, VideoError> {
     let width = (width.max(2) & !1) as usize;
     let height = (height.max(2) & !1) as usize;
     let fps = fps.max(1);
     let keyframe_every = keyframe_every.max(1);
+    let frames = colours.len() as u32;
 
-    let (y, u, v) = rgb_to_yuv(rgb);
     let luma = width * height;
-    let mut planes = vec![y; luma * 3 / 2];
-    planes[luma..luma + luma / 4].fill(u);
-    planes[luma + luma / 4..].fill(v);
-    let picture = YUVBuffer::from_vec(planes, width, height);
+    let picture_of = |rgb: [u8; 3]| {
+        let (y, u, v) = rgb_to_yuv(rgb);
+        let mut planes = vec![y; luma * 3 / 2];
+        planes[luma..luma + luma / 4].fill(u);
+        planes[luma + luma / 4..].fill(v);
+        YUVBuffer::from_vec(planes, width, height)
+    };
 
     let config = EncoderConfig::new()
         .max_frame_rate(FrameRate::from_hz(fps as f32))
@@ -501,10 +509,11 @@ pub fn encode_clip(width: u32, height: u32, frames: u32, fps: u32, keyframe_ever
     let mut sps: Option<Vec<u8>> = None;
     let mut pps: Option<Vec<u8>> = None;
     let mut samples: Vec<(Vec<u8>, bool)> = Vec::with_capacity(frames as usize);
-    for i in 0..frames {
+    for (i, &rgb) in (0..frames).zip(colours) {
         if i % keyframe_every == 0 {
             encoder.force_intra_frame();
         }
+        let picture = picture_of(rgb);
         let stream = encoder.encode_at(&picture, Timestamp::from_millis(u64::from(i) * 1000 / u64::from(fps)))?;
         let mut sample = Vec::new();
         let mut is_sync = false;
@@ -1042,12 +1051,27 @@ mod tests {
     }
 
     #[test]
-    fn poster_of_clip_shorter_than_100ms_uses_last_frame() {
+    fn poster_of_a_one_frame_clip_is_that_frame() {
         let dir = tempfile::tempdir().unwrap();
         let path = clip_file(&dir, "short.mp4", &encode_clip(64, 64, 1, 30, 1, RGB).unwrap());
-        assert!(probe(&path).unwrap().duration_secs.unwrap() < POSTER_SECS);
         let poster = poster(&path, 400).unwrap();
         assert_colour(&poster.get_pixel(32, 32).0[..3], RGB);
+    }
+
+    /// The feed's thumbnail and the picture the detail opens on come from the same frame: the first
+    /// one. A poster taken 0.1 s in is frame 2 or 3 of a 24–30 fps clip, and on a real clip that is
+    /// a visibly different picture from the frame playback starts on.
+    #[test]
+    fn poster_is_the_picture_playback_starts_on() {
+        const RED: [u8; 3] = [220, 30, 30];
+        const BLUE: [u8; 3] = [30, 30, 220];
+        let dir = tempfile::tempdir().unwrap();
+        let path = clip_file(&dir, "two-colour.mp4", &encode_clip_frames(64, 64, 30, 1, &[RED, BLUE, BLUE, BLUE, BLUE, BLUE]).unwrap());
+        let poster = poster(&path, 400).unwrap();
+        assert_colour(&poster.get_pixel(32, 32).0[..3], RED);
+
+        let first = Source::open(&path).unwrap().frame_at(0.0).unwrap().unwrap().to_rgba_image();
+        assert_eq!(poster.get_pixel(32, 32), first.get_pixel(32, 32), "the poster is the player's first frame, byte for byte");
     }
 
     #[test]

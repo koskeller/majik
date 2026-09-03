@@ -255,6 +255,19 @@ pub fn mock_clip() -> &'static [u8] {
     CLIP.get_or_init(|| majik_providers::mock::video_renderer::render_blocking(64, 64, 2, [200, 100, 50]).expect("mock clip encodes"))
 }
 
+/// A 64×64, 30 fps clip whose first frame is [`TWO_COLOUR_FIRST`] and every later frame
+/// [`TWO_COLOUR_REST`]: what tells the first picture apart from the ones after it.
+pub fn two_colour_clip() -> &'static [u8] {
+    static CLIP: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    CLIP.get_or_init(|| {
+        let mut colours = vec![TWO_COLOUR_REST; 12];
+        colours[0] = TWO_COLOUR_FIRST;
+        majik_core::video::encode_clip_frames(64, 64, 30, 1, &colours).expect("two-colour clip encodes")
+    })
+}
+pub const TWO_COLOUR_FIRST: [u8; 3] = [220, 30, 30];
+pub const TWO_COLOUR_REST: [u8; 3] = [30, 30, 220];
+
 /// [`mock_clip`] with its sample entry renamed to a codec nothing decodes.
 pub fn unsupported_clip() -> &'static [u8] {
     static CLIP: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
