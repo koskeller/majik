@@ -401,6 +401,16 @@ impl ComposerState {
         self.provider.supported_image_models.get(self.image.model)
     }
 
+    /// The catalog id of the active tab's selected model.
+    pub fn model_id(&self) -> Option<&'static str> {
+        match self.tab {
+            ComposeTab::Media(MediaType::Image) => self.image_model().map(|m| m.id),
+            ComposeTab::Media(MediaType::Video) => self.video_model().map(|m| m.id),
+            ComposeTab::Media(MediaType::Audio) => self.audio_model().map(|m| m.id),
+            ComposeTab::Tool(tool) => self.tool_model(tool).map(|m| m.id),
+        }
+    }
+
     pub fn video_model(&self) -> Option<&'static VideoModel> {
         self.provider.supported_video_models.get(self.video.model)
     }

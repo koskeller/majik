@@ -1,8 +1,9 @@
 //! App-level preferences (`config.json` in the OS app-data dir) and where the app keeps its files.
 //! Library state lives in the library DB.
 
+use crate::composer_state::ComposeTab;
 use gpui::{App, Global};
-use majik_core::model::MediaType;
+use majik_core::model::{MediaType, ToolId};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -193,6 +194,10 @@ pub struct Config {
     /// prompt and a video prompt are different texts, and switching tabs shows each its own.
     #[serde(default)]
     pub draft_prompts: DraftPrompts,
+    /// The models generated with most recently, one list per composer tab; the picker shows them
+    /// above the full catalog.
+    #[serde(default)]
+    pub recent_models: RecentModels,
     /// Skip animations (`App::set_reduce_motion`). GPUI doesn't read the OS setting, so this is an
     /// in-app preference instead.
     #[serde(default)]
@@ -276,6 +281,7 @@ impl Default for Config {
             grid_zoom: default_zoom(),
             thumbnail_shape: ThumbnailShape::default(),
             draft_prompts: DraftPrompts::default(),
+            recent_models: RecentModels::default(),
             reduce_motion: false,
             library_frame: None,
             settings_frame: None,
@@ -318,6 +324,57 @@ impl DraftPrompts {
             MediaType::Video => &mut self.video,
             MediaType::Audio => &mut self.audio,
         }
+    }
+}
+
+/// See [`Config::recent_models`]: catalog model ids, newest first. A catalog model is the same
+/// model on every provider, so the lists are per tab rather than per provider, and the picker
+/// shows whichever of them the current provider offers.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentModels {
+    #[serde(default)]
+    pub image: Vec<String>,
+    #[serde(default)]
+    pub video: Vec<String>,
+    #[serde(default)]
+    pub audio: Vec<String>,
+    #[serde(default)]
+    pub upscale: Vec<String>,
+    #[serde(default)]
+    pub remove_background: Vec<String>,
+}
+
+impl RecentModels {
+    /// How many a tab remembers: enough to hold the models someone alternates between, few
+    /// enough that the section stays a shortcut rather than a second catalog.
+    pub const LIMIT: usize = 5;
+
+    pub fn get(&self, tab: ComposeTab) -> &[String] {
+        match tab {
+            ComposeTab::Media(MediaType::Image) => &self.image,
+            ComposeTab::Media(MediaType::Video) => &self.video,
+            ComposeTab::Media(MediaType::Audio) => &self.audio,
+            ComposeTab::Tool(ToolId::Upscale) => &self.upscale,
+            ComposeTab::Tool(ToolId::RemoveBackground) => &self.remove_background,
+        }
+    }
+
+    fn get_mut(&mut self, tab: ComposeTab) -> &mut Vec<String> {
+        match tab {
+            ComposeTab::Media(MediaType::Image) => &mut self.image,
+            ComposeTab::Media(MediaType::Video) => &mut self.video,
+            ComposeTab::Media(MediaType::Audio) => &mut self.audio,
+            ComposeTab::Tool(ToolId::Upscale) => &mut self.upscale,
+            ComposeTab::Tool(ToolId::RemoveBackground) => &mut self.remove_background,
+        }
+    }
+
+    /// Move `model_id` to the front of `tab`'s list, dropping the oldest past [`Self::LIMIT`].
+    pub fn record(&mut self, tab: ComposeTab, model_id: &str) {
+        let list = self.get_mut(tab);
+        list.retain(|id| id != model_id);
+        list.insert(0, model_id.to_string());
+        list.truncate(Self::LIMIT);
     }
 }
 
@@ -550,5 +607,41 @@ mod tests {
         // The overrides deliberately ignore the channel: that is how a dev build opens a copy of
         // the real library. Only the fallback follows the channel.
         assert!(default_library_root().starts_with(app_dirs().map(|d| d.data).unwrap_or_else(|| PathBuf::from("."))));
+    }
+
+    #[test]
+    fn recent_models_are_newest_first_without_repeats_and_capped() {
+        let tab = ComposeTab::Media(MediaType::Image);
+        let mut recent = RecentModels::default();
+        recent.record(tab, "a");
+        recent.record(tab, "b");
+        recent.record(tab, "a");
+        assert_eq!(recent.get(tab), ["a", "b"], "using a model again moves it to the front");
+        for id in ["c", "d", "e", "f"] {
+            recent.record(tab, id);
+        }
+        assert_eq!(recent.get(tab).len(), RecentModels::LIMIT);
+        assert_eq!(recent.get(tab).first().map(String::as_str), Some("f"));
+        assert!(!recent.get(tab).iter().any(|id| id == "b"), "the oldest falls off: {:?}", recent.get(tab));
+    }
+
+    #[test]
+    fn recent_models_are_kept_per_tab() {
+        let mut recent = RecentModels::default();
+        recent.record(ComposeTab::Media(MediaType::Image), "flux");
+        recent.record(ComposeTab::Media(MediaType::Video), "kling");
+        recent.record(ComposeTab::Tool(ToolId::Upscale), "topaz");
+        recent.record(ComposeTab::Tool(ToolId::RemoveBackground), "bria");
+        assert_eq!(recent.get(ComposeTab::Media(MediaType::Image)), ["flux"]);
+        assert_eq!(recent.get(ComposeTab::Media(MediaType::Video)), ["kling"]);
+        assert!(recent.get(ComposeTab::Media(MediaType::Audio)).is_empty());
+        assert_eq!(recent.get(ComposeTab::Tool(ToolId::Upscale)), ["topaz"]);
+        assert_eq!(recent.get(ComposeTab::Tool(ToolId::RemoveBackground)), ["bria"]);
+    }
+
+    #[test]
+    fn config_without_recent_models_deserializes_to_none_recorded() {
+        let config: Config = serde_json::from_str(r#"{"provider":"fal"}"#).unwrap();
+        assert_eq!(config.recent_models, RecentModels::default());
     }
 }

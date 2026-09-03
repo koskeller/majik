@@ -594,6 +594,7 @@ impl ComposeView {
         self.library.update(cx, |m, cx| {
             m.generate(requests, &inputs, album, cx);
         });
+        self.remember_model(cx);
         self.prompt.update(cx, |s, cx| s.set_value("", window, cx));
         if let ComposeTab::Media(media) = self.state.tab {
             update_config(cx, |c| c.draft_prompts.get_mut(media).clear());
@@ -601,6 +602,14 @@ impl ComposeView {
         self.state.clear_active_assets();
         crate::ui::toast(window, format!("Generating {total} item(s) with {}…", self.state.provider.display_name), cx);
         cx.notify();
+    }
+
+    /// Put the active tab's model at the top of that tab's recents, once its request has gone
+    /// out: the picker lists them first, so a model someone alternates between is one click away.
+    fn remember_model(&self, cx: &mut App) {
+        let Some(id) = self.state.model_id() else { return };
+        let tab = self.state.tab;
+        update_config(cx, |c| c.recent_models.record(tab, id));
     }
 
     /// Submit on a tool tab: one row per attached input with the tab's selected model and settings.
@@ -629,6 +638,7 @@ impl ComposeView {
             crate::ui::toast(window, if video { "No supported videos (MP4)." } else { "No supported images (PNG, JPEG, WebP or GIF)." }, cx);
             return;
         }
+        self.remember_model(cx);
         self.state.clear_active_assets();
         self.reset_transients();
         let noun = if video { "video" } else { "image" };
@@ -2913,6 +2923,52 @@ mod tests {
         let rows = tool_rows(&e, vcx, ToolId::RemoveBackground);
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|r| r.model_name.as_deref() == Some("Mock Remove Background")));
+    }
+
+    fn recent_models(vcx: &mut VisualTestContext) -> crate::config::RecentModels {
+        vcx.update(|_, cx| cx.global::<Config>().recent_models.clone())
+    }
+
+    /// Every submit puts the model it went out with at the front of its tab's recents, so the
+    /// picker can list them first; the tabs keep separate lists.
+    #[gpui::test]
+    fn generate_records_the_model_as_recently_used_for_its_tab(cx: &mut TestAppContext) {
+        let (view, vcx, _e) = compose_window!(cx, "Mock");
+        assert_eq!(recent_models(vcx), crate::config::RecentModels::default(), "nothing before the first generation");
+        select_image_model(&view, vcx, "seedream-4.5");
+        set_prompt(&view, vcx, "a cat");
+        view.update_in(vcx, |v, w, cx| v.generate(w, cx));
+        vcx.run_until_parked();
+        assert_eq!(recent_models(vcx).image, ["seedream-4.5"]);
+
+        select_image_model(&view, vcx, "flux-2-pro");
+        set_prompt(&view, vcx, "a dog");
+        view.update_in(vcx, |v, w, cx| v.generate(w, cx));
+        vcx.run_until_parked();
+        let recent = recent_models(vcx);
+        assert_eq!(recent.image, ["flux-2-pro", "seedream-4.5"], "newest first");
+        assert!(recent.video.is_empty() && recent.audio.is_empty(), "other tabs are untouched: {recent:?}");
+    }
+
+    #[gpui::test]
+    fn a_refused_generate_records_no_recent_model(cx: &mut TestAppContext) {
+        let (view, vcx, _e) = compose_window!(cx, "Mock");
+        view.update_in(vcx, |v, w, cx| v.generate(w, cx));
+        vcx.run_until_parked();
+        assert!(recent_models(vcx).image.is_empty(), "no prompt, no request, nothing to remember");
+    }
+
+    #[gpui::test]
+    fn running_a_tool_records_its_model_as_recently_used(cx: &mut TestAppContext) {
+        let (view, vcx, e) = compose_window!(cx, "Mock");
+        switch_to_tab(&view, vcx, ComposeTab::Tool(ToolId::RemoveBackground));
+        let model = view.read_with(vcx, |v, _| v.state.model_id().expect("a background removal model"));
+        add_files(&view, vcx, input_pngs(&e, 1), AssetRole::ReferenceImage);
+        view.update_in(vcx, |v, w, cx| v.generate(w, cx));
+        vcx.run_until_parked();
+        let recent = recent_models(vcx);
+        assert_eq!(recent.remove_background, [model]);
+        assert!(recent.upscale.is_empty() && recent.image.is_empty(), "{recent:?}");
     }
 
     fn paste(view: &gpui::Entity<ComposeView>, vcx: &mut VisualTestContext) {

@@ -3,6 +3,10 @@
 //! Typing filters the rows, ↑/↓ move the highlight, Enter picks and Escape closes. Built on
 //! gpui-component's `List`, which owns the search input and the `"List"` key context, so the
 //! keyboard behaviour is the same as its `Select` / `ComboBox`.
+//!
+//! The models generated with most recently (`Config::recent_models`, per tab) sit in a `Recent`
+//! section above `All models`, so alternating between a few is one click; the section goes away
+//! while a search is typed, since the matches are the shortcut then.
 
 use gpui::{prelude::*, px, App, Entity, ScrollStrategy, Task, WeakEntity, Window};
 use gpui_component::list::{List, ListDelegate, ListItem, ListState};
@@ -11,13 +15,16 @@ use gpui_component::{h_flex, v_flex, ActiveTheme as _, IndexPath, Selectable, Wi
 use majik_core::model::{MediaType, ToolId};
 use majik_providers::{ImageResolution, ProviderDescriptor, VideoResolution};
 
-use crate::ui::{icon, logo_tile};
 use crate::composer_state::ComposeTab;
+use crate::config::Config;
+use crate::ui::{icon, logo_tile, section_label};
 use crate::views::compose::ComposeView;
 
 #[derive(Clone, Debug)]
 pub struct ModelRow {
     pub index: usize,
+    /// The catalog id, what `Config::recent_models` remembers a model by.
+    pub id: &'static str,
     pub name: &'static str,
     pub manufacturer: &'static str,
     pub logo: &'static str,
@@ -51,6 +58,12 @@ fn video_res_range(res: &[VideoResolution]) -> Option<String> {
     Some(if min == max { min.display_name().to_string() } else { format!("{} - {}", min.display_name(), max.display_name()) })
 }
 
+/// The rows of `all` that `recent` names, in `recent`'s (newest-first) order. A remembered model
+/// the provider doesn't offer is simply not shown.
+pub fn recent_rows(all: &[ModelRow], recent: &[String]) -> Vec<ModelRow> {
+    recent.iter().filter_map(|id| all.iter().find(|row| row.id == id)).cloned().collect()
+}
+
 /// Rows for the given provider / tab, with their capability chips.
 pub fn rows(provider: &'static ProviderDescriptor, tab: ComposeTab) -> Vec<ModelRow> {
     match tab {
@@ -70,7 +83,7 @@ pub fn rows(provider: &'static ProviderDescriptor, tab: ComposeTab) -> Vec<Model
                 // An upscaler's description only restates the chips beside it, so its rows are
                 // the name, the maker and the chips.
                 let description = if tool == ToolId::Upscale { "" } else { m.short_description };
-                ModelRow { index: i, name: m.name, manufacturer: m.manufacturer, logo: m.logo, description, chips }
+                ModelRow { index: i, id: m.id, name: m.name, manufacturer: m.manufacturer, logo: m.logo, description, chips }
             })
             .collect(),
         ComposeTab::Media(MediaType::Image) => provider
@@ -87,7 +100,7 @@ pub fn rows(provider: &'static ProviderDescriptor, tab: ComposeTab) -> Vec<Model
                         chips.push(r);
                     }
                 }
-                ModelRow { index: i, name: m.name, manufacturer: m.manufacturer, logo: m.logo, description: m.short_description, chips }
+                ModelRow { index: i, id: m.id, name: m.name, manufacturer: m.manufacturer, logo: m.logo, description: m.short_description, chips }
             })
             .collect(),
         ComposeTab::Media(MediaType::Video) => provider
@@ -122,14 +135,14 @@ pub fn rows(provider: &'static ProviderDescriptor, tab: ComposeTab) -> Vec<Model
                         chips.push("Audio".into());
                     }
                 }
-                ModelRow { index: i, name: m.name, manufacturer: m.manufacturer, logo: m.logo, description: m.short_description, chips }
+                ModelRow { index: i, id: m.id, name: m.name, manufacturer: m.manufacturer, logo: m.logo, description: m.short_description, chips }
             })
             .collect(),
         ComposeTab::Media(MediaType::Audio) => provider
             .supported_audio_models
             .iter()
             .enumerate()
-            .map(|(i, m)| ModelRow { index: i, name: m.name, manufacturer: m.manufacturer, logo: m.logo, description: m.short_description, chips: Vec::new() })
+            .map(|(i, m)| ModelRow { index: i, id: m.id, name: m.name, manufacturer: m.manufacturer, logo: m.logo, description: m.short_description, chips: Vec::new() })
             .collect(),
     }
 }
@@ -166,6 +179,10 @@ pub struct ModelPickerDelegate {
     compose: WeakEntity<ComposeView>,
     all: Vec<ModelRow>,
     matched: Vec<ModelRow>,
+    /// The tab's recently used models, newest first; listed in their own section while nothing
+    /// is being searched for.
+    recent: Vec<ModelRow>,
+    searching: bool,
     /// Index into `all` of the model the composer currently uses.
     current: usize,
     selected: Option<IndexPath>,
@@ -176,35 +193,95 @@ pub struct ModelPickerDelegate {
 }
 
 impl ModelPickerDelegate {
-    fn new(compose: WeakEntity<ComposeView>, all: Vec<ModelRow>, current: usize) -> Self {
+    fn new(compose: WeakEntity<ComposeView>, all: Vec<ModelRow>, recent: Vec<ModelRow>, current: usize) -> Self {
         let has_chips = all.iter().any(|row| !row.chips.is_empty());
         let has_description = all.iter().any(|row| row.has_description());
-        Self { compose, matched: all.clone(), all, current, selected: None, has_chips, has_description }
+        Self { compose, matched: all.clone(), all, recent, searching: false, current, selected: None, has_chips, has_description }
     }
 
-    /// Names of the rows currently shown, in order.
+    /// Whether the list opens with the `Recent` section: only while nothing is typed, since the
+    /// matches are the shortcut then. With it, the sections are `Recent` then `All models`;
+    /// without, the one section is the (filtered) catalog.
+    fn shows_recent(&self) -> bool {
+        !self.searching && !self.recent.is_empty()
+    }
+
+    fn row_at(&self, ix: IndexPath) -> Option<&ModelRow> {
+        if self.shows_recent() && ix.section == 0 {
+            self.recent.get(ix.row)
+        } else {
+            self.matched.get(ix.row)
+        }
+    }
+
+    /// Where the composer's current model is listed: in `Recent` when it is there (the list opens
+    /// at the top, both sections in view), otherwise at its place in the catalog.
+    fn path_of_current(&self) -> IndexPath {
+        if !self.shows_recent() {
+            return IndexPath::new(self.current);
+        }
+        match self.recent.iter().position(|row| row.index == self.current) {
+            Some(row) => IndexPath::new(row),
+            None => IndexPath::new(self.current).section(1),
+        }
+    }
+
+    /// Names of the catalog rows currently shown, in order.
     #[cfg(test)]
     pub(crate) fn matched_names(&self) -> Vec<&'static str> {
         self.matched.iter().map(|row| row.name).collect()
+    }
+
+    /// Names in the `Recent` section, newest first; empty when the section is not shown.
+    #[cfg(test)]
+    pub(crate) fn recent_names(&self) -> Vec<&'static str> {
+        if self.shows_recent() {
+            self.recent.iter().map(|row| row.name).collect()
+        } else {
+            Vec::new()
+        }
     }
 }
 
 impl ListDelegate for ModelPickerDelegate {
     type Item = ModelListItem;
 
-    fn items_count(&self, _section: usize, _cx: &App) -> usize {
-        self.matched.len()
+    fn sections_count(&self, _cx: &App) -> usize {
+        if self.shows_recent() {
+            2
+        } else {
+            1
+        }
+    }
+
+    fn items_count(&self, section: usize, _cx: &App) -> usize {
+        if self.shows_recent() && section == 0 {
+            self.recent.len()
+        } else {
+            self.matched.len()
+        }
     }
 
     fn perform_search(&mut self, query: &str, _window: &mut Window, _cx: &mut Context<ListState<Self>>) -> Task<()> {
+        self.searching = !query.trim().is_empty();
         self.matched = self.all.iter().filter(|row| row.matches(query)).cloned().collect();
         Task::ready(())
     }
 
     fn render_item(&mut self, ix: IndexPath, _window: &mut Window, _cx: &mut Context<ListState<Self>>) -> Option<Self::Item> {
-        let row = self.matched.get(ix.row)?.clone();
+        let row = self.row_at(ix)?.clone();
         let current = row.index == self.current;
         Some(ModelListItem { base: ListItem::new(ix), row, current, selected: false, has_chips: self.has_chips, has_description: self.has_description })
+    }
+
+    /// Headings only once there are two sections to tell apart. The list measures every header
+    /// by the first one, so both are built the same way.
+    fn render_section_header(&mut self, section: usize, _window: &mut Window, cx: &mut Context<ListState<Self>>) -> Option<impl IntoElement> {
+        if !self.shows_recent() {
+            return None;
+        }
+        let text = if section == 0 { "Recent" } else { "All models" };
+        Some(gpui::div().px_2().pt_2().pb_1().child(section_label(text, None, cx)))
     }
 
     fn render_empty(&mut self, _window: &mut Window, cx: &mut Context<ListState<Self>>) -> impl IntoElement {
@@ -217,7 +294,7 @@ impl ListDelegate for ModelPickerDelegate {
     }
 
     fn confirm(&mut self, _secondary: bool, window: &mut Window, cx: &mut Context<ListState<Self>>) {
-        let Some(row) = self.selected.and_then(|ix| self.matched.get(ix.row)) else { return };
+        let Some(row) = self.selected.and_then(|ix| self.row_at(ix)) else { return };
         let index = row.index;
         self.compose.update(cx, |view, cx| view.select_model(index, cx)).ok();
         window.close_dialog(cx);
@@ -301,11 +378,14 @@ impl RenderOnce for ModelListItem {
 /// Opens the picker over the composer with the search field focused and the current model highlighted.
 /// Returns the list so tests can inspect it.
 pub fn open_model_picker(compose: WeakEntity<ComposeView>, provider: &'static ProviderDescriptor, tab: ComposeTab, current: usize, window: &mut Window, cx: &mut App) -> Entity<ListState<ModelPickerDelegate>> {
-    let delegate = ModelPickerDelegate::new(compose, rows(provider, tab), current);
+    let all = rows(provider, tab);
+    let recent = recent_rows(&all, cx.global::<Config>().recent_models.get(tab));
+    let delegate = ModelPickerDelegate::new(compose, all, recent, current);
+    let path = delegate.path_of_current();
     let list = cx.new(|cx| ListState::new(delegate, window, cx).searchable(true));
     list.update(cx, |list, cx| {
-        list.set_selected_index(Some(IndexPath::new(current)), window, cx);
-        list.scroll_to_item(IndexPath::new(current), ScrollStrategy::Center, window, cx);
+        list.set_selected_index(Some(path), window, cx);
+        list.scroll_to_item(path, ScrollStrategy::Center, window, cx);
     });
     let list_for_dialog = list.clone();
     // No scrollbar: the list's overlay bar rides over the rows and appears on open, since
@@ -321,6 +401,7 @@ pub fn open_model_picker(compose: WeakEntity<ComposeView>, provider: &'static Pr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::update_config;
     use crate::test_support::env;
     use gpui::{Focusable as _, TestAppContext, VisualTestContext};
     use majik_providers::catalog::image;
@@ -378,6 +459,25 @@ mod tests {
         list.read_with(vcx, |list, _| list.selected_index().map(|ix| ix.row))
     }
 
+    /// The highlighted row as `(section, row)`: section 0 is `Recent` while that section is shown.
+    fn highlighted_path(list: &Entity<ListState<ModelPickerDelegate>>, vcx: &mut VisualTestContext) -> Option<(usize, usize)> {
+        list.read_with(vcx, |list, _| list.selected_index().map(|ix| (ix.section, ix.row)))
+    }
+
+    fn recent(list: &Entity<ListState<ModelPickerDelegate>>, vcx: &mut VisualTestContext) -> Vec<&'static str> {
+        list.read_with(vcx, |list, _| list.delegate().recent_names())
+    }
+
+    /// What the image tab remembers, newest first, the way generating would have left it.
+    fn set_recent_images(vcx: &mut VisualTestContext, ids: &[&str]) {
+        let ids: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+        vcx.update(|_, cx| update_config(cx, |c| c.recent_models.image = ids));
+    }
+
+    fn image_name(id: &str) -> &'static str {
+        image::ALL[image_index(id)].name
+    }
+
     fn dialog_open(vcx: &mut VisualTestContext) -> bool {
         vcx.update(|window, cx| window.has_active_dialog(cx))
     }
@@ -396,6 +496,92 @@ mod tests {
         assert!(vcx.update(|window, cx| list.read(cx).focus_handle(cx).is_focused(window)), "typing goes straight into the search field");
         assert_eq!(highlighted(&list, vcx), Some(flux_pro));
         assert_eq!(shown(&list, vcx).len(), image::ALL.len(), "every model of the tab is listed before searching");
+    }
+
+    #[gpui::test]
+    fn without_recents_there_is_one_section(cx: &mut TestAppContext) {
+        let (view, vcx) = compose_window(cx);
+        let list = open(&view, vcx);
+        assert!(recent(&list, vcx).is_empty());
+        assert_eq!(list.read_with(vcx, |list, cx| list.delegate().sections_count(cx)), 1);
+        assert_eq!(highlighted_path(&list, vcx), Some((0, model_index(&view, vcx))));
+    }
+
+    #[gpui::test]
+    fn recently_used_models_are_listed_first_newest_first(cx: &mut TestAppContext) {
+        let (view, vcx) = compose_window(cx);
+        set_recent_images(vcx, &["seedream-4.5", "flux-2-pro"]);
+        let list = open(&view, vcx);
+        assert_eq!(recent(&list, vcx), [image_name("seedream-4.5"), image_name("flux-2-pro")]);
+        assert_eq!(list.read_with(vcx, |list, cx| list.delegate().sections_count(cx)), 2, "Recent above All models");
+        assert_eq!(shown(&list, vcx).len(), image::ALL.len(), "the catalog below is still complete");
+    }
+
+    #[gpui::test]
+    fn a_remembered_model_the_provider_does_not_offer_is_skipped(cx: &mut TestAppContext) {
+        let (view, vcx) = compose_window(cx);
+        set_recent_images(vcx, &["no-such-model", "seedream-4.5"]);
+        let list = open(&view, vcx);
+        assert_eq!(recent(&list, vcx), [image_name("seedream-4.5")]);
+    }
+
+    /// The current model is highlighted where it is nearest the top: in `Recent` when it is
+    /// there, so the list opens with both sections in view; otherwise at its place in the catalog.
+    #[gpui::test]
+    fn the_current_model_is_highlighted_in_recent_when_it_is_there(cx: &mut TestAppContext) {
+        let (view, vcx) = compose_window(cx);
+        set_recent_images(vcx, &["seedream-4.5", "flux-2-pro"]);
+        select_model(&view, vcx, image_index("flux-2-pro"));
+        let list = open(&view, vcx);
+        assert_eq!(highlighted_path(&list, vcx), Some((0, 1)));
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+
+        let gpt = image_index("gpt-5-image");
+        select_model(&view, vcx, gpt);
+        let list = open(&view, vcx);
+        assert_eq!(highlighted_path(&list, vcx), Some((1, gpt)), "not recent: highlighted in the catalog");
+    }
+
+    #[gpui::test]
+    fn arrow_keys_cross_between_the_sections_and_enter_picks_a_recent_row(cx: &mut TestAppContext) {
+        let (view, vcx) = compose_window(cx);
+        set_recent_images(vcx, &["seedream-4.5"]);
+        select_model(&view, vcx, 0);
+        let list = open(&view, vcx);
+        assert_eq!(highlighted_path(&list, vcx), Some((1, 0)), "the first catalog row, below the one recent");
+        vcx.simulate_keystrokes("up");
+        assert_eq!(highlighted_path(&list, vcx), Some((0, 0)), "up from the top of the catalog lands on the last recent");
+        vcx.simulate_keystrokes("down");
+        assert_eq!(highlighted_path(&list, vcx), Some((1, 0)));
+        vcx.simulate_keystrokes("up enter");
+        vcx.run_until_parked();
+        assert!(!dialog_open(vcx));
+        assert_eq!(model_index(&view, vcx), image_index("seedream-4.5"), "a recent row picks its catalog model");
+    }
+
+    #[gpui::test]
+    fn typing_hides_the_recent_section_and_enter_picks_the_first_match(cx: &mut TestAppContext) {
+        let (view, vcx) = compose_window(cx);
+        set_recent_images(vcx, &["flux-2-pro"]);
+        select_model(&view, vcx, 0);
+        let list = open(&view, vcx);
+        vcx.simulate_input("seedream 4.5");
+        vcx.run_until_parked();
+        assert!(recent(&list, vcx).is_empty(), "the matches are the shortcut while searching");
+        assert_eq!(shown(&list, vcx), ["Seedream 4.5"]);
+        assert_eq!(highlighted_path(&list, vcx), Some((0, 0)), "the first match, now in the only section");
+
+        list.update_in(vcx, |list, window, cx| list.set_query("", window, cx));
+        vcx.run_until_parked();
+        assert_eq!(recent(&list, vcx), [image_name("flux-2-pro")], "clearing the search brings the section back");
+
+        vcx.simulate_input("seedream 4.5");
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        assert!(!dialog_open(vcx));
+        assert_eq!(model_index(&view, vcx), image_index("seedream-4.5"));
     }
 
     #[gpui::test]
@@ -557,7 +743,7 @@ mod tests {
 
     #[test]
     fn matches_is_case_insensitive_over_name_maker_and_description() {
-        let row = ModelRow { index: 0, name: "FLUX.2 Pro", manufacturer: "Black Forest Labs", logo: "", description: "Fast photoreal images", chips: Vec::new() };
+        let row = ModelRow { index: 0, id: "flux-2-pro", name: "FLUX.2 Pro", manufacturer: "Black Forest Labs", logo: "", description: "Fast photoreal images", chips: Vec::new() };
         assert!(row.matches(""));
         assert!(row.matches("flux"));
         assert!(row.matches("forest"));
