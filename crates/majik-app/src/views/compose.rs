@@ -2,7 +2,7 @@
 //! assets, prompt, Generate — a [`crate::composer_state::ComposerState`] on top of
 //! provider descriptors.
 
-use gpui::{prelude::*, px, relative, App, Context, DragMoveEvent, Entity, EventEmitter, ExternalPaths, FocusHandle, PathPromptOptions, Pixels, SharedString, Task, WeakEntity, Window};
+use gpui::{prelude::*, px, App, Context, DragMoveEvent, Entity, EventEmitter, ExternalPaths, FocusHandle, PathPromptOptions, Pixels, SharedString, Task, WeakEntity, Window};
 use gpui_component::button::ButtonVariants as _;
 use gpui_component::input::{InputEvent, Textarea, TextareaState};
 use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
@@ -1096,11 +1096,11 @@ impl Render for ComposeView {
             .dropdown_menu(Self::provider_menu(this.clone(), state::available_providers(cx), self.state.provider.id.clone()));
 
         // --- model ---
-        let (model_name, model_maker, model_desc): (&str, &str, &str) = match tab {
-            ComposeTab::Media(MediaType::Image) => self.state.image_model().map(|m| (m.name, m.manufacturer, m.short_description)).unwrap_or(("No model", "", "")),
-            ComposeTab::Media(MediaType::Video) => self.state.video_model().map(|m| (m.name, m.manufacturer, m.short_description)).unwrap_or(("No model", "", "")),
-            ComposeTab::Media(MediaType::Audio) => self.state.audio_model().map(|m| (m.name, m.manufacturer, m.short_description)).unwrap_or(("No model", "", "")),
-            ComposeTab::Tool(t) => self.state.tool_model(t).map(|m| (m.name, m.manufacturer, m.short_description)).unwrap_or(("No model", "", "")),
+        let (model_name, model_desc): (&str, &str) = match tab {
+            ComposeTab::Media(MediaType::Image) => self.state.image_model().map(|m| (m.name, m.short_description)).unwrap_or(("No model", "")),
+            ComposeTab::Media(MediaType::Video) => self.state.video_model().map(|m| (m.name, m.short_description)).unwrap_or(("No model", "")),
+            ComposeTab::Media(MediaType::Audio) => self.state.audio_model().map(|m| (m.name, m.short_description)).unwrap_or(("No model", "")),
+            ComposeTab::Tool(t) => self.state.tool_model(t).map(|m| (m.name, m.short_description)).unwrap_or(("No model", "")),
         };
         let current_model = self.state.model_index();
         let model_logo = match tab {
@@ -1119,7 +1119,7 @@ impl Render for ComposeView {
             .items_center()
             .gap_2()
             .px_2()
-            .py_1p5()
+            .py_1()
             .rounded_md()
             .border_1()
             .border_color(border)
@@ -1128,12 +1128,8 @@ impl Render for ComposeView {
             .on_click(move |_, window, cx| {
                 crate::views::model_picker::open_model_picker(picker_this.clone(), provider_static, tab, current_model, window, cx);
             })
-            .children(model_logo.map(|(l, maker)| crate::ui::logo_tile(l, maker, 28., cx)))
-            .child(
-                v_flex()
-                    .child(gpui::div().text_sm().line_height(relative(1.2)).font_weight(gpui::FontWeight::SEMIBOLD).child(model_name.to_string()))
-                    .child(gpui::div().text_xs().line_height(relative(1.2)).text_color(muted_fg).child(model_maker.to_string())),
-            )
+            .children(model_logo.map(|(l, maker)| crate::ui::logo_tile(l, maker, 20., cx)))
+            .child(gpui::div().text_sm().font_weight(gpui::FontWeight::MEDIUM).whitespace_nowrap().text_ellipsis().overflow_hidden().child(model_name.to_string()))
             .child(gpui::div().flex_1())
             .child(icon("chevron-down").size_4().text_color(muted_fg));
 
