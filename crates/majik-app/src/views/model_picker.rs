@@ -9,7 +9,7 @@
 //! section above `All models`, so alternating between a few is one click; the section goes away
 //! while a search is typed, since the matches are the shortcut then.
 
-use gpui::{prelude::*, px, AnyElement, App, Entity, Focusable as _, ScrollStrategy, Task, WeakEntity, Window};
+use gpui::{prelude::*, px, AnyElement, App, Entity, Focusable as _, ScrollStrategy, SharedString, Task, WeakEntity, Window};
 use std::rc::Rc;
 use gpui_base::actions::{Confirm, SelectDown, SelectUp};
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -344,6 +344,9 @@ impl RenderOnce for ModelListItem {
 /// outside or the close gesture (a pick closes the dialog itself and is not a dismissal).
 #[derive(Default)]
 pub struct PaletteExtras {
+    /// A heading over the search box, for a palette whose purpose the rows alone don't say
+    /// (which speaker a voice is for). It stays while the placeholder is typed over.
+    pub title: Option<SharedString>,
     pub banner: Option<PaletteBanner>,
     pub on_dismiss: Option<PaletteDismiss>,
 }
@@ -393,6 +396,10 @@ pub fn open_palette<D: ListDelegate>(list: Entity<ListState<D>>, placeholder: &s
             .child(Input::new(&search_for_dialog).appearance(false).cleanable(true).p_0().flex_1());
         let banner = extras.banner.as_ref().and_then(|banner| banner(window, cx));
         let dialog = dialog.raised(cx).w(px(PALETTE_WIDTH)).child(v_flex().gap_2().child(search_box).children(banner).child(List::new(&list).scrollbar_visible(false).max_h(px(480.))));
+        let dialog = match extras.title.clone() {
+            Some(title) => dialog.title(gpui::div().debug_selector(|| "palette-title".into()).child(title)),
+            None => dialog,
+        };
         match extras.on_dismiss.clone() {
             Some(on_dismiss) => dialog.on_close(move |_, window, cx| on_dismiss(window, cx)),
             None => dialog,
@@ -486,7 +493,7 @@ mod tests {
 
     #[gpui::test]
     fn a_click_outside_closes_the_picker_and_keeps_the_model(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         let flux_pro = image_index("flux-2-pro");
         select_model(&view, vcx, flux_pro);
         let _list = open(&view, vcx);
@@ -499,7 +506,7 @@ mod tests {
 
     #[gpui::test]
     fn opens_with_the_search_focused_and_the_current_model_highlighted(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         let flux_pro = image_index("flux-2-pro");
         select_model(&view, vcx, flux_pro);
         let (list, search) = open_with_search(&view, vcx);
@@ -511,7 +518,7 @@ mod tests {
 
     #[gpui::test]
     fn without_recents_there_is_one_section(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         let list = open(&view, vcx);
         assert!(recent(&list, vcx).is_empty());
         assert_eq!(list.read_with(vcx, |list, cx| list.delegate().sections_count(cx)), 1);
@@ -520,7 +527,7 @@ mod tests {
 
     #[gpui::test]
     fn recently_used_models_are_listed_first_newest_first(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         set_recent_images(vcx, &["seedream-4.5", "flux-2-pro"]);
         let list = open(&view, vcx);
         assert_eq!(recent(&list, vcx), [image_name("seedream-4.5"), image_name("flux-2-pro")]);
@@ -530,7 +537,7 @@ mod tests {
 
     #[gpui::test]
     fn a_remembered_model_the_provider_does_not_offer_is_skipped(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         set_recent_images(vcx, &["no-such-model", "seedream-4.5"]);
         let list = open(&view, vcx);
         assert_eq!(recent(&list, vcx), [image_name("seedream-4.5")]);
@@ -540,7 +547,7 @@ mod tests {
     /// there, so the list opens with both sections in view; otherwise at its place in the catalog.
     #[gpui::test]
     fn the_current_model_is_highlighted_in_recent_when_it_is_there(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         set_recent_images(vcx, &["seedream-4.5", "flux-2-pro"]);
         select_model(&view, vcx, image_index("flux-2-pro"));
         let list = open(&view, vcx);
@@ -556,7 +563,7 @@ mod tests {
 
     #[gpui::test]
     fn arrow_keys_cross_between_the_sections_and_enter_picks_a_recent_row(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         set_recent_images(vcx, &["seedream-4.5"]);
         select_model(&view, vcx, 0);
         let list = open(&view, vcx);
@@ -573,7 +580,7 @@ mod tests {
 
     #[gpui::test]
     fn typing_hides_the_recent_section_and_enter_picks_the_first_match(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         set_recent_images(vcx, &["flux-2-pro"]);
         select_model(&view, vcx, 0);
         let list = open(&view, vcx);
@@ -597,7 +604,7 @@ mod tests {
 
     #[gpui::test]
     fn typing_filters_the_rows_and_highlights_the_first_match(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         select_model(&view, vcx, image_index("seedream-4.5"));
         let list = open(&view, vcx);
         vcx.simulate_input("flux");
@@ -610,7 +617,7 @@ mod tests {
 
     #[gpui::test]
     fn search_matches_the_manufacturer_too(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         let list = open(&view, vcx);
         vcx.simulate_input("black forest");
         vcx.run_until_parked();
@@ -620,7 +627,7 @@ mod tests {
 
     #[gpui::test]
     fn clearing_the_search_brings_every_row_back(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         let list = open(&view, vcx);
         vcx.simulate_input("gpt");
         vcx.run_until_parked();
@@ -632,7 +639,7 @@ mod tests {
 
     #[gpui::test]
     fn arrow_keys_move_the_highlight_and_enter_picks(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         select_model(&view, vcx, 0);
         let list = open(&view, vcx);
         vcx.simulate_keystrokes("down down");
@@ -648,7 +655,7 @@ mod tests {
 
     #[gpui::test]
     fn enter_picks_the_highlighted_match_not_its_row_number(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         select_model(&view, vcx, 0);
         let seedream = image_index("seedream-4.5");
         assert!(seedream > 0, "the test needs a model that is not the first row");
@@ -666,7 +673,7 @@ mod tests {
 
     #[gpui::test]
     fn escape_closes_without_changing_the_model(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         let gpt = image_index("gpt-5-image");
         select_model(&view, vcx, gpt);
         let list = open(&view, vcx);
@@ -680,7 +687,7 @@ mod tests {
 
     #[gpui::test]
     fn enter_with_no_match_keeps_the_picker_open(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         let gpt = image_index("gpt-5-image");
         select_model(&view, vcx, gpt);
         let list = open(&view, vcx);
@@ -698,7 +705,7 @@ mod tests {
     /// switches between taking a picture and taking a clip.
     #[gpui::test]
     fn video_rows_carry_capability_chips_and_tool_rows_carry_their_media(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         let provider = view.read_with(vcx, |view, _| view.composer_state().provider);
         let video = rows(provider, ComposeTab::Media(MediaType::Video));
         assert!(video.iter().all(|row| row.chips.iter().any(|c| c.ends_with('s'))), "every video row states its duration: {video:?}");
@@ -718,7 +725,7 @@ mod tests {
     /// chips, so their rows carry no description to search. Background removal keeps its own.
     #[gpui::test]
     fn upscale_rows_have_no_description(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         let provider = view.read_with(vcx, |view, _| view.composer_state().provider);
 
         let upscalers = rows(provider, ComposeTab::Tool(ToolId::Upscale));
@@ -734,7 +741,7 @@ mod tests {
     /// renders no chips and produces no request when you hit Generate.
     #[gpui::test]
     fn the_newest_models_are_offered_with_their_chips(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         let provider = view.read_with(vcx, |view, _| view.composer_state().provider);
 
         let video = rows(provider, ComposeTab::Media(MediaType::Video));
@@ -783,7 +790,7 @@ mod tests {
 
     #[gpui::test]
     fn video_rows_are_found_by_every_resolution_they_offer(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         let provider = view.read_with(vcx, |view, _| view.composer_state().provider);
         let video = rows(provider, ComposeTab::Media(MediaType::Video));
 
@@ -805,7 +812,7 @@ mod tests {
 
     #[gpui::test]
     fn audio_finds_the_video_models_that_do_sound(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         let provider = view.read_with(vcx, |view, _| view.composer_state().provider);
         let video = rows(provider, ComposeTab::Media(MediaType::Video));
 
@@ -823,7 +830,7 @@ mod tests {
 
     #[gpui::test]
     fn image_rows_are_found_by_resolution(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         let provider = view.read_with(vcx, |view, _| view.composer_state().provider);
         let image_rows = rows(provider, ComposeTab::Media(MediaType::Image));
 
@@ -841,7 +848,7 @@ mod tests {
 
     #[gpui::test]
     fn upscalers_are_found_by_a_plain_x_factor(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         let provider = view.read_with(vcx, |view, _| view.composer_state().provider);
 
         let upscalers = rows(provider, ComposeTab::Tool(ToolId::Upscale));
@@ -856,7 +863,7 @@ mod tests {
     /// Typing a resolution in the dialog lists the models that render it, in catalog order.
     #[gpui::test]
     fn typing_a_resolution_filters_by_capability(cx: &mut TestAppContext) {
-        let (view, vcx) = compose_window(cx);
+        let (view, vcx, _env) = compose_window(cx);
         let provider = view.read_with(vcx, |view, _| view.composer_state().provider);
         let list = open(&view, vcx);
         vcx.simulate_input("4k");

@@ -351,8 +351,9 @@ impl gpui::Render for ComposeHost {
 }
 
 /// A seeded Mock environment and a composer drawn under a dialog layer; see [`ComposeHost`].
-pub fn compose_with_dialogs(cx: &mut TestAppContext) -> (Entity<crate::views::compose::ComposeView>, &mut gpui::VisualTestContext) {
-    env(cx, 1, "Mock");
+/// The environment is returned so the caller keeps the temp library alive for the test.
+pub fn compose_with_dialogs(cx: &mut TestAppContext) -> (Entity<crate::views::compose::ComposeView>, &mut gpui::VisualTestContext, TestEnv) {
+    let env = env(cx, 1, "Mock");
     let slot: std::rc::Rc<std::cell::RefCell<Option<Entity<crate::views::compose::ComposeView>>>> = Default::default();
     let slot_for_window = slot.clone();
     let (_root, vcx) = cx.add_window_view(move |window, cx| {
@@ -363,5 +364,5 @@ pub fn compose_with_dialogs(cx: &mut TestAppContext) -> (Entity<crate::views::co
     });
     vcx.run_until_parked();
     let view = slot.borrow().clone().unwrap();
-    (view, vcx)
+    (view, vcx, env)
 }

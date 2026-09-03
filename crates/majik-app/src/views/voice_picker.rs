@@ -164,6 +164,11 @@ fn toggle_preview(state: &Entity<PreviewState>, voice: AudioVoice, cx: &mut App)
                 })
                 .await;
             this.update(cx, |s, cx| {
+                // The user has tapped another preview meanwhile: that one owns the spinner and
+                // the player now, and this download only warmed the cache.
+                if s.downloading.as_deref() != Some(id.as_str()) {
+                    return;
+                }
                 s.downloading = None;
                 match fetched.and_then(|p| (s.hooks.open)(&p)) {
                     Ok(player) => {
@@ -189,12 +194,20 @@ pub struct VoiceRow {
     pub chips: Vec<String>,
 }
 
-fn capitalised(word: &str) -> String {
-    let mut chars = word.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
+/// The catalogs spell gender and accent in lower case, multi-word ones included (`new zealand`,
+/// `african american`), so every word is capitalised for the chip.
+fn capitalised(words: &str) -> String {
+    words
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 impl VoiceRow {
@@ -401,26 +414,27 @@ pub fn open_voice_picker_with_hooks(compose: WeakEntity<ComposeView>, speaker: S
         // A preview starting, stopping or failing redraws its row's button.
         cx.observe(&preview, |_, _, cx| cx.notify()).detach();
     });
-    let placeholder = match speaker {
-        Speaker::One => "Search voices for Speaker 1",
-        Speaker::Two => "Search voices for Speaker 2",
+    let title = match speaker {
+        Speaker::One => "Speaker 1",
+        Speaker::Two => "Speaker 2",
     };
     let (preview_for_banner, preview_for_dismiss) = (preview.clone(), preview);
     let extras = PaletteExtras {
+        title: Some(title.into()),
         banner: Some(Rc::new(move |_, cx| {
             let error = preview_for_banner.read(cx).error.clone()?;
             Some(gpui::div().px_2().text_xs().text_color(cx.theme().danger).child(error).into_any_element())
         })),
         on_dismiss: Some(Rc::new(move |_, cx| preview_for_dismiss.update(cx, |s, _| s.stop()))),
     };
-    let search = open_palette(list.clone(), placeholder, extras, window, cx);
+    let search = open_palette(list.clone(), "Search voices", extras, window, cx);
     (list, search)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::compose_with_dialogs as compose_window;
+    use crate::test_support::{compose_with_dialogs as compose_window, TestEnv};
     use gpui::{Focusable as _, TestAppContext, VisualTestContext};
     use majik_core::model::MediaType;
     use std::cell::{Cell, RefCell};
@@ -527,6 +541,22 @@ mod tests {
         assert_eq!(flags, [false, true], "first player stopped, second playing");
     }
 
+    /// Two taps in a row start two downloads, and the executor lands them in either order: the
+    /// second tap is the one the user wants, so it plays whichever download finishes last, and
+    /// the first download only warms the cache.
+    #[gpui::test(iterations = 20)]
+    fn a_second_tap_while_downloading_wins_whichever_download_lands_last(cx: &mut TestAppContext) {
+        let h = harness(cx, false);
+        toggle(&h, cx, "Rachel");
+        toggle(&h, cx, "Adam");
+        assert_eq!(downloading(&h, cx).as_deref(), Some("Adam"), "the spinner moved to the second tap");
+        cx.run_until_parked();
+        assert_eq!(playing(&h, cx).as_deref(), Some("Adam"));
+        assert_eq!(downloading(&h, cx), None);
+        assert_eq!(h.players.borrow().len(), 1, "the superseded preview was never opened");
+        assert_eq!(h.fetches.lock().unwrap().len(), 2, "both files were fetched into the cache");
+    }
+
     #[gpui::test]
     fn tapping_the_playing_preview_stops_it(cx: &mut TestAppContext) {
         let h = harness(cx, false);
@@ -584,6 +614,9 @@ mod tests {
         let gemini = AudioVoice { gender: Some("male".into()), language_codes: Some(vec!["multilingual".into()]), ..AudioVoice::new("Puck", "Puck") };
         assert_eq!(VoiceRow::from_voice(&gemini).chips, ["Male", "Multilingual"], "the catalog's word is shown as a word, not a code");
 
+        let jane = AudioVoice { gender: Some("female".into()), accent: Some("new zealand".into()), ..AudioVoice::new("Jane", "Jane") };
+        assert_eq!(VoiceRow::from_voice(&jane).chips, ["Female", "New Zealand"], "every word of a multi-word accent is capitalised");
+
         let bare = AudioVoice { gender: Some(String::new()), subtitle: Some(String::new()), ..AudioVoice::new("Old", "Old") };
         let row = VoiceRow::from_voice(&bare);
         assert!(row.chips.is_empty(), "empty fields make no chips: {:?}", row.chips);
@@ -618,13 +651,13 @@ mod tests {
 
     type Picker = (Entity<ListState<VoicePickerDelegate>>, Entity<InputState>);
 
-    fn audio_composer(cx: &mut TestAppContext) -> (Entity<ComposeView>, &mut VisualTestContext, Vec<AudioVoice>) {
-        let (view, vcx) = compose_window(cx);
+    fn audio_composer(cx: &mut TestAppContext) -> (Entity<ComposeView>, &mut VisualTestContext, Vec<AudioVoice>, TestEnv) {
+        let (view, vcx, env) = compose_window(cx);
         view.update_in(vcx, |v, window, cx| v.set_media_type(MediaType::Audio, window, cx));
         vcx.run_until_parked();
         let voices = view.read_with(vcx, |v, _| v.composer_state().audio_caps().expect("the Mock audio model has voices").supported_voices.clone());
         assert!(voices.len() > 3, "the suite needs a few voices to move between");
-        (view, vcx, voices)
+        (view, vcx, voices, env)
     }
 
     /// Opens the picker for `speaker` the way its capsule does, with fake preview hooks.
@@ -663,7 +696,7 @@ mod tests {
 
     #[gpui::test]
     fn opens_with_the_search_focused_and_the_current_voice_highlighted(cx: &mut TestAppContext) {
-        let (view, vcx, voices) = audio_composer(cx);
+        let (view, vcx, voices, _env) = audio_composer(cx);
         let dir = tempfile::tempdir().unwrap();
         let third = voices[2].clone();
         view.update_in(vcx, |v, window, cx| v.set_voice(Speaker::One, Some(third.clone()), window, cx));
@@ -676,7 +709,7 @@ mod tests {
 
     #[gpui::test]
     fn rows_show_the_catalog_metadata_as_chips(cx: &mut TestAppContext) {
-        let (view, vcx, voices) = audio_composer(cx);
+        let (view, vcx, voices, _env) = audio_composer(cx);
         let dir = tempfile::tempdir().unwrap();
         let (list, _) = open(&view, vcx, Speaker::One, dir.path());
         let rows: Vec<VoiceRow> = list.read_with(vcx, |list, _| (0..voices.len()).filter_map(|ix| list.delegate().row(ix).cloned()).collect());
@@ -687,7 +720,7 @@ mod tests {
 
     #[gpui::test]
     fn typing_filters_by_name_and_by_chip_and_highlights_the_first_match(cx: &mut TestAppContext) {
-        let (view, vcx, voices) = audio_composer(cx);
+        let (view, vcx, voices, _env) = audio_composer(cx);
         let dir = tempfile::tempdir().unwrap();
         let last = voices.last().unwrap().clone();
         view.update_in(vcx, |v, window, cx| v.set_voice(Speaker::One, Some(last.clone()), window, cx));
@@ -714,7 +747,7 @@ mod tests {
 
     #[gpui::test]
     fn arrow_keys_move_the_highlight_and_enter_picks(cx: &mut TestAppContext) {
-        let (view, vcx, voices) = audio_composer(cx);
+        let (view, vcx, voices, _env) = audio_composer(cx);
         let dir = tempfile::tempdir().unwrap();
         let first = voices[0].clone();
         view.update_in(vcx, |v, window, cx| v.set_voice(Speaker::One, Some(first.clone()), window, cx));
@@ -732,7 +765,7 @@ mod tests {
 
     #[gpui::test]
     fn enter_picks_the_highlighted_match_not_its_row_number(cx: &mut TestAppContext) {
-        let (view, vcx, voices) = audio_composer(cx);
+        let (view, vcx, voices, _env) = audio_composer(cx);
         let dir = tempfile::tempdir().unwrap();
         let (list, _) = open(&view, vcx, Speaker::One, dir.path());
         let target = voices[voices.len() - 2].clone();
@@ -747,7 +780,7 @@ mod tests {
 
     #[gpui::test]
     fn escape_and_a_click_outside_close_without_changing_the_voice(cx: &mut TestAppContext) {
-        let (view, vcx, voices) = audio_composer(cx);
+        let (view, vcx, voices, _env) = audio_composer(cx);
         let dir = tempfile::tempdir().unwrap();
         let before = speaker_id(&view, vcx, Speaker::One);
         assert!(before.is_some());
@@ -767,9 +800,22 @@ mod tests {
         assert_eq!(speaker_id(&view, vcx, Speaker::One), before);
     }
 
+    /// The rows alone don't say which speaker a pick goes to, and the placeholder disappears
+    /// under the first typed character, so the palette carries the speaker as its title.
+    #[gpui::test]
+    fn the_title_names_the_speaker_and_stays_while_typing(cx: &mut TestAppContext) {
+        let (view, vcx, _, _env) = audio_composer(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let (_list, _search) = open(&view, vcx, Speaker::Two, dir.path());
+        assert!(vcx.debug_bounds("palette-title").is_some(), "the palette has a title");
+        vcx.simulate_input("brit");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("palette-title").is_some(), "still there once the placeholder is gone");
+    }
+
     #[gpui::test]
     fn enter_with_no_match_keeps_the_picker_open(cx: &mut TestAppContext) {
-        let (view, vcx, _) = audio_composer(cx);
+        let (view, vcx, _, _env) = audio_composer(cx);
         let dir = tempfile::tempdir().unwrap();
         let before = speaker_id(&view, vcx, Speaker::One);
         let (list, _) = open(&view, vcx, Speaker::One, dir.path());
@@ -784,7 +830,7 @@ mod tests {
 
     #[gpui::test]
     fn speaker_two_lists_a_none_row_first_and_picking_it_clears_the_voice(cx: &mut TestAppContext) {
-        let (view, vcx, voices) = audio_composer(cx);
+        let (view, vcx, voices, _env) = audio_composer(cx);
         let dir = tempfile::tempdir().unwrap();
         let (list, _) = open(&view, vcx, Speaker::One, dir.path());
         assert_ne!(shown(&list, vcx).first().map(String::as_str), Some("None"), "speaker 1 always has a voice");
@@ -812,7 +858,7 @@ mod tests {
 
     #[gpui::test]
     fn previewing_a_row_plays_it_without_picking_it(cx: &mut TestAppContext) {
-        let (view, vcx, voices) = audio_composer(cx);
+        let (view, vcx, voices, _env) = audio_composer(cx);
         let dir = tempfile::tempdir().unwrap();
         let before = speaker_id(&view, vcx, Speaker::One);
         let (list, _) = open(&view, vcx, Speaker::One, dir.path());
@@ -832,7 +878,7 @@ mod tests {
 
     #[gpui::test]
     fn picking_a_voice_stops_the_preview(cx: &mut TestAppContext) {
-        let (view, vcx, voices) = audio_composer(cx);
+        let (view, vcx, voices, _env) = audio_composer(cx);
         let dir = tempfile::tempdir().unwrap();
         let (list, _) = open(&view, vcx, Speaker::One, dir.path());
         let preview = list.read_with(vcx, |list, _| list.delegate().preview_state().clone());
