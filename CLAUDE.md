@@ -258,14 +258,14 @@ Follow how the Zed team writes GPUI/Rust; the items below are adapted from Zed's
   `.cursor_pointer()` themselves.
 - **Corner radius is a four-step scale, chosen by what the thing is, not by how it looks in place.**
   Controls (buttons, pickers, steppers, the prompt box, list rows, chips of information, drop
-  targets, floating bars over the detail stage, drag previews) use the theme radius: `rounded_md()`
+  targets, floating bars over the detail stage) use the theme radius: `rounded_md()`
   on a div, the default rounding on a `Button` — both 6 px, the same figure gpui-component's inputs,
   menus and tooltips use, so a control looks the same wherever it sits. Media cards (the composer's
-  asset cards and role targets, the detail's input thumbnails) and surfaces (dialogs, notifications)
-  are one step larger, `rounded_lg()` / `theme.radius_lg` (8 px); an image inside a card gets the same
+  asset cards and role targets, the detail's input thumbnails, the feed's drag preview) and surfaces
+  (dialogs, notifications, the toast) are one step larger, `rounded_lg()` / `theme.radius_lg` (8 px); an image inside a card gets the same
   radius itself because the parent's clip alone doesn't round it. Captions laid over a thumbnail are
   one step smaller, `rounded_sm()` (4 px). `rounded_full()` is reserved for things that are pills or
-  circles by nature — count and duration badges, filter chips, the toast capsule, the play button,
+  circles by nature — count and duration badges, filter chips, the play button,
   the stage's page arrows, progress tracks — never for a bar of controls. Don't pick a bespoke
   pixel radius; the one exception today is the onboarding screen's 80 px provider tiles.
 

@@ -53,7 +53,7 @@ impl Render for DragPreview {
             .top(origin.y)
             .w(size)
             .h(size)
-            .rounded_md()
+            .rounded_lg()
             .overflow_hidden()
             .bg(gpui::black().opacity(0.25))
             .when_some(self.image.clone(), |d, path| d.child(cover_image(path)))

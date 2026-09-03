@@ -370,7 +370,7 @@ pub fn logo_tile(name: &str, fallback_label: &str, size: f32, cx: &mut App) -> g
 
 use gpui::{sampled_easing, SharedString, SpringConfig, Task, WindowId};
 
-/// The save-status pill: a capsule at the bottom of the window that springs up, stays for exactly
+/// The save-status toast: a card at the bottom of the window that springs up, stays for exactly
 /// 2 s and slides back down. A new toast replaces the current one and restarts the clock.
 pub const TOAST_DURATION: Duration = Duration::from_secs(2);
 pub const TOAST_EXIT: Duration = Duration::from_millis(200);
@@ -438,7 +438,7 @@ pub fn toast(window: &mut Window, message: impl Into<SharedString>, cx: &mut App
     window.refresh();
 }
 
-/// The toast capsule for this window, if any. Windows render it last, after the dialog and
+/// The toast for this window, if any. Windows render it last, after the dialog and
 /// notification layers.
 pub fn toast_layer(window: &mut Window, cx: &mut App) -> Option<impl IntoElement> {
     let window_id = window.window_handle().window_id();
@@ -449,7 +449,7 @@ pub fn toast_layer(window: &mut Window, cx: &mut App) -> Option<impl IntoElement
         .flex()
         .px(px(14.))
         .py(px(10.))
-        .rounded_full()
+        .rounded(theme.radius_lg)
         .bg(theme.popover)
         .border_1()
         .border_color(theme.border)
