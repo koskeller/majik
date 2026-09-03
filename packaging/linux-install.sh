@@ -24,10 +24,13 @@ done
 sed "s|^Exec=majik|Exec=$prefix/bin/majik|; s|^TryExec=majik|TryExec=$prefix/bin/majik|" \
     "$here/share/applications/${app_id}.desktop" > "$prefix/share/applications/${app_id}.desktop"
 
-command -v update-desktop-database > /dev/null 2>&1 &&
+# Refresh the desktop caches where the tools exist; a failure here leaves a working install, so ignore it.
+if command -v update-desktop-database > /dev/null 2>&1; then
     update-desktop-database "$prefix/share/applications" 2> /dev/null || true
-command -v gtk-update-icon-cache > /dev/null 2>&1 &&
+fi
+if command -v gtk-update-icon-cache > /dev/null 2>&1; then
     gtk-update-icon-cache -qtf "$prefix/share/icons/hicolor" 2> /dev/null || true
+fi
 
 echo "Installed Majik:"
 echo "  $prefix/bin/majik"
