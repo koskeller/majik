@@ -16,7 +16,7 @@ use majik_core::model::{Asset, AssetId, EntryId, GenerationId, Generation, Media
 use majik_core::feed;
 
 use crate::actions::*;
-use crate::image_cache::{LruImageCache, DETAIL_IMAGE_BUDGET};
+use crate::image_cache::{LruImageCache, Warmth, DETAIL_IMAGE_BUDGET};
 use crate::morph::{Direction, Morph};
 use crate::paging::{self, Edges, Paging, Step};
 use crate::state::{self, LibraryModel, PendingCompose};
@@ -170,16 +170,15 @@ pub struct DetailView {
     opening: bool,
     /// The feed cell the view was opened from, in window coordinates.
     origin: Option<Bounds<Pixels>>,
-    /// The feed's cache, where the cell thumbnails are already decoded: the travelling box reads
-    /// them from there so it can draw on its first frame. Everything else, including the full
-    /// image pre-decoded during the open morph, goes through the window's default cache, which is
-    /// what the stage reads once the morph finishes.
+    /// The feed's cache, where the cell thumbnails are already decoded. The travelling box and a
+    /// video poster only borrow from it for the frames until their own whole decode lands (see
+    /// [`Self::poster_for`]); the view never decodes into it.
     thumbnails: Entity<LruImageCache>,
-    /// The full-size images the stage, the compare view and the info panel draw. It has its own
-    /// cache and its own budget: one 4K image is worth a hundred thumbnails, so sharing the feed's
-    /// would flush the grid every time an item is opened. It is dropped with the view, which is
-    /// what returns the memory on close. Before this, full-size images went to the window's default
-    /// cache, which never evicts anything.
+    /// The full-size images the stage, the compare view and the info panel draw, and the whole
+    /// thumbnails that stand in for them. It has its own cache and its own budget: one 4K image is
+    /// worth a hundred thumbnails, so sharing the feed's would flush the grid every time an item is
+    /// opened. It is dropped with the view, which is what returns the memory on close. Before this,
+    /// full-size images went to the window's default cache, which never evicts anything.
     images: Entity<LruImageCache>,
     /// Emits `Close` when the close morph has played (cancel-on-drop).
     close_task: Option<Task<()>>,
@@ -198,6 +197,15 @@ struct InfoAsset {
     path: std::path::PathBuf,
     picture: Option<std::path::PathBuf>,
     duration_secs: Option<f64>,
+}
+
+/// The picture that stands in for an item's own pixels: the travelling box's picture during the
+/// open morph, and a video's poster until its first frame is decoded. `path` is a thumbnail tier and
+/// `cache` the cache it is drawn through; see [`DetailView::poster_for`] for why that matters.
+#[derive(Clone, Debug)]
+struct Poster {
+    path: std::path::PathBuf,
+    cache: Entity<LruImageCache>,
 }
 
 fn item_pixel_size(item: &Generation) -> Option<(f32, f32)> {
@@ -1025,10 +1033,41 @@ impl DetailView {
 
     // ----- rendering ----------------------------------------------------------
 
+    /// The picture the travelling box and a video poster draw for `item`, and the cache to draw it
+    /// through. The feed's cache decodes a thumbnail for the cell it drew it in — in square cells
+    /// that is a centre square crop — so drawing that copy into a box of the picture's own shape
+    /// showed a zoomed-in middle slice (or, filled into a video's rect, that slice stretched) until
+    /// the full picture landed, which is a jump. The stage's cache has no target and decodes a
+    /// thumbnail whole; the large tier is preferred when it is already on disk, since the standard
+    /// one is 400 px on its long edge and the box ends up the height of the window. That decode is
+    /// asynchronous and the box has to draw on its first frame, so until it lands the feed's copy
+    /// stands in: at the cell the two pictures are identical, and the box has barely left it by
+    /// the time the swap happens. Only a copy the feed already holds is borrowed — the view never
+    /// decodes into the feed's cache. The cache redraws this view when a decode finishes.
+    fn poster_for(&self, item: &Generation, window: &mut Window, cx: &mut Context<Self>) -> Option<Poster> {
+        let standard = item.thumbnail.clone()?;
+        let large = state::library(cx).read(cx).large_thumbnail(&standard).map(std::path::Path::to_path_buf);
+        let view = cx.entity_id();
+        let resource = |path: &std::path::Path| gpui::Resource::Path(path.to_path_buf().into());
+        let tiers: Vec<std::path::PathBuf> = large.into_iter().chain(std::iter::once(standard)).collect();
+        let whole = self.images.update(cx, |cache, cx| tiers.iter().find(|tier| cache.warm(&resource(tier), view, window, cx) == Warmth::Ready).cloned());
+        if let Some(path) = whole {
+            return Some(Poster { path, cache: self.images.clone() });
+        }
+        let borrowed = self.thumbnails.read(cx);
+        match tiers.iter().find(|tier| borrowed.holds(&resource(tier))) {
+            Some(path) => Some(Poster { path: path.clone(), cache: self.thumbnails.clone() }),
+            // Nothing decoded anywhere yet: the whole standard tier is the quickest to arrive, and
+            // its element draws nothing for the frame or two until it does.
+            None => tiers.last().map(|path| Poster { path: path.clone(), cache: self.images.clone() }),
+        }
+    }
+
     /// One viewport-wide slot of the strip at horizontal position `x`. Only the current slot carries
     /// zoom/pan, the live player and the interactive controls; neighbours are fit-scaled previews,
     /// rendered (clipped) even at rest so their images are decoded before a swipe reveals them.
-    fn render_slot(&self, k: usize, item: &Generation, is_current: bool, x: Pixels, window: &Window, cx: &Context<Self>) -> gpui::AnyElement {
+    fn render_slot(&self, k: usize, item: &Generation, is_current: bool, x: Pixels, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let poster = (item.media_type == MediaType::Video).then(|| self.poster_for(item, window, cx)).flatten();
         let area = slot_size(&self.area);
         let theme = cx.theme();
         let (muted, muted_fg, danger) = (theme.muted, theme.muted_foreground, theme.danger);
@@ -1141,13 +1180,13 @@ impl DetailView {
                 let player = if owns_player { self.player.as_ref() } else { None };
                 let playing = player.map(|p| p.is_playing()).unwrap_or(false);
                 let frame = if owns_player { self.frame_image.clone() } else { None };
-                let surface_el: gpui::AnyElement = match frame {
-                    Some(f) => gpui::img(f).absolute().left(left).top(top).w(w).h(h).object_fit(ObjectFit::Fill).into_any_element(),
-                    None => item
-                        .thumbnail
-                        .clone()
-                        .map(|t| gpui::img(t).image_cache(&self.thumbnails).absolute().left(left).top(top).w(w).h(h).object_fit(ObjectFit::Fill).into_any_element())
-                        .unwrap_or_else(|| gpui::div().absolute().left(left).top(top).w(w).h(h).bg(muted).into_any_element()),
+                // The poster fills the rect the frames will: its shape comes from the probe and
+                // theirs from the player, which read the same header, so the first frame only
+                // sharpens the picture.
+                let surface_el: gpui::AnyElement = match (frame, poster) {
+                    (Some(f), _) => gpui::img(f).absolute().left(left).top(top).w(w).h(h).object_fit(ObjectFit::Fill).into_any_element(),
+                    (None, Some(poster)) => gpui::img(poster.path).image_cache(&poster.cache).absolute().left(left).top(top).w(w).h(h).object_fit(ObjectFit::Fill).into_any_element(),
+                    (None, None) => gpui::div().absolute().left(left).top(top).w(w).h(h).bg(muted).into_any_element(),
                 };
                 gpui::div()
                     .id(("video-stage", k))
@@ -1400,13 +1439,15 @@ impl Render for DetailView {
         }
         let media = gpui::div().absolute().inset_0().children(slots);
 
-        // The travelling box: the cell's cover-cropped thumbnail, opening up to the image's aspect
-        // as the box reaches the stage. The full-size image is decoded meanwhile (invisibly) so it
-        // is ready the moment the box arrives. `frame` is in window coordinates (the cell and the
-        // stage both are), and the view sits under the window's title bar, so the box is anchored
-        // to the window rather than positioned within the view.
+        // The travelling box: the thumbnail cover-fitted to the box, so it shows the cell's crop at
+        // the cell and opens up to the whole picture as the box reaches the image's own shape on
+        // the stage. The full-size image is decoded meanwhile (invisibly) so it is ready the moment
+        // the box arrives, and replacing the poster then changes only the sharpness. `frame` is in
+        // window coordinates (the cell and the stage both are), and the view sits under the
+        // window's title bar, so the box is anchored to the window rather than positioned within
+        // the view.
         let travelling = frame.and_then(|frame| {
-            let thumbnail = item.thumbnail.clone()?;
+            let poster = self.poster_for(&item, window, cx)?;
             let prewarm = item.file().map(std::path::Path::to_path_buf).filter(|_| item.media_type == MediaType::Image);
             let card = gpui::div()
                 .relative()
@@ -1414,7 +1455,7 @@ impl Render for DetailView {
                 .h(frame.size.height)
                 .overflow_hidden()
                 .bg(muted)
-                .child(crate::ui::cover_image(thumbnail).image_cache(&self.thumbnails))
+                .child(crate::ui::cover_image(poster.path).image_cache(&poster.cache))
                 .when_some(prewarm, |d, path| d.child(gpui::img(path).image_cache(&self.images).absolute().top_0().left_0().w(px(1.)).h(px(1.)).opacity(0.)));
             Some(gpui::anchored().snap_to_window().position(frame.origin).child(card))
         });
@@ -2784,6 +2825,140 @@ mod tests {
             m.lib.set_thumbnail(id, path);
             m.changed(cx);
         });
+    }
+
+    /// A 40 × 80 portrait PNG: a shape a square cell crops, unlike the seeded square images.
+    fn portrait_png() -> &'static [u8] {
+        static PNG: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+        PNG.get_or_init(|| {
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image::RgbaImage::from_pixel(40, 80, image::Rgba([10, 200, 30, 255])).write_to(&mut bytes, image::ImageFormat::Png).expect("encodes");
+            bytes.into_inner()
+        })
+    }
+
+    /// Seed a portrait image and render its real thumbnails, the way the app does on open;
+    /// returns the row and its standard tier.
+    fn portrait_item(env: &crate::test_support::TestEnv, vcx: &mut gpui::VisualTestContext) -> (GenerationId, std::path::PathBuf) {
+        let id = seed_item(&env.library, vcx, Seed { bytes: Some(portrait_png()), ..Seed::default() });
+        env.library.update(vcx, |m, cx| m.start_thumbnails(cx));
+        vcx.run_until_parked();
+        let standard = env.library.read_with(vcx, |m, _| m.lib.get(&id).and_then(|item| item.thumbnail.clone())).expect("thumbnailed");
+        (id, standard)
+    }
+
+    /// The pixel size `cache` decoded `path` at, if it has.
+    fn decoded_size(cache: &Entity<LruImageCache>, path: &std::path::Path, vcx: &mut gpui::VisualTestContext) -> Option<(i32, i32)> {
+        let resource = gpui::Resource::Path(path.to_path_buf().into());
+        cache.update(vcx, |cache, _| {
+            cache.loaded(&resource).map(|image| {
+                let size = image.size(0);
+                (size.width.0, size.height.0)
+            })
+        })
+    }
+
+    fn poster_now(detail: &Entity<DetailView>, vcx: &mut gpui::VisualTestContext) -> Poster {
+        detail.update_in(vcx, |d, window, cx| {
+            let item = d.item(cx).unwrap();
+            d.poster_for(&item, window, cx).expect("the item has a thumbnail")
+        })
+    }
+
+    /// The feed's cache decodes a thumbnail the way the cell drew it — square cells keep only the
+    /// middle square — so the box used to open up onto that crop and jump to the whole picture
+    /// when the full image landed. Now the feed's copy is only borrowed for the first frame, and
+    /// the stage decodes the thumbnail whole for the rest of the travel.
+    #[gpui::test]
+    fn the_travelling_box_opens_up_to_the_whole_thumbnail_not_the_cells_crop(cx: &mut TestAppContext) {
+        let env = env(cx, 1, "Mock");
+        let (feed, vcx) = cx.add_window_view(crate::views::feed::FeedView::new);
+        vcx.run_until_parked();
+        let (id, _standard) = portrait_item(&env, vcx);
+        // The feed draws the new cell (square by default), which decodes the thumbnail as the
+        // middle 40 × 40 of the picture. Which tier it draws depends on the cell's size.
+        vcx.update(|window, cx| window.simulate_next_frame(cx));
+        vcx.run_until_parked();
+        let thumbnails = feed.read_with(vcx, |feed, _| feed.image_cache());
+        let feed_bytes = thumbnails.read_with(vcx, |cache, _| cache.bytes());
+        assert!(feed_bytes > 0, "the cell decoded its picture");
+
+        let cell = feed.read_with(vcx, |feed, _| feed.cell_bounds(&EntryId::Generation(id.clone()))).expect("the cell is on screen");
+        let detail = vcx.new(|cx| DetailView::new(vec![EntryId::Generation(id)], 0, Some(cell), thumbnails.clone(), cx));
+        let first = poster_now(&detail, vcx);
+        assert_eq!(first.cache.entity_id(), thumbnails.entity_id(), "the first frame borrows the feed's copy, which is the cell's picture");
+        assert_eq!(decoded_size(&thumbnails, &first.path, vcx), Some((40, 40)), "and that copy is the cell's crop");
+
+        vcx.run_until_parked();
+        let images = detail.read_with(vcx, |d, _| d.images.clone());
+        let landed = poster_now(&detail, vcx);
+        assert_eq!(landed.cache.entity_id(), images.entity_id(), "then the stage's own decode");
+        assert_eq!(decoded_size(&images, &landed.path, vcx), Some((40, 80)), "which is the whole picture");
+        assert_eq!(thumbnails.read_with(vcx, |cache, _| cache.bytes()), feed_bytes, "the feed's cache was only read");
+    }
+
+    /// Opened without a cell on screen (a neighbour, or a jump to an index), nothing has decoded
+    /// the thumbnail: the stage decodes it whole rather than sending it through the feed's crop.
+    #[gpui::test]
+    fn a_poster_nobody_has_decoded_yet_comes_whole_from_the_stage(cx: &mut TestAppContext) {
+        let (_feed_detail, vcx, env, _ids) = detail_window!(cx, 1, 0);
+        let (id, _standard) = portrait_item(&env, vcx);
+        let untouched = vcx.update(|_, cx| LruImageCache::new(cx));
+        let detail = vcx.new(|cx| DetailView::new(vec![EntryId::Generation(id)], 0, None, untouched.clone(), cx));
+        let images = detail.read_with(vcx, |d, _| d.images.clone());
+        let first = poster_now(&detail, vcx);
+        assert_eq!(first.cache.entity_id(), images.entity_id(), "straight to the stage's decode");
+        assert_eq!(decoded_size(&images, &first.path, vcx), None, "which is still in flight");
+        vcx.run_until_parked();
+        assert_eq!(decoded_size(&images, &first.path, vcx), Some((40, 80)));
+        assert_eq!(untouched.read_with(vcx, |cache, _| cache.bytes()), 0, "the feed's cache is never decoded into");
+    }
+
+    /// The large tier is the whole picture at twice the size, so when a big cell already had it
+    /// rendered the box arrives sharper by drawing that one.
+    #[gpui::test]
+    fn the_large_tier_stands_in_when_it_is_already_on_disk(cx: &mut TestAppContext) {
+        let (_feed_detail, vcx, env, _ids) = detail_window!(cx, 1, 0);
+        let (id, standard) = portrait_item(&env, vcx);
+        let asset = env.library.read_with(vcx, |m, _| m.lib.get(&id).and_then(|item| item.output_asset_id.clone())).expect("has an output");
+        env.library.update(vcx, |m, cx| m.request_large_thumbnails(std::slice::from_ref(&asset), cx));
+        vcx.run_until_parked();
+        let large = env.library.read_with(vcx, |m, _| m.large_thumbnail(&standard).map(std::path::Path::to_path_buf)).expect("rendered");
+
+        let detail = vcx.new(|cx| DetailView::new(vec![EntryId::Generation(id)], 0, None, LruImageCache::new(cx), cx));
+        let images = detail.read_with(vcx, |d, _| d.images.clone());
+        poster_now(&detail, vcx);
+        vcx.run_until_parked();
+        let poster = poster_now(&detail, vcx);
+        assert_eq!((poster.path, poster.cache.entity_id()), (large.clone(), images.entity_id()));
+        assert_eq!(decoded_size(&images, &large, vcx), Some((40, 80)), "the large tier is the whole picture too");
+    }
+
+    /// A video's poster fills the rect its frames will, so a cropped copy would be stretched
+    /// until the first frame arrived. Drawn for real, the stage decodes the poster whole and
+    /// leaves the feed's cache alone.
+    #[gpui::test]
+    fn a_video_poster_is_decoded_whole_by_the_stage(cx: &mut TestAppContext) {
+        let env = env(cx, 0, "Mock");
+        let video = seed_item(&env.library, cx, Seed { media_type: MediaType::Video, ..Seed::default() });
+        let poster = env.library.update(cx, |m, cx| {
+            let file = m.lib.get(&video).and_then(|item| item.path.clone()).expect("the clip has a file");
+            let poster = file.with_extension("poster.png");
+            std::fs::write(&poster, portrait_png()).unwrap();
+            m.lib.set_thumbnail(&video, poster.clone());
+            m.changed(cx);
+            poster
+        });
+        let (detail, vcx) = cx.add_window_view(|_window, cx| {
+            let thumbnails = LruImageCache::new(cx);
+            DetailView::new(vec![EntryId::Generation(video)], 0, None, thumbnails, cx)
+        });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.simulate_next_frame(cx));
+        vcx.run_until_parked();
+        let (images, thumbnails) = detail.read_with(vcx, |d, _| (d.images.clone(), d.thumbnails.clone()));
+        assert_eq!(decoded_size(&images, &poster, vcx), Some((40, 80)), "the poster is decoded whole, at the clip's shape");
+        assert_eq!(thumbnails.read_with(vcx, |cache, _| cache.bytes()), 0, "and not through the feed's cache");
     }
 
     #[gpui::test]
