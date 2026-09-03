@@ -1341,6 +1341,9 @@ impl Render for ComposeView {
                 .id("count")
                 .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
                 .h_8()
+                // The ± buttons are 24 px in a 32 px box, so their hover fill already clears the
+                // top and bottom edges; the same inset on the sides keeps it off the frame there.
+                .px_1()
                 .items_center()
                 .rounded_md()
                 .border_1()
