@@ -330,6 +330,11 @@ impl FeedView {
         let lib = &self.library.read(cx).lib;
         self.motion.sync_thumbnails(self.ids.iter().map(|id| (id, lib.entry(id).is_some_and(|e| e.thumbnail().is_some()))), now);
         self.selection.retain_in(&self.ids);
+        // A row that just finished, or just got its standard thumbnail, moves nothing the render's
+        // viewport check watches, so it would draw that thumbnail stretched until the next scroll.
+        // Debounced, and rows already on the large tier are skipped, so a busy library costs
+        // one pass over the visible ids.
+        self.schedule_large_thumbnails(cx);
         // Keep the elapsed timers on generating cells moving (1 Hz) while any are in flight.
         let generating = self.library.read(cx).lib.in_flight().len();
         if generating > 0 && self.ticker.is_none() {
@@ -792,7 +797,8 @@ impl FeedView {
     }
 
     /// Ask for the large tier of everything currently on screen, if the cells are big enough to
-    /// need it. Called from the code that changes what is visible, never from a render.
+    /// need it. Called from the code that changes what is visible — the viewport, and the library
+    /// itself — never from a render.
     fn request_large_thumbnails(&mut self, cx: &mut Context<Self>) {
         if self.thumbnail_tier() == thumbnails::THUMB_MAX {
             return;
@@ -2576,6 +2582,37 @@ mod tests {
         });
         assert!(!drawn.is_empty(), "rows are on screen");
         assert!(drawn.iter().all(|path| path.to_string_lossy().contains("@800")), "every visible row draws the large tier: {drawn:?}");
+    }
+
+    /// Only the viewport (scroll, zoom, resize) used to ask for the tier, so a generation that
+    /// finished while the feed sat still at the largest zoom drew its fresh 400 px thumbnail
+    /// stretched across a cell twice that size, and stayed soft until the user scrolled.
+    #[gpui::test]
+    fn a_generation_finishing_in_a_zoomed_in_feed_draws_the_large_tier(cx: &mut TestAppContext) {
+        let (view, vcx, env) = feed_window!(cx, 2);
+        env.library.update(vcx, |m, cx| m.start_thumbnails(cx));
+        vcx.run_until_parked();
+        vcx.simulate_resize(gpui::size(px(800.), px(600.)));
+        vcx.dispatch_action(ZoomIn);
+        vcx.dispatch_action(ZoomIn);
+        vcx.run_until_parked();
+        vcx.background_executor.advance_clock(LARGE_TIER_SETTLE * 2);
+        vcx.run_until_parked();
+
+        // A new image completes with nothing else moving: no wheel, no zoom, no resize.
+        let id = env.library.update(vcx, |m, cx| {
+            let id = m.lib.add_generating(MediaType::Image, None, None, None, None);
+            m.apply(majik_generation::Event::Completed { id: id.clone(), job: m.attempt(&id), bytes: majik_core::images::solid_png(64, 64, [9, 8, 7]), is_upscaled: false }, cx);
+            id
+        });
+        vcx.run_until_parked();
+        vcx.background_executor.advance_clock(LARGE_TIER_SETTLE * 2);
+        vcx.run_until_parked();
+
+        let standard = env.library.read_with(vcx, |m, _| m.lib.get(&id).unwrap().thumbnail.clone().expect("the new row was thumbnailed"));
+        let drawn = view.update(vcx, |feed, cx| feed.thumbnail_for_cell(&standard, cx));
+        assert_eq!(thumbnails::sized_thumb_path(&standard, thumbnails::THUMB_LARGE), Some(drawn.clone()), "the new row draws the large tier, not the stretched standard one");
+        assert!(drawn.exists(), "{} was rendered", drawn.display());
     }
 
     /// Scrolling the whole feed does not grow the thumbnail cache without bound. The cache this
