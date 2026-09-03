@@ -174,6 +174,47 @@ pub fn icon(name: &'static str) -> Icon {
     Icon::default().path(format!("icons/{name}.svg"))
 }
 
+/// The box a ratio glyph sits in, so a column of them lines up whatever their shape.
+const RATIO_GLYPH_BOX: Pixels = px(14.);
+/// The long edge of a ratio glyph's rectangle.
+const RATIO_GLYPH_EDGE: Pixels = px(12.);
+
+/// The shape an aspect ratio makes: a rectangle in its proportion, so 21:9 is visibly flatter than
+/// 16:9 and 4:5 nearly square. `None` is "auto", which has no shape and takes the ratio icon.
+#[derive(IntoElement)]
+pub struct RatioGlyph {
+    ratio: Option<(u32, u32)>,
+}
+
+pub fn ratio_glyph(ratio: Option<(u32, u32)>) -> RatioGlyph {
+    RatioGlyph { ratio }
+}
+
+/// Width and height of the rectangle for `width:height`: the long edge is `RATIO_GLYPH_EDGE`, the
+/// short one scaled down in proportion.
+pub fn ratio_glyph_size((width, height): (u32, u32)) -> (Pixels, Pixels) {
+    let (width, height) = (width.max(1) as f32, height.max(1) as f32);
+    if width >= height {
+        (RATIO_GLYPH_EDGE, RATIO_GLYPH_EDGE * (height / width))
+    } else {
+        (RATIO_GLYPH_EDGE * (width / height), RATIO_GLYPH_EDGE)
+    }
+}
+
+impl RenderOnce for RatioGlyph {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let foreground = cx.theme().foreground;
+        let shape = match self.ratio {
+            Some(ratio) => {
+                let (width, height) = ratio_glyph_size(ratio);
+                div().w(width).h(height).border_1().border_color(foreground).rounded_xs().into_any_element()
+            }
+            None => icon("ratio").size(RATIO_GLYPH_BOX).text_color(foreground).into_any_element(),
+        };
+        div().size(RATIO_GLYPH_BOX).flex_none().flex().items_center().justify_center().child(shape)
+    }
+}
+
 /// The executor clock: real time in the app, `advance_clock`-driven in tests. Every view-owned
 /// motion model samples this so it can be tested headlessly.
 pub fn now(cx: &App) -> Instant {
@@ -651,6 +692,38 @@ mod tests {
         assert_eq!(picture_for(MediaType::Video, Some(thumb), Path::new("a.mp4")).as_deref(), Some(thumb));
         assert_eq!(picture_for(MediaType::Video, None, Path::new("a.mp4")), None, "an MP4 is not a picture");
         assert_eq!(picture_for(MediaType::Audio, None, Path::new("a.mp3")), None);
+    }
+
+    #[test]
+    fn ratio_glyph_keeps_the_long_edge_and_scales_the_short_one() {
+        assert_eq!(ratio_glyph_size((1, 1)), (px(12.), px(12.)));
+        assert_eq!(ratio_glyph_size((16, 9)), (px(12.), px(6.75)));
+        assert_eq!(ratio_glyph_size((9, 16)), (px(6.75), px(12.)), "portrait is the landscape shape turned");
+        let (_, wide) = ratio_glyph_size((21, 9));
+        let (_, standard) = ratio_glyph_size((4, 3));
+        assert!(wide < px(6.75) && px(6.75) < standard, "the flatter the ratio, the shorter the rectangle");
+        let (width, height) = ratio_glyph_size((0, 0));
+        assert!(width > px(0.) && height > px(0.), "a degenerate ratio still draws something");
+    }
+
+    struct Glyphs;
+
+    impl gpui::Render for Glyphs {
+        fn render(&mut self, _window: &mut Window, _cx: &mut gpui::Context<Self>) -> impl IntoElement {
+            gpui::div().child(ratio_glyph(Some((16, 9)))).child(ratio_glyph(Some((9, 16)))).child(ratio_glyph(None))
+        }
+    }
+
+    /// Both shapes and the auto icon draw headlessly, in the theme's foreground.
+    #[gpui::test]
+    fn ratio_glyphs_render(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            install_theme(cx);
+        });
+        let (_view, vcx) = cx.add_window_view(|_, _| Glyphs);
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
     }
 
     #[test]

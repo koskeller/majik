@@ -20,7 +20,7 @@ use crate::composer_state::{unsupported_message, ComposeTab, ComposerState, Draf
 use crate::config::{update_config, Config};
 use crate::drafts::Drafts;
 use crate::state::{self, DraggedAssets, LibraryModel, PendingCompose};
-use crate::ui::{button, chip, color_to, duration_badges, enter_card, exit_card, icon, now, section_label, segmented, spin, thumb_badge, thumb_badges, Chip, MOTION_FAST};
+use crate::ui::{button, chip, color_to, duration_badges, enter_card, exit_card, icon, now, ratio_glyph, section_label, segmented, spin, thumb_badge, thumb_badges, Chip, MOTION_FAST};
 
 /// Asset cards are `ASSET_CARD` square.
 const ASSET_CARD: Pixels = px(84.);
@@ -834,17 +834,40 @@ impl ComposeView {
         current: Option<T>,
         set: fn(&mut Self, T, &mut Context<Self>),
     ) -> impl Fn(PopupMenu, &mut Window, &mut gpui::Context<PopupMenu>) -> PopupMenu + 'static {
+        Self::options_menu_rows(this, options.into_iter().map(|(value, label)| (value, label, None)).collect(), current, set)
+    }
+
+    /// One row per option, the current one checked. A row with a shape draws it as a ratio glyph
+    /// before the label; a plain row is just the label.
+    fn options_menu_rows<T: Clone + PartialEq + 'static>(
+        this: WeakEntity<Self>,
+        options: Vec<OptionRow<T>>,
+        current: Option<T>,
+        set: fn(&mut Self, T, &mut Context<Self>),
+    ) -> impl Fn(PopupMenu, &mut Window, &mut gpui::Context<PopupMenu>) -> PopupMenu + 'static {
         move |mut menu, _, _| {
-            for (value, label) in options.clone() {
+            for (value, label, shape) in options.clone() {
                 let this = this.clone();
                 let checked = current.as_ref() == Some(&value);
-                menu = menu.item(PopupMenuItem::new(label).checked(checked).on_click(move |_, _, cx| {
+                let item = match shape {
+                    Some(ratio) => {
+                        let label = SharedString::from(label);
+                        PopupMenuItem::element(move |_, _| h_flex().gap_2().items_center().child(ratio_glyph(ratio)).child(label.clone()))
+                    }
+                    None => PopupMenuItem::new(label),
+                };
+                menu = menu.item(item.checked(checked).on_click(move |_, _, cx| {
                     let v = value.clone();
                     this.update(cx, |view, cx| set(view, v, cx)).ok();
                 }));
             }
             menu
         }
+    }
+
+    /// The ratio picker's rows: every ratio the model takes, each with its glyph.
+    fn ratio_rows<T: Copy>(ratios: &[T], raw: fn(T) -> &'static str, shape: fn(T) -> Shape) -> Vec<OptionRow<T>> {
+        ratios.iter().map(|&ratio| (ratio, raw(ratio).to_string(), Some(shape(ratio)))).collect()
     }
 
     /// The providers with a key (or needing none), the current one checked, then a way into
@@ -1061,6 +1084,12 @@ fn placeholder(tab: ComposeTab, dialogue: bool) -> &'static str {
     }
 }
 
+/// The proportion a ratio glyph draws, `width:height`; `None` is "auto", which has no shape.
+type Shape = Option<(u32, u32)>;
+
+/// A setting picker's row: the value, its label, and a shape for the rows that show one.
+type OptionRow<T> = (T, String, Option<Shape>);
+
 fn ratio_icon(portrait: Option<bool>) -> &'static str {
     match portrait {
         None => "square",
@@ -1139,9 +1168,9 @@ impl Render for ComposeView {
             ComposeTab::Media(MediaType::Image) => {
                 if let Some(caps) = self.state.image_caps() {
                     if caps.supports_aspect_ratio() {
-                        let ratios: Vec<(AspectRatio, String)> = caps.supported_aspect_ratios.iter().map(|a| (*a, a.raw().to_string())).collect();
+                        let ratios = Self::ratio_rows(&caps.supported_aspect_ratios, AspectRatio::raw, |a| Some(a.ratio()));
                         let label = self.state.image.aspect_ratio.map(|a| a.raw()).unwrap_or("Ratio");
-                        options = options.child(Self::capsule("ratio", ratio_icon(self.state.image.aspect_ratio.map(|a| a.is_portrait()).filter(|_| self.state.image.aspect_ratio != Some(AspectRatio::Square))), label, "Aspect ratio").dropdown_menu(Self::options_menu(this.clone(), ratios, self.state.image.aspect_ratio, |v, ar, cx| {
+                        options = options.child(Self::capsule("ratio", ratio_icon(self.state.image.aspect_ratio.map(|a| a.is_portrait()).filter(|_| self.state.image.aspect_ratio != Some(AspectRatio::Square))), label, "Aspect ratio").dropdown_menu(Self::options_menu_rows(this.clone(), ratios, self.state.image.aspect_ratio, |v, ar, cx| {
                             v.state.image.aspect_ratio = Some(ar);
                             cx.notify();
                         })));
@@ -1159,10 +1188,10 @@ impl Render for ComposeView {
             ComposeTab::Media(MediaType::Video) => {
                 if let Some(caps) = self.state.video_caps() {
                     if !caps.aspect_ratios.is_empty() {
-                        let ratios: Vec<(VideoAspectRatio, String)> = caps.aspect_ratios.iter().map(|a| (*a, a.raw().to_string())).collect();
+                        let ratios = Self::ratio_rows(&caps.aspect_ratios, VideoAspectRatio::raw, VideoAspectRatio::ratio);
                         let label = self.state.video.aspect_ratio.map(|a| a.raw()).unwrap_or("Ratio");
                         let portrait = self.state.video.aspect_ratio.and_then(|a| a.ratio()).filter(|(n, d)| n != d).map(|(n, d)| n < d);
-                        options = options.child(Self::capsule("vratio", ratio_icon(portrait), label, "Aspect ratio").dropdown_menu(Self::options_menu(this.clone(), ratios, self.state.video.aspect_ratio, |v, ar, cx| {
+                        options = options.child(Self::capsule("vratio", ratio_icon(portrait), label, "Aspect ratio").dropdown_menu(Self::options_menu_rows(this.clone(), ratios, self.state.video.aspect_ratio, |v, ar, cx| {
                             v.state.video.aspect_ratio = Some(ar);
                             cx.notify();
                         })));
@@ -3117,6 +3146,33 @@ mod tests {
             v.step_count(-1, cx);
             assert_eq!(v.state.image.count, 7);
         });
+    }
+
+    /// Every ratio the model takes gets a row with its value and its shape; the video picker's
+    /// "auto" has no shape.
+    #[gpui::test]
+    fn aspect_ratio_menu_rows_carry_a_glyph(cx: &mut TestAppContext) {
+        let (view, vcx, _e) = compose_window!(cx, "Mock");
+        select_image_model(&view, vcx, "gemini-3.1-flash");
+        view.update(vcx, |v, _| {
+            let caps = v.state.image_caps().expect("an image model with capabilities");
+            assert!(caps.supports_aspect_ratio(), "the model picks a ratio");
+            let rows = ComposeView::ratio_rows(&caps.supported_aspect_ratios, AspectRatio::raw, |a| Some(a.ratio()));
+            assert_eq!(rows.len(), caps.supported_aspect_ratios.len(), "one row per supported ratio");
+            for (ratio, label, shape) in &rows {
+                assert_eq!(label, ratio.raw(), "the value is the label");
+                assert_eq!(*shape, Some(Some(ratio.ratio())), "every image ratio has a shape");
+            }
+        });
+        // A render builds the chip and its menu closure.
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let rows = ComposeView::ratio_rows(&VideoAspectRatio::ALL, VideoAspectRatio::raw, VideoAspectRatio::ratio);
+        assert_eq!(rows[0], (VideoAspectRatio::Auto, "auto".to_string(), Some(None)), "auto has no shape to draw");
+        assert!(rows[1..].iter().all(|(_, _, shape)| matches!(shape, Some(Some(_)))), "every other video ratio has one");
+        switch_to(&view, vcx, MediaType::Video);
+        select_video_model(&view, vcx, "veo-3.1");
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
     }
 
     #[gpui::test]
