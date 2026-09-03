@@ -1285,13 +1285,14 @@ impl Render for ComposeView {
             ComposeTab::Tool(ToolId::RemoveBackground) => (ToolId::RemoveBackground.label(), "scissor"),
         };
         // The output-count stepper (image and video tabs) shares Generate's row (and height: a
-        // medium button is `h_8`), spaced off the button it multiplies.
+        // medium button is `h_8`), spaced off the button it multiplies. It shows the bare number;
+        // the tooltip says what it counts, and the row has no width to spare for a noun.
         let count_stepper = match tab {
-            ComposeTab::Media(MediaType::Image) => Some(("image", "Number of images")),
-            ComposeTab::Media(MediaType::Video) => Some(("video", "Number of videos")),
+            ComposeTab::Media(MediaType::Image) => Some("Number of images"),
+            ComposeTab::Media(MediaType::Video) => Some("Number of videos"),
             ComposeTab::Media(MediaType::Audio) | ComposeTab::Tool(_) => None,
         }
-        .map(|(noun, tip)| {
+        .map(|tip| {
             let count = self.state.count();
             h_flex()
                 .id("count")
@@ -1302,18 +1303,20 @@ impl Render for ComposeView {
                 .border_1()
                 .border_color(border)
                 .child(button("count-minus").icon(icon("minus")).ghost().small().disabled(count <= 1).on_click(cx.listener(|v, _, _, cx| v.step_count(-1, cx))))
-                .child(gpui::div().px_1().text_sm().child(format!("{count} {noun}{}", if count == 1 { "" } else { "s" })))
+                .child(gpui::div().px_1().text_sm().child(count.to_string()))
                 .child(button("count-plus").icon(icon("plus")).ghost().small().disabled(count >= MAX_COUNT).on_click(cx.listener(|v, _, _, cx| v.step_count(1, cx))))
         });
         let footer = h_flex()
             .items_center()
             .gap_2()
             .children(count_stepper)
-            .when_some(self.album.clone(), |d, album| {
+            // The album hint takes whatever width is left between the stepper and Generate and
+            // wraps inside it (`min_w_0` lets flex shrink it below its text), so a long album name
+            // never pushes the button out of the panel.
+            .child(gpui::div().flex_1().min_w_0().when_some(self.album.clone(), |d, album| {
                 let name = self.library.read(cx).lib.album(&album).map(|a| a.name.clone()).unwrap_or_default();
-                d.child(gpui::div().text_xs().text_color(muted_fg).child(format!("→ {name} album")))
-            })
-            .child(gpui::div().flex_1())
+                d.text_xs().text_color(muted_fg).child(format!("→ {name} album"))
+            }))
             .child(
                 button("generate")
                     .icon(icon(glyph))
