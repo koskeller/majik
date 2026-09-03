@@ -31,6 +31,8 @@ mod defs {
     // MiniMax
     pub const MINIMAX_H3: VideoModel = VideoModel::new("minimax-h3", "MiniMax H3", "MiniMax", logo::MINIMAX, "TBD");
     pub const MINIMAX_H3_MAX: VideoModel = VideoModel::new("minimax-h3-max", "MiniMax H3 Max", "MiniMax", logo::MINIMAX, "TBD");
+    pub const MINIMAX_H3_MAX_TURBO: VideoModel =
+        VideoModel::new("minimax-h3-max-turbo", "MiniMax H3 Max Turbo", "MiniMax", logo::MINIMAX, "TBD");
     // Black Forest Labs
     pub const FLUX_3: VideoModel = VideoModel::new("flux-3", "FLUX 3", "Black Forest Labs", logo::FLUX, "TBD");
     // Alibaba
@@ -78,6 +80,7 @@ pub static SEEDANCE_20_FAST: VideoModel = defs::SEEDANCE_20_FAST;
 
 pub static MINIMAX_H3: VideoModel = defs::MINIMAX_H3;
 pub static MINIMAX_H3_MAX: VideoModel = defs::MINIMAX_H3_MAX;
+pub static MINIMAX_H3_MAX_TURBO: VideoModel = defs::MINIMAX_H3_MAX_TURBO;
 
 // ----- Black Forest Labs --------------------------------------------------------------------------
 
@@ -120,6 +123,7 @@ pub static ALL: &[VideoModel] = &[
     defs::SEEDANCE_20_FAST,
     defs::SEEDANCE_15_PRO,
     defs::MINIMAX_H3_MAX,
+    defs::MINIMAX_H3_MAX_TURBO,
     defs::MINIMAX_H3,
     defs::FLUX_3,
     defs::HAPPY_HORSE_11,

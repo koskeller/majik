@@ -703,11 +703,17 @@ fn minimax_h3_resolution_tiers() {
         let body = FalClient::build_video_request_body("p", None, None, None, VideoEndpointVariant::T2v, &settings);
         assert_eq!(body["resolution"], json!(expected), "{expected}");
     }
-    // H3 Max sells only the two lower tiers; the key is dropped rather than sent as a bad value.
-    for resolution in [VideoResolution::Fhd, VideoResolution::Uhd] {
-        let settings = video_settings(ids::MINIMAX_H3_MAX, None, Some(resolution), 5, false);
+    // H3 Max and its Turbo sell only the two lower tiers; the key is dropped rather than sent as
+    // a bad value.
+    for id in [ids::MINIMAX_H3_MAX, ids::MINIMAX_H3_MAX_TURBO] {
+        for resolution in [VideoResolution::Fhd, VideoResolution::Uhd] {
+            let settings = video_settings(id, None, Some(resolution), 5, false);
+            let body = FalClient::build_video_request_body("p", None, None, None, VideoEndpointVariant::T2v, &settings);
+            assert!(body.get("resolution").is_none(), "{id} {resolution:?}");
+        }
+        let settings = video_settings(id, None, Some(VideoResolution::Hd), 5, false);
         let body = FalClient::build_video_request_body("p", None, None, None, VideoEndpointVariant::T2v, &settings);
-        assert!(body.get("resolution").is_none(), "{resolution:?}");
+        assert_eq!(body["resolution"], json!("768P"), "{id}");
     }
     // H3 has no `auto` ratio at all, so the key is omitted rather than sent as "auto".
     let settings = video_settings(ids::MINIMAX_H3, Some(VideoAspectRatio::Auto), None, 5, false);
@@ -808,16 +814,45 @@ fn wan_3_takes_no_audio_input() {
     assert_eq!(caps::api_audio_input_param(&vid(ids::WAN_27)), Some("audio_url"));
 }
 
-/// H3 Max's schema requires `prompt_expansion_mode`; plain H3 defaults it.
+/// H3 Max's schema (and Max Turbo's) requires `prompt_expansion_mode`; plain H3 defaults it.
 #[test]
 fn minimax_h3_max_sends_its_required_prompt_expansion_mode() {
-    let settings = video_settings(ids::MINIMAX_H3_MAX, None, Some(VideoResolution::Hd), 5, false);
-    let body = FalClient::build_video_request_body("p", None, None, None, VideoEndpointVariant::T2v, &settings);
-    assert_eq!(body["prompt_expansion_mode"], json!("balanced"));
+    for id in [ids::MINIMAX_H3_MAX, ids::MINIMAX_H3_MAX_TURBO] {
+        let settings = video_settings(id, None, Some(VideoResolution::Hd), 5, false);
+        let body = FalClient::build_video_request_body("p", None, None, None, VideoEndpointVariant::T2v, &settings);
+        assert_eq!(body["prompt_expansion_mode"], json!("balanced"), "{id}");
+    }
 
     let settings = video_settings(ids::MINIMAX_H3, None, Some(VideoResolution::Hd), 5, false);
     let body = FalClient::build_video_request_body("p", None, None, None, VideoEndpointVariant::T2v, &settings);
     assert!(body.get("prompt_expansion_mode").is_none());
+}
+
+/// H3 Max Turbo is H3 Max's text and image endpoints under `h3-max-turbo`, both frames on the
+/// image one, and no reference endpoint at all: the composer offers it no reference cards and
+/// a reference request has nowhere to go.
+#[test]
+fn minimax_h3_max_turbo_has_text_and_image_endpoints_but_no_references() {
+    let model = vid(ids::MINIMAX_H3_MAX_TURBO);
+    assert_eq!(caps::video_endpoint(&model), Some("minimax/h3-max-turbo/text-to-video"));
+    assert_eq!(caps::video_i2v_endpoint(&model), Some("minimax/h3-max-turbo/image-to-video"));
+    assert_eq!(caps::video_reference_endpoint(&model), None);
+    assert_eq!(caps::video_reference_params(&model), None);
+
+    let model_caps = caps::video_capabilities(&model).unwrap();
+    assert!(model_caps.references.is_none());
+    assert_eq!(model_caps.resolutions, vec![VideoResolution::Sd, VideoResolution::Hd]);
+    assert!(!model_caps.aspect_ratios.contains(&VideoAspectRatio::Auto), "H3 has no auto ratio");
+    assert_eq!(model_caps.asset_constraints.range(AssetRole::FirstFrame), Some(&(0..=1)));
+    assert_eq!(model_caps.asset_constraints.range(AssetRole::LastFrame), Some(&(0..=1)));
+    assert_eq!(model_caps.asset_constraints.range(AssetRole::ReferenceImage), None);
+
+    let settings = video_settings(ids::MINIMAX_H3_MAX_TURBO, Some(VideoAspectRatio::Landscape), Some(VideoResolution::Sd), 8, true);
+    let body = FalClient::build_video_request_body("p", Some(FRAME), Some(FRAME), None, VideoEndpointVariant::I2v, &settings);
+    assert!(body["image_url"].is_string() && body["end_image_url"].is_string());
+    assert_eq!(body["duration"], json!(8));
+    assert_eq!(body["resolution"], json!("480P"));
+    assert!(body.get("generate_audio").is_none(), "H3 has no audio switch");
 }
 
 #[test]
@@ -1442,7 +1477,7 @@ fn descriptor_shape() {
     assert!(d.requires_api_key);
     assert!(d.is_user_selectable);
     assert_eq!(d.supported_image_models.len(), 20);
-    assert_eq!(d.supported_video_models.len(), 26);
+    assert_eq!(d.supported_video_models.len(), 27);
     assert_eq!(d.supported_audio_models.len(), 2);
     assert_eq!(d.supported_image_models[0].id, ids::GEMINI_3_PRO);
     assert_eq!(d.supported_video_models[0].id, ids::VEO_31);

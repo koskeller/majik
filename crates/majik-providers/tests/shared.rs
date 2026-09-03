@@ -509,6 +509,7 @@ fn video_catalog_order_and_ids() {
             "seedance-2-fast",
             "seedance-1.5-pro",
             "minimax-h3-max",
+            "minimax-h3-max-turbo",
             "minimax-h3",
             "flux-3",
             "happyhorse-1.1",
@@ -525,7 +526,7 @@ fn video_catalog_order_and_ids() {
 
 #[test]
 fn video_catalog_named_statics_match_catalog_entries() {
-    let named: [&VideoModel; 26] = [
+    let named: [&VideoModel; 27] = [
         &video::VEO_31,
         &video::VEO_31_FAST,
         &video::VEO_31_LITE,
@@ -543,6 +544,7 @@ fn video_catalog_named_statics_match_catalog_entries() {
         &video::SEEDANCE_20_FAST,
         &video::MINIMAX_H3,
         &video::MINIMAX_H3_MAX,
+        &video::MINIMAX_H3_MAX_TURBO,
         &video::FLUX_3,
         &video::HAPPY_HORSE_11,
         &video::HAPPY_HORSE_10,

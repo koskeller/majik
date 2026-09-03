@@ -266,6 +266,15 @@ fn video(settings: &VideoGenerationSettings) -> Estimate {
             ((Some(V720), false), 80_000),
             ((Some(V720), true), 80_000),
         ],
+        // H3 Max Turbo, checked 2026-09-03: the list price, half of H3 Max's. fal's 75%-off
+        // launch rate ($0.00625 / $0.01) runs until 2026-09-07, after which the page says "480p is
+        // $0.025/second and 768p is $0.04/second".
+        MINIMAX_H3_MAX_TURBO => &[
+            ((Some(V480), false), 25_000),
+            ((Some(V480), true), 25_000),
+            ((Some(V720), false), 40_000),
+            ((Some(V720), true), 40_000),
+        ],
         FLUX_3 => &[
             ((Some(V720), false), 170_000),
             ((Some(V720), true), 170_000),
@@ -387,6 +396,14 @@ mod tests {
         assert_eq!(dollars(video_price("kling-o3-pro", None, 5, false)), "$0.56");
         assert_eq!(dollars(video_price("kling-o3-pro", None, 5, true)), "$0.70", "fal's own worked example");
         assert_eq!(dollars(video_price("kling-2.5-turbo-pro", None, 5, false)), "$0.35");
+    }
+
+    #[test]
+    fn h3_max_turbo_is_half_of_h3_max() {
+        assert_eq!(dollars(video_price("minimax-h3-max", Some(V720), 5, false)), "$0.40");
+        assert_eq!(dollars(video_price("minimax-h3-max-turbo", Some(V720), 5, false)), "$0.20");
+        assert_eq!(dollars(video_price("minimax-h3-max-turbo", Some(V480), 10, true)), "$0.25", "no audio surcharge");
+        assert!(matches!(video_price("minimax-h3-max-turbo", Some(V1080), 5, false), Estimate::Unknown), "Turbo has no 2K tier");
     }
 
     #[test]

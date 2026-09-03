@@ -545,7 +545,7 @@ mod tests {
         assert!(named("Seedance 2.5").chips.contains(&"4 - 30s".to_string()), "{:?}", named("Seedance 2.5").chips);
         assert!(named("FLUX 3").chips.contains(&"5 - 20s".to_string()));
         assert!(named("MiniMax H3").chips.contains(&"480p - 4K".to_string()), "{:?}", named("MiniMax H3").chips);
-        for name in ["WAN 3.0", "WAN 3.0 Prime", "Gemini Omni Flash 1.1", "HappyHorse 1.1", "Grok Imagine Video 1.5", "MiniMax H3 Max"] {
+        for name in ["WAN 3.0", "WAN 3.0 Prime", "Gemini Omni Flash 1.1", "HappyHorse 1.1", "Grok Imagine Video 1.5", "MiniMax H3 Max", "MiniMax H3 Max Turbo"] {
             assert!(!named(name).chips.is_empty(), "{name} has no chips");
         }
 

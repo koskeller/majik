@@ -62,6 +62,7 @@ pub mod ids {
     pub const SEEDANCE_25: &str = "seedance-2.5";
     pub const MINIMAX_H3: &str = "minimax-h3";
     pub const MINIMAX_H3_MAX: &str = "minimax-h3-max";
+    pub const MINIMAX_H3_MAX_TURBO: &str = "minimax-h3-max-turbo";
     pub const FLUX_3: &str = "flux-3";
     pub const HAPPY_HORSE_11: &str = "happyhorse-1.1";
     pub const WAN_30: &str = "wan-3.0";
@@ -118,6 +119,7 @@ pub const SUPPORTED_VIDEO_MODEL_IDS: &[&str] = &[
     SEEDANCE_20_FAST,
     SEEDANCE_15_PRO,
     MINIMAX_H3_MAX,
+    MINIMAX_H3_MAX_TURBO,
     MINIMAX_H3,
     FLUX_3,
     HAPPY_HORSE_11,
@@ -312,6 +314,16 @@ pub fn video_capabilities(model: &VideoModel) -> Option<VideoModelCapabilities> 
         )
         .with_asset_constraints(AssetConstraints::first_last_frame())
         .with_references(VideoReferences::images(9).with_videos(3).with_audio(3).with_combined_max(12))
+        .with_max_prompt_characters(50_000),
+        // H3 Max Turbo (checked 2026-09-03, the day after it shipped) has H3 Max's text and
+        // image endpoints and no reference endpoint.
+        MINIMAX_H3_MAX_TURBO => VideoModelCapabilities::new(
+            VideoDurationRange::new(5, 15, None),
+            [Wide, Landscape, Standard, Square, Portrait, Tall],
+            [Sd, Hd],
+            1,
+        )
+        .with_asset_constraints(AssetConstraints::first_last_frame())
         .with_max_prompt_characters(50_000),
         // FLUX 3 also offers 2:1, which we have no enum for.
         FLUX_3 => VideoModelCapabilities::new(
@@ -525,6 +537,7 @@ pub fn video_endpoint(model: &VideoModel) -> Option<&'static str> {
         SEEDANCE_25 => "bytedance/seedance-2.5/text-to-video",
         MINIMAX_H3 => "minimax/h3/text-to-video",
         MINIMAX_H3_MAX => "minimax/h3-max/text-to-video",
+        MINIMAX_H3_MAX_TURBO => "minimax/h3-max-turbo/text-to-video",
         FLUX_3 => "blackforestlabs/flux-3/text-to-video",
         HAPPY_HORSE_11 => "alibaba/happy-horse/v1.1/text-to-video",
         WAN_30 => "alibaba/wan-3.0/text-to-video",
@@ -558,6 +571,7 @@ pub fn video_i2v_endpoint(model: &VideoModel) -> Option<&'static str> {
         SEEDANCE_25 => "bytedance/seedance-2.5/image-to-video",
         MINIMAX_H3 => "minimax/h3/image-to-video",
         MINIMAX_H3_MAX => "minimax/h3-max/image-to-video",
+        MINIMAX_H3_MAX_TURBO => "minimax/h3-max-turbo/image-to-video",
         FLUX_3 => "blackforestlabs/flux-3/image-to-video",
         HAPPY_HORSE_11 => "alibaba/happy-horse/v1.1/image-to-video",
         WAN_30 => "alibaba/wan-3.0/image-to-video",
@@ -838,7 +852,7 @@ pub fn api_video_aspect_ratio(model: &VideoModel, aspect_ratio: VideoAspectRatio
             _ => Some(("aspect_ratio", aspect_ratio.raw())),
         },
         // H3 has no `auto`; the text-to-video endpoint rejects anything outside its six ratios.
-        MINIMAX_H3 | MINIMAX_H3_MAX => match aspect_ratio {
+        MINIMAX_H3 | MINIMAX_H3_MAX | MINIMAX_H3_MAX_TURBO => match aspect_ratio {
             Auto | NarrowLandscape | NarrowPortrait => None,
             _ => Some(("aspect_ratio", aspect_ratio.raw())),
         },
@@ -861,8 +875,8 @@ pub fn api_video_resolution(model: &VideoModel, resolution: VideoResolution) -> 
                 Uhd => "4K",
             },
         )),
-        // H3 Max only sells the two lower tiers.
-        MINIMAX_H3_MAX => match resolution {
+        // H3 Max and its Turbo only sell the two lower tiers.
+        MINIMAX_H3_MAX | MINIMAX_H3_MAX_TURBO => match resolution {
             Sd => Some(("resolution", "480P")),
             Hd => Some(("resolution", "768P")),
             Fhd | Uhd => None,
@@ -880,7 +894,7 @@ pub fn api_duration(model: &VideoModel, duration: u32) -> Option<Value> {
         SEEDANCE_15_PRO | SEEDANCE_20 | SEEDANCE_20_FAST | SEEDANCE_25 => Value::String(duration.to_string()),
         // FLUX 3's duration enum mixes the string "auto" with integers; a number goes as a number.
         FLUX_3 => Value::from(duration),
-        GEMINI_OMNI_FLASH_11 | MINIMAX_H3 | MINIMAX_H3_MAX | WAN_30 | WAN_30_PRIME => Value::from(duration),
+        GEMINI_OMNI_FLASH_11 | MINIMAX_H3 | MINIMAX_H3_MAX | MINIMAX_H3_MAX_TURBO | WAN_30 | WAN_30_PRIME => Value::from(duration),
         HAPPY_HORSE_11 => Value::from(duration),
         GROK_IMAGINE_VIDEO_15 => Value::from(duration),
         HAPPY_HORSE_10 | WAN_27 | PIXVERSE_V6 | GROK_IMAGINE_VIDEO => Value::from(duration),
@@ -940,7 +954,7 @@ fn api_i2v_start_frame_param(model: &VideoModel) -> Option<&'static str> {
         GROK_IMAGINE_VIDEO_15 => "image_url",
         GEMINI_OMNI_FLASH_11 => "image_url",
         SEEDANCE_25 => "image_url",
-        MINIMAX_H3 | MINIMAX_H3_MAX => "image_url",
+        MINIMAX_H3 | MINIMAX_H3_MAX | MINIMAX_H3_MAX_TURBO => "image_url",
         FLUX_3 => "image_url",
         HAPPY_HORSE_11 => "image_url",
         // Wan 3.0's image-to-video endpoint requires `start_image_url`, not `image_url`.
@@ -968,7 +982,7 @@ fn api_i2v_end_frame_param(model: &VideoModel) -> Option<&'static str> {
         GROK_IMAGINE_VIDEO_15 => None,
         GEMINI_OMNI_FLASH_11 => Some("end_image_url"),
         SEEDANCE_25 => Some("end_image_url"),
-        MINIMAX_H3 | MINIMAX_H3_MAX => Some("end_image_url"),
+        MINIMAX_H3 | MINIMAX_H3_MAX | MINIMAX_H3_MAX_TURBO => Some("end_image_url"),
         // FLUX 3's i2v endpoint takes an opening frame only; both frames go to its own endpoint.
         FLUX_3 => None,
         HAPPY_HORSE_11 => None,
@@ -993,7 +1007,7 @@ pub fn api_audio_param(model: &VideoModel) -> Option<&'static str> {
         GROK_IMAGINE_VIDEO | GROK_IMAGINE_VIDEO_15 => None,
         GEMINI_OMNI_FLASH_11 => None,
         SEEDANCE_25 => Some("generate_audio"),
-        MINIMAX_H3 | MINIMAX_H3_MAX => None,
+        MINIMAX_H3 | MINIMAX_H3_MAX | MINIMAX_H3_MAX_TURBO => None,
         FLUX_3 => Some("generate_audio"),
         // Happy Horse always renders audio; there is no toggle to send.
         HAPPY_HORSE_11 => None,
@@ -1014,11 +1028,12 @@ pub fn api_audio_input_param(model: &VideoModel) -> Option<&'static str> {
 }
 
 /// Fields a model's schema marks required but that the composer has no setting for, sent at the
-/// value the endpoint documents as its default. H3 Max is the only one: its schema requires
-/// `prompt_expansion_mode` where plain H3 defaults it, and a missing required field is a 422.
+/// value the endpoint documents as its default. H3 Max and its Turbo are the only ones: their
+/// schemas require `prompt_expansion_mode` where plain H3 defaults it, and a missing required
+/// field is a 422.
 pub fn api_required_defaults(model: &VideoModel) -> &'static [(&'static str, &'static str)] {
     match model.id {
-        MINIMAX_H3_MAX => &[("prompt_expansion_mode", "balanced")],
+        MINIMAX_H3_MAX | MINIMAX_H3_MAX_TURBO => &[("prompt_expansion_mode", "balanced")],
         _ => &[],
     }
 }

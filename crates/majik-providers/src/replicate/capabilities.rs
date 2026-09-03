@@ -120,7 +120,8 @@ pub const SUPPORTED_VIDEO_MODEL_IDS: &[&str] = &[
     SEEDANCE_20_FAST,
     SEEDANCE_15_PRO,
     MINIMAX_H3,
-    // minimaxH3Max intentionally excluded — Replicate publishes no `minimax/h3-max` slug.
+    // minimaxH3Max and minimaxH3MaxTurbo intentionally excluded — Replicate publishes no
+    // `minimax/h3-max` or `minimax/h3-max-turbo` slug (checked 2026-09-03).
     FLUX_3,
     HAPPY_HORSE_11,
     HAPPY_HORSE_10,
