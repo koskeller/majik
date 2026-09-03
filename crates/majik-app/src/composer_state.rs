@@ -27,6 +27,9 @@ pub enum ComposeTab {
 }
 
 impl ComposeTab {
+    /// Every tab the composer can show, in the order the type row lists them.
+    pub const ALL: [ComposeTab; 5] = [ComposeTab::Media(MediaType::Image), ComposeTab::Media(MediaType::Video), ComposeTab::Media(MediaType::Audio), ComposeTab::Tool(ToolId::Upscale), ComposeTab::Tool(ToolId::RemoveBackground)];
+
     pub fn label(self) -> &'static str {
         match self {
             ComposeTab::Media(MediaType::Image) => "Image",
@@ -34,6 +37,17 @@ impl ComposeTab {
             ComposeTab::Media(MediaType::Audio) => "Audio",
             ComposeTab::Tool(ToolId::Upscale) => "Upscale",
             ComposeTab::Tool(ToolId::RemoveBackground) => "Remove BG",
+        }
+    }
+
+    /// The glyph beside the label in the type row.
+    pub fn icon(self) -> &'static str {
+        match self {
+            ComposeTab::Media(MediaType::Image) => "image-frame",
+            ComposeTab::Media(MediaType::Video) => "video-ai",
+            ComposeTab::Media(MediaType::Audio) => "audio-lines",
+            ComposeTab::Tool(ToolId::Upscale) => "four-k",
+            ComposeTab::Tool(ToolId::RemoveBackground) => "background-eraser",
         }
     }
 
@@ -332,9 +346,14 @@ impl ComposerState {
 
     /// The type row: media types first, then every tool this provider has a model for.
     pub fn supported_tabs(&self) -> Vec<ComposeTab> {
-        let mut v: Vec<ComposeTab> = self.supported_types().into_iter().map(ComposeTab::Media).collect();
-        v.extend(ToolId::ALL.into_iter().filter(|t| self.provider.supports_tool(*t)).map(ComposeTab::Tool));
-        v
+        let types = self.supported_types();
+        ComposeTab::ALL
+            .into_iter()
+            .filter(|tab| match *tab {
+                ComposeTab::Media(media) => types.contains(&media),
+                ComposeTab::Tool(tool) => self.provider.supports_tool(tool),
+            })
+            .collect()
     }
 
     /// Returns `false` (and changes nothing) when the provider has no models for that tab.

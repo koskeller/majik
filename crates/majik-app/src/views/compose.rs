@@ -20,7 +20,7 @@ use crate::composer_state::{unsupported_message, ComposeTab, ComposerState, Draf
 use crate::config::{update_config, Config};
 use crate::drafts::Drafts;
 use crate::state::{self, DraggedAssets, LibraryModel, PendingCompose};
-use crate::ui::{button, chip, color_to, duration_badges, enter_card, exit_card, icon, now, ratio_glyph, section_label, segmented, spin, thumb_badge, thumb_badges, Chip, MOTION_FAST};
+use crate::ui::{button, chip, color_to, duration_badges, enter_card, exit_card, icon, now, ratio_glyph, section_label, segmented_icons, spin, thumb_badge, thumb_badges, Chip, MOTION_FAST};
 
 /// Asset cards are `ASSET_CARD` square.
 const ASSET_CARD: Pixels = px(84.);
@@ -1113,8 +1113,8 @@ impl Render for ComposeView {
 
         // --- tab + provider ---
         let selected_tab = tabs.iter().position(|t| *t == tab).unwrap_or(0);
-        let type_items: Vec<(SharedString, &'static str)> = tabs.iter().map(|t| (SharedString::from(format!("type-{}", t.raw())), t.label())).collect();
-        let type_row = segmented("type", type_items, selected_tab, {
+        let type_items: Vec<(SharedString, &'static str, &'static str)> = tabs.iter().map(|t| (SharedString::from(format!("type-{}", t.raw())), t.icon(), t.label())).collect();
+        let type_row = segmented_icons("type", type_items, selected_tab, {
             let this = this.clone();
             move |index, window, cx| {
                 let Some(t) = tabs.get(index).copied() else { return };
@@ -1416,7 +1416,7 @@ impl Render for ComposeView {
                     .min_h_0()
                     .p_3()
                     .gap_3()
-                    .child(h_flex().child(type_row))
+                    .child(type_row)
                     .child(section("Model", None, model_button.into_any_element(), cx))
                     .when(!model_desc.is_empty() && model_desc != "TBD", |d| d.child(gpui::div().text_xs().text_color(muted_fg).child(model_desc.to_string())))
                     .child(options)

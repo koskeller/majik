@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const VERSION = "4.1.4";
+const VERSION = "4.3.0";
 const STROKE_WIDTH = "2";
 const NATIVE_STROKE_WIDTH = "1.5";
 // OS-chrome glyphs gpui-component's title bar draws on Windows/Linux; not part of any icon set.
