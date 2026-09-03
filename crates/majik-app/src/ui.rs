@@ -1,9 +1,12 @@
 //! Small shared UI helpers.
 
 use gpui::prelude::*;
-use gpui::{canvas, fill, percentage, px, Animation, AnimationElement, AnimationExt as _, App, Bounds, Canvas, Context, Hsla, Pixels, Size, Transformation, WeakEntity, Window};
+use gpui::{canvas, div, fill, percentage, px, Animation, AnimationElement, AnimationExt as _, App, Bounds, Canvas, Context, Div, ElementId, Hsla, Interactivity, Pixels, SharedString, Size, Stateful, StyleRefinement, Transformation, WeakEntity, Window};
 use gpui_component::button::{Button, Toggle, ToggleGroup, ToggleVariants as _};
-use gpui_component::{ActiveTheme as _, Icon, Sizable as _, Theme, ThemeRegistry};
+use gpui_component::menu::DropdownMenu;
+use gpui_component::select::Caret;
+use gpui_component::tooltip::Tooltip;
+use gpui_component::{ActiveTheme as _, Icon, Selectable, Sizable as _, Size as ControlSize, StyledExt as _, Theme, ThemeRegistry};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -48,18 +51,103 @@ impl Raised for gpui_component::dialog::Dialog {
     }
 }
 
-/// A control drawn straight on the panel, like the composer's model row and count stepper: the
-/// theme border and no fill of its own. gpui-component's outline button takes the lighter input
-/// border and a tint of it as fill, which is right for a text field but made the setting pickers
-/// a paler chip than the controls beside them.
-pub trait Flat: Sized {
-    fn flat(self, cx: &App) -> Self;
+/// A small control drawn straight on the panel: the composer's setting pickers and toggles. It
+/// draws the theme border on the panel, `muted` under the pointer and `accent` while selected or
+/// while its menu is open, which is what the model row, the role cards and the segmented tabs
+/// around it do. gpui-component's outline `Button` cannot be brought in line: it takes the
+/// lighter input border and fill, and it installs its own hover style, which gpui lets no caller
+/// replace.
+#[derive(IntoElement)]
+pub struct Chip {
+    base: Stateful<Div>,
+    icon: Option<Icon>,
+    label: Option<SharedString>,
+    caret: bool,
+    selected: bool,
+    tooltip: Option<SharedString>,
 }
 
-impl Flat for Button {
-    fn flat(self, cx: &App) -> Self {
+pub fn chip(id: impl Into<ElementId>) -> Chip {
+    Chip { base: div().id(id), icon: None, label: None, caret: false, selected: false, tooltip: None }
+}
+
+impl Chip {
+    pub fn icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
+    pub fn label(mut self, label: impl Into<SharedString>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    /// End with a drop-down caret, for a chip that opens a menu.
+    pub fn caret(mut self) -> Self {
+        self.caret = true;
+        self
+    }
+
+    pub fn tooltip(mut self, text: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(text.into());
+        self
+    }
+}
+
+impl Styled for Chip {
+    fn style(&mut self) -> &mut StyleRefinement {
+        self.base.style()
+    }
+}
+
+impl InteractiveElement for Chip {
+    fn interactivity(&mut self) -> &mut Interactivity {
+        self.base.interactivity()
+    }
+}
+
+impl StatefulInteractiveElement for Chip {}
+
+impl Selectable for Chip {
+    fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        self.selected
+    }
+}
+
+impl DropdownMenu for Chip {}
+
+impl RenderOnce for Chip {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
-        self.outline().border_color(theme.border).bg(theme.transparent)
+        let (border, muted, accent, accent_foreground, foreground) = (theme.border, theme.muted, theme.accent, theme.accent_foreground, theme.foreground);
+        let mut base = self.base;
+        // The caller's own styling wins over the defaults, as on a `Button`.
+        let instance_style = base.style().clone();
+        let icon_only = self.label.is_none() && !self.caret;
+        base.h_6()
+            .px_2()
+            .when(icon_only, |d| d.w_6().px_0().justify_center())
+            .gap_1()
+            .rounded_md()
+            .border_1()
+            .border_color(border)
+            .text_sm()
+            .flex()
+            .flex_row()
+            .items_center()
+            .cursor_pointer()
+            .when(self.selected, |d| d.bg(accent).text_color(accent_foreground))
+            .when(!self.selected, |d| d.hover(move |s| s.bg(muted)))
+            .refine_style(&instance_style)
+            .when_some(self.tooltip, |d, text| d.tooltip(move |window, cx| Tooltip::new(text.clone()).build(window, cx)))
+            .children(self.icon.map(|icon| icon.with_size(ControlSize::Small)))
+            .children(self.label)
+            .when(self.caret, |d| d.child(Caret::new(ControlSize::Small).text_color(foreground.opacity(0.75))))
     }
 }
 
@@ -109,7 +197,6 @@ pub fn segmented(id: impl Into<ElementId>, items: impl IntoIterator<Item = (impl
 
 // ----- motion -----------------------------------------------------------------------------------
 
-use gpui::ElementId;
 use gpui_base::motion::{transition, Transition, TransitionId};
 use gpui_component::animation::{ease_in_cubic, ease_in_out_cubic, ease_out_cubic, EffectTransition};
 
@@ -368,7 +455,7 @@ pub fn logo_tile(name: &str, fallback_label: &str, size: f32, cx: &mut App) -> g
 
 // ----- toast ------------------------------------------------------------------------------------
 
-use gpui::{sampled_easing, SharedString, SpringConfig, Task, WindowId};
+use gpui::{sampled_easing, SpringConfig, Task, WindowId};
 
 /// The save-status toast: a card at the bottom of the window that springs up, stays for exactly
 /// 2 s and slides back down. A new toast replaces the current one and restarts the clock.
