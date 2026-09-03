@@ -6,6 +6,7 @@
 
 use majik_core::model::{AssetId, MediaType, ToolId};
 use majik_generation::{GenerationType, Request};
+use serde::{Deserialize, Serialize};
 use majik_providers::{
     AspectRatio, AssetConstraints, AssetRole, AudioGenerationSettings, AudioModel, AudioModelCapabilities, AudioVoice, Estimate, ImageGenerationSettings,
     ImageModel, ImageResolution, ModelCapabilities, PricedJob, ProviderDescriptor, ToolInput, ToolModel, ToolModelCapabilities, ToolSettings, VideoAspectRatio,
@@ -133,7 +134,7 @@ impl ToolDrafts {
 
 /// An input the composer will send: a library asset in a role. Files dropped or picked into the
 /// composer are imported as assets on the spot, so the draft only ever holds ids.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DraftAsset {
     pub asset: AssetId,
     pub role: AssetRole,
@@ -141,12 +142,28 @@ pub struct DraftAsset {
 
 /// `imageAssets` / `videoAssets`: each tab owns its own draft so switching tabs never mixes or loses
 /// inputs. Audio has no asset list, so its reads are empty and its writes have nowhere to go.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// Persisted as `Config::draft_assets` so the refs come back after a restart.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TabAssets {
+    #[serde(default)]
     pub image: Vec<DraftAsset>,
+    #[serde(default)]
     pub video: Vec<DraftAsset>,
+    #[serde(default)]
     pub upscale: Vec<DraftAsset>,
+    #[serde(default)]
     pub remove_background: Vec<DraftAsset>,
+}
+
+impl TabAssets {
+    /// The lists with every asset `known` rejects dropped: on restore, a ref whose asset the
+    /// library no longer has (trashed, or the config belongs to another library) is let go.
+    pub fn retain(mut self, known: impl Fn(&AssetId) -> bool) -> Self {
+        for list in [&mut self.image, &mut self.video, &mut self.upscale, &mut self.remove_background] {
+            list.retain(|a| known(&a.asset));
+        }
+        self
+    }
 }
 
 impl TabAssets {
@@ -1229,6 +1246,14 @@ mod tests {
     }
 
     // ----- tool tabs -----
+
+    /// `ComposeTab::ALL` is written out by hand so it can be a `const`; a media type or tool added
+    /// to `majik-core` compiles without touching it and would simply never get a tab.
+    #[test]
+    fn every_media_type_and_tool_has_a_tab() {
+        let derived: Vec<ComposeTab> = MediaType::ALL.into_iter().map(ComposeTab::Media).chain(ToolId::ALL.into_iter().map(ComposeTab::Tool)).collect();
+        assert_eq!(ComposeTab::ALL.to_vec(), derived);
+    }
 
     #[test]
     fn tool_tabs_appear_only_for_supporting_providers() {

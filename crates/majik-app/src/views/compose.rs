@@ -78,7 +78,9 @@ impl ComposeView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let provider = state::selected_provider(cx);
         let drafts = Drafts::load();
-        let state = ComposerState::new(provider, &drafts.get(provider.id.as_str()));
+        let mut state = ComposerState::new(provider, &drafts.get(provider.id.as_str()));
+        let library = state::library(cx);
+        state.assets = cx.global::<Config>().draft_assets.clone().retain(|id| library.read(cx).lib.asset(id).is_some());
         let draft = draft_prompt(state.tab, cx);
         let dialogue = state.tab == ComposeTab::Media(MediaType::Audio) && state.audio.speaker2.is_some();
         let prompt = cx.new(|cx| TextareaState::new(window, cx).placeholder(placeholder(state.tab, dialogue)).default_value(draft));
@@ -103,13 +105,22 @@ impl ComposeView {
             prompt,
             improving: None,
             focus: cx.focus_handle(),
-            library: state::library(cx),
+            library,
             drafts,
         }
     }
 
     fn save_draft(&mut self) {
         self.drafts.set(self.state.provider.id.as_str(), self.state.to_draft());
+    }
+
+    /// Put the attached assets away with the prompts (`Config::draft_assets`); called wherever
+    /// they change, as the prompt is on every edit.
+    fn remember_assets(&self, cx: &mut App) {
+        if cx.global::<Config>().draft_assets != self.state.assets {
+            let assets = self.state.assets.clone();
+            update_config(cx, |c| c.draft_assets = assets);
+        }
     }
 
     /// The composer's provider menu: pick one of the providers that can run right now. Persisted
@@ -213,6 +224,7 @@ impl ComposeView {
             RecreateOutcome::Loaded { state, warning } => {
                 let leaving = self.state.tab;
                 self.state = *state;
+                self.remember_assets(cx);
                 self.reset_transients();
                 self.refresh_placeholder(window, cx);
                 if request.generation_type.takes_prompt() {
@@ -600,6 +612,7 @@ impl ComposeView {
             update_config(cx, |c| c.draft_prompts.get_mut(media).clear());
         }
         self.state.clear_active_assets();
+        self.remember_assets(cx);
         crate::ui::toast(window, format!("Generating {total} item(s) with {}…", self.state.provider.display_name), cx);
         cx.notify();
     }
@@ -640,6 +653,7 @@ impl ComposeView {
         }
         self.remember_model(cx);
         self.state.clear_active_assets();
+        self.remember_assets(cx);
         self.reset_transients();
         let noun = if video { "video" } else { "image" };
         crate::ui::toast(window, format!("{}: processing {n} {noun}(s)…", tool.label()), cx);
@@ -712,6 +726,7 @@ impl ComposeView {
                 self.entering.remove(&picker_key(role));
                 self.start_exit(ExitKind::Picker(role), cx);
             }
+            self.remember_assets(cx);
         }
         cx.notify();
         added
@@ -729,6 +744,7 @@ impl ComposeView {
             self.entering.insert(picker_key(asset.role));
         }
         self.start_exit(ExitKind::Thumb { asset, index }, cx);
+        self.remember_assets(cx);
         cx.notify();
     }
 
@@ -1771,6 +1787,41 @@ mod tests {
             assert_eq!(v.state.tab, ComposeTab::Media(MediaType::Image));
             assert_eq!(v.prompt_text(cx), "a cat");
         });
+    }
+
+    #[gpui::test]
+    fn a_new_panel_restores_the_attached_assets_of_every_tab(cx: &mut TestAppContext) {
+        let (view, vcx, _e) = compose_window!(cx, "Mock");
+        let reference = add(&view, vcx, "/tmp/ref.png", AssetRole::ReferenceImage);
+        switch_to(&view, vcx, MediaType::Video);
+        let first = add(&view, vcx, "/tmp/first.png", AssetRole::FirstFrame);
+        let fresh = vcx.new_window_entity(ComposeView::new);
+        fresh.update(vcx, |v, _| {
+            assert_eq!(v.state.assets.image, vec![DraftAsset { asset: reference, role: AssetRole::ReferenceImage }]);
+            assert_eq!(v.state.assets.video, vec![DraftAsset { asset: first, role: AssetRole::FirstFrame }]);
+        });
+    }
+
+    #[gpui::test]
+    fn a_new_panel_drops_a_ref_whose_asset_is_gone(cx: &mut TestAppContext) {
+        let (view, vcx, e) = compose_window!(cx, "Mock");
+        let kept = add(&view, vcx, "/tmp/kept.png", AssetRole::ReferenceImage);
+        let trashed = add(&view, vcx, "/tmp/trashed.png", AssetRole::ReferenceImage);
+        e.library.update(vcx, |m, cx| m.delete_assets(std::slice::from_ref(&trashed), cx).unwrap());
+        let fresh = vcx.new_window_entity(ComposeView::new);
+        fresh.update(vcx, |v, _| assert_eq!(v.state.assets.image, vec![DraftAsset { asset: kept, role: AssetRole::ReferenceImage }]));
+    }
+
+    #[gpui::test]
+    fn removing_and_sending_refs_updates_the_stored_draft(cx: &mut TestAppContext) {
+        let (view, vcx, _e) = compose_window!(cx, "Mock");
+        add(&view, vcx, "/tmp/one.png", AssetRole::ReferenceImage);
+        let two = add(&view, vcx, "/tmp/two.png", AssetRole::ReferenceImage);
+        view.update(vcx, |v, cx| v.remove_asset(0, cx));
+        vcx.update(|_, cx| assert_eq!(cx.global::<Config>().draft_assets.image, vec![DraftAsset { asset: two, role: AssetRole::ReferenceImage }], "the draft follows a removal"));
+        set_prompt(&view, vcx, "with a reference");
+        view.update_in(vcx, |v, w, cx| v.generate(w, cx));
+        vcx.update(|_, cx| assert!(cx.global::<Config>().draft_assets.image.is_empty(), "a sent tab's refs are cleared from the draft too"));
     }
 
     #[gpui::test]

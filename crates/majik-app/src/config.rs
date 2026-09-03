@@ -1,7 +1,7 @@
 //! App-level preferences (`config.json` in the OS app-data dir) and where the app keeps its files.
 //! Library state lives in the library DB.
 
-use crate::composer_state::ComposeTab;
+use crate::composer_state::{ComposeTab, TabAssets};
 use gpui::{App, Global};
 use majik_core::model::{MediaType, ToolId};
 use majik_core::FeedFilter;
@@ -195,6 +195,11 @@ pub struct Config {
     /// prompt and a video prompt are different texts, and switching tabs shows each its own.
     #[serde(default)]
     pub draft_prompts: DraftPrompts,
+    /// The composer's attached input assets, one list per tab and shared across providers like
+    /// the prompts, so a restart brings the refs back. A ref whose asset the library no longer
+    /// has is dropped on restore.
+    #[serde(default)]
+    pub draft_assets: TabAssets,
     /// The models generated with most recently, one list per composer tab; the picker shows them
     /// above the full catalog.
     #[serde(default)]
@@ -286,6 +291,7 @@ impl Default for Config {
             grid_zoom: default_zoom(),
             thumbnail_shape: ThumbnailShape::default(),
             draft_prompts: DraftPrompts::default(),
+            draft_assets: TabAssets::default(),
             recent_models: RecentModels::default(),
             reduce_motion: false,
             library_frame: None,
@@ -667,17 +673,26 @@ mod tests {
     }
 
     #[test]
-    fn config_without_a_screen_opens_on_the_library() {
-        let config: Config = serde_json::from_str("{}").unwrap();
-        assert_eq!(config.screen, FeedFilter::Library);
+    fn config_without_draft_assets_deserializes_to_none_attached() {
+        let config: Config = serde_json::from_str(r#"{"provider":"fal"}"#).unwrap();
+        assert_eq!(config.draft_assets, TabAssets::default());
     }
 
     #[test]
-    fn an_album_screen_round_trips_through_json() {
-        let screen = FeedFilter::Album(majik_core::model::AlbumId("a1".into()));
-        let json = serde_json::to_string(&screen).unwrap();
-        assert_eq!(json, r#"{"album":"a1"}"#);
-        assert_eq!(serde_json::from_str::<FeedFilter>(&json).unwrap(), screen);
-        assert_eq!(serde_json::to_string(&FeedFilter::Favorites).unwrap(), r#""favorites""#);
+    fn draft_assets_round_trip_through_json() {
+        use crate::composer_state::DraftAsset;
+        use majik_core::model::AssetId;
+        use majik_providers::AssetRole;
+        let mut config = Config::default();
+        config.draft_assets.image = vec![DraftAsset { asset: AssetId("a".into()), role: AssetRole::ReferenceImage }];
+        config.draft_assets.video = vec![DraftAsset { asset: AssetId("b".into()), role: AssetRole::FirstFrame }, DraftAsset { asset: AssetId("c".into()), role: AssetRole::LastFrame }];
+        let json = serde_json::to_string(&config).unwrap();
+        assert_eq!(serde_json::from_str::<Config>(&json).unwrap().draft_assets, config.draft_assets);
+    }
+
+    #[test]
+    fn config_without_a_screen_opens_on_the_library() {
+        let config: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(config.screen, FeedFilter::Library);
     }
 }

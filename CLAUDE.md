@@ -206,7 +206,7 @@ Dependency direction (never reversed): `app → {generation, video, audio, platf
   `#[cfg(target_os)]` in a dependency — prefer a runtime `cfg!(...)` branch in our own code, which
   is type-checked on every platform, over `#[cfg]`, which is only compiled on one.
 - **Preferences vs library state.** `Config` (`config.json` in the channel's app-data dir, a `Global`)
-  holds app preferences: provider, appearance, columns, draft prompt. Everything about media lives in
+  holds app preferences: provider, appearance, columns, draft prompts and the composer's attached refs (asset ids, dropped on restore if the library no longer has them). Everything about media lives in
   the library DB. In tests no config dir is set, so `Config::save` is a no-op.
 - **View tests** (`crates/majik-app/src/test_support.rs`): `env(cx, n_images, "Mock")` seeds a temp
   library with solid-colour PNGs, sets globals, and returns the library entity; then
