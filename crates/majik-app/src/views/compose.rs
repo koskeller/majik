@@ -7,7 +7,7 @@ use gpui_component::button::ButtonVariants as _;
 use gpui_component::input::{InputEvent, Textarea, TextareaState};
 use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::tooltip::Tooltip;
-use gpui_component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _};
+use gpui_component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Sizable as _};
 use majik_core::model::{AlbumId, AssetId, MediaType, ToolId};
 use majik_generation::{build_requests, improve, validate_requests, validation, AssetInput, Request};
 use majik_providers::{AspectRatio, AssetRole, AudioVoice, ImageResolution, ProviderDescriptor, ProviderId, ToolInput, VideoAspectRatio, VideoResolution};
@@ -1210,8 +1210,10 @@ impl Render for ComposeView {
                         cx.notify();
                     })));
                     if caps.supports_audio_toggle() {
+                        // The speaker icon alone says whether sound is on; a filled chip beside the
+                        // pickers read as a different kind of control.
                         options = options.child(
-                            chip("audio").icon(icon(if self.state.video.audio { "volume-2" } else { "volume-x" })).selected(self.state.video.audio).tooltip("Generate audio").on_click(cx.listener(|v, _, _, cx| {
+                            chip("audio").icon(icon(if self.state.video.audio { "volume-2" } else { "volume-x" })).tooltip("Generate audio").on_click(cx.listener(|v, _, _, cx| {
                                 v.state.video.audio = !v.state.video.audio;
                                 cx.notify();
                             })),
@@ -1454,7 +1456,7 @@ impl Render for ComposeView {
                                         .on_click(cx.listener(|v, _, window, cx| v.toggle_improve(window, cx))),
                                 )
                             };
-                            h_flex().justify_end().items_center().child(control)
+                            h_flex().justify_end().items_center().p_1().child(control)
                         });
                         let prompt = v_flex()
                             .flex_1()
@@ -1463,10 +1465,9 @@ impl Render for ComposeView {
                             .rounded_md()
                             .border_1()
                             .border_color(if prompt_focused { ring } else { border })
-                            .p_1()
-                            // A step up from the panel's controls: the prompt is what the user reads and
-                            // edits most, and the pickers around it stay at the smaller size.
-                            .child(Textarea::new(&self.prompt).appearance(false).readonly(improving).text_base().w_full().flex_1().min_h_0())
+                            // The field's own inset is the frame's whole padding, and the text sits at
+                            // the size of the pickers around it.
+                            .child(Textarea::new(&self.prompt).appearance(false).readonly(improving).text_sm().w_full().flex_1().min_h_0())
                             .children(improve_button);
                         let prompt = v_flex().flex_1().min_h_0().gap_2().child(prompt).children(self.render_reference_tags(cx));
                         // The prompt takes whatever height the panel has left over, so the field is
