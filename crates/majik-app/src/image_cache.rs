@@ -210,11 +210,16 @@ impl LruImageCache {
     }
 
     /// Whether a resource is decoded and drawable this frame. If it is not, the decode is started
-    /// (or is already in flight, or already failed and remembered), `view` is notified on the
-    /// frame it lands, and this returns false. `view` is the entity to redraw, which lets a view
-    /// ask from its own render without going through gpui's rendered-view stack.
-    pub fn warm(&mut self, resource: &Resource, view: EntityId, window: &mut Window, cx: &mut App) -> bool {
-        matches!(self.load_for(resource, view, window, cx), Some(Ok(_)))
+    /// (or is already in flight) and `view` is notified on the frame it lands; a decode that
+    /// already failed is remembered and reported, so the caller can draw something else instead
+    /// of waiting for a picture that will never come. `view` is the entity to redraw, which lets
+    /// a view ask from its own render without going through gpui's rendered-view stack.
+    pub fn warm(&mut self, resource: &Resource, view: EntityId, window: &mut Window, cx: &mut App) -> Warmth {
+        match self.load_for(resource, view, window, cx) {
+            Some(Ok(_)) => Warmth::Ready,
+            Some(Err(_)) => Warmth::Failed,
+            None => Warmth::Decoding,
+        }
     }
 
     /// [`ImageCache::load`] on behalf of `view`, the entity to notify when the decode lands.
@@ -278,6 +283,15 @@ impl LruImageCache {
             })
             .detach();
     }
+}
+
+/// What [`LruImageCache::warm`] found: the picture can be drawn now, is still decoding, or its
+/// decode failed and drawing it would paint nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Warmth {
+    Ready,
+    Decoding,
+    Failed,
 }
 
 impl ImageCache for LruImageCache {
@@ -496,7 +510,7 @@ mod tests {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let view = cx.entity_id();
             let ready = self.cache.update(cx, |cache, cx| cache.warm(&resource(&self.path), view, window, cx));
-            self.answers.push(ready);
+            self.answers.push(ready == Warmth::Ready);
             gpui::div()
         }
     }

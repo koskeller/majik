@@ -19,7 +19,7 @@ use std::time::Instant;
 use crate::actions::*;
 use crate::config::{update_config, Config, ThumbnailShape};
 use crate::grid_motion::{CellStyle, Change, Ghost, GridMotion, Place, Visual};
-use crate::image_cache::LruImageCache;
+use crate::image_cache::{LruImageCache, Warmth};
 use crate::state::{self, DraggedAsset, DraggedAssets, LibraryModel, PendingCompose};
 use crate::ui::{BoundsSlot, bounds_slot, button, cover_image, format_duration, icon, measure_then, now, record_bounds, slot_size, spin, toolbar};
 
@@ -778,26 +778,31 @@ impl FeedView {
 
     /// The thumbnail a cell draws this frame. A tier the cell wants but the cache has not decoded
     /// yet would paint nothing — gpui's image element draws no placeholder on a cache miss — so
-    /// the cell would blink to its grey frame while the sharper file decodes. Instead the picture
+    /// the cell would blink to its grey frame while the other file decodes. Instead the picture
     /// the cell is already showing stays until the wanted one is ready, and the cache is asked to
-    /// decode the wanted one now (it redraws this view when it lands). A cell holding neither,
+    /// decode the wanted one now (it redraws this view when it lands). This holds in both
+    /// directions: the standard tier stays while the large one decodes as the cells grow, and the
+    /// large one stays while the standard one decodes as they shrink back. A cell holding neither,
     /// scrolled in or just cleared by a zoom, goes straight to the tier it wants rather than
-    /// decoding the standard one only to replace it.
+    /// decoding the other one only to replace it; and a tier whose decode failed is skipped for the
+    /// other, which is on disk, rather than drawn as nothing.
     fn thumbnail_to_draw(&self, standard: &std::path::Path, aspect_ratio: Option<f32>, window: &mut Window, cx: &mut Context<Self>) -> PathBuf {
         let wanted = self.thumbnail_for_cell(standard, aspect_ratio, cx);
-        if wanted == standard {
-            return wanted;
-        }
-        let view = cx.entity_id();
-        let (ready, held) = self.image_cache.update(cx, |cache, cx| {
-            let ready = cache.warm(&gpui::Resource::Path(wanted.clone().into()), view, window, cx);
-            (ready, cache.holds(&gpui::Resource::Path(standard.to_path_buf().into())))
-        });
-        if ready || !held {
-            wanted
+        let other = if wanted == standard {
+            state::library(cx).read(cx).large_thumbnail(standard).map(std::path::Path::to_path_buf)
         } else {
-            standard.to_path_buf()
-        }
+            Some(standard.to_path_buf())
+        };
+        // Only the standard tier exists, and gpui's image element loads it through the cache itself.
+        let Some(other) = other else { return wanted };
+        let view = cx.entity_id();
+        let resource = |path: &std::path::Path| gpui::Resource::Path(path.to_path_buf().into());
+        self.image_cache.update(cx, |cache, cx| match cache.warm(&resource(&wanted), view, window, cx) {
+            Warmth::Ready => wanted,
+            Warmth::Failed => other,
+            Warmth::Decoding if cache.holds(&resource(&other)) => other,
+            Warmth::Decoding => wanted,
+        })
     }
 
     /// How the cells draw their pictures: square cells fill and crop, full-aspect cells letterbox.
@@ -2798,6 +2803,110 @@ mod tests {
             assert!(cache.holds(&resource(&large)), "its decode has started");
             assert!(!cache.holds(&resource(&standard)), "and the standard tier was not decoded for nothing");
         });
+    }
+
+    /// Resizes the window so the grid's content is `content_px` wide, and draws the two frames it
+    /// takes for the cells to measure and use the new width. Any decode the frames start is left
+    /// in flight for the caller to observe.
+    fn resize_content_to(vcx: &mut VisualTestContext, content_px: f32) {
+        // The feed's chrome takes 4 px of the window's width.
+        vcx.simulate_resize(gpui::size(px(content_px + 4.), px(600.)));
+        for _ in 0..2 {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+    }
+
+    /// A one-picture feed at the default zoom whose two-column cells are 404 device px wide — just
+    /// past the standard tier — with the standard tier decoded and on screen and the large tier
+    /// not rendered yet. Returns the path the large tier will have, and the environment, which
+    /// the test keeps so the library's files outlive the setup.
+    fn feed_showing_the_standard_tier_past_its_size(cx: &mut TestAppContext) -> (Entity<FeedView>, Entity<LruImageCache>, PathBuf, PathBuf, &mut VisualTestContext, TestEnv) {
+        let (view, vcx, env) = feed_window!(cx, 1);
+        env.library.update(vcx, |m, cx| m.start_thumbnails(cx));
+        vcx.run_until_parked();
+        let standard = env.library.read_with(vcx, |m, _| m.lib.assets()[0].thumbnail.clone().expect("thumbnailed"));
+        // At the default zoom a cell is 160..322 px wide, so 202 px (404 device px on this 2x
+        // window) and the 200 px a test shrinks to both keep two columns.
+        resize_content_to(vcx, 406.);
+        vcx.run_until_parked();
+        let cache = view.update(vcx, |feed, cx| {
+            assert_eq!((feed.columns, feed.cell_device_px()), (2, 404), "the window is sized for two 202 px cells");
+            assert_eq!(feed.tier_for_cell(None), thumbnails::THUMB_LARGE);
+            assert_eq!(feed.thumbnail_for_cell(&standard, None, cx), standard, "nothing larger exists yet");
+            feed.image_cache()
+        });
+        cache.update(vcx, |cache, _| assert!(cache.loaded(&resource(&standard)).is_some(), "the standard tier is on screen"));
+        let large = thumbnails::sized_thumb_path(&standard, thumbnails::THUMB_LARGE).expect("a thumbnail path");
+        (view, cache, standard, large, vcx, env)
+    }
+
+    /// The other way round: a cell showing the large tier alone (the standard one evicted by the
+    /// budget, or never decoded after a zoom step) shrinks back across the tier boundary within
+    /// the same decode step, so the cache keeps everything. The large tier stays on screen while
+    /// the standard one decodes, instead of the cell blinking to nothing.
+    #[gpui::test]
+    fn the_large_tier_stays_while_the_standard_one_decodes_on_the_way_back(cx: &mut TestAppContext) {
+        let (view, cache, standard, large, vcx, _env) = feed_showing_the_standard_tier_past_its_size(cx);
+        // Room for one picture: the large tier landing evicts the standard one.
+        cache.update(vcx, |cache, _| cache.set_budget(cache.bytes()));
+        vcx.background_executor.advance_clock(LARGE_TIER_SETTLE * 2);
+        vcx.run_until_parked();
+        view.update(vcx, |feed, cx| assert_eq!(feed.thumbnail_for_cell(&standard, None, cx), large, "the library rendered the large tier"));
+        // Ask for it and let the decode land.
+        vcx.update(|window, cx| view.update(cx, |feed, cx| feed.thumbnail_to_draw(&standard, None, window, cx)));
+        vcx.run_until_parked();
+        let drawn = vcx.update(|window, cx| view.update(cx, |feed, cx| feed.thumbnail_to_draw(&standard, None, window, cx)));
+        assert_eq!(drawn, large);
+        cache.update(vcx, |cache, _| {
+            assert!(cache.loaded(&resource(&large)).is_some());
+            assert!(!cache.holds(&resource(&standard)), "the standard tier made room for it");
+        });
+
+        // 400 and 404 device px both decode at the 416 px step, so the shrink clears nothing.
+        resize_content_to(vcx, 402.);
+        view.update(vcx, |feed, cx| {
+            assert_eq!((feed.columns, feed.cell_device_px()), (2, 400));
+            assert_eq!(feed.thumbnail_for_cell(&standard, None, cx), standard, "the cell fits the standard tier again");
+        });
+        cache.update(vcx, |cache, _| assert!(cache.loaded(&resource(&large)).is_some(), "the same decode step: nothing was cleared"));
+        let drawn = vcx.update(|window, cx| view.update(cx, |feed, cx| feed.thumbnail_to_draw(&standard, None, window, cx)));
+        assert_eq!(drawn, large, "the large tier stays on screen while the standard one decodes");
+
+        vcx.run_until_parked();
+        let drawn = vcx.update(|window, cx| view.update(cx, |feed, cx| feed.thumbnail_to_draw(&standard, None, window, cx)));
+        assert_eq!(drawn, standard, "and the standard tier takes over once it can be drawn");
+    }
+
+    /// A large tier the library knows of — it checks that the file exists, not that it decodes —
+    /// but that cannot be decoded (truncated, or overwritten) is not drawn as nothing until the
+    /// next zoom: the standard tier, which is on disk, is drawn instead.
+    #[gpui::test]
+    fn a_large_tier_whose_decode_failed_falls_back_to_the_standard_one(cx: &mut TestAppContext) {
+        let (view, cache, standard, large, vcx, _env) = feed_showing_the_standard_tier_past_its_size(cx);
+        std::fs::create_dir_all(large.parent().expect("a folder")).expect("the large tier's folder");
+        std::fs::write(&large, b"not a jpeg").expect("a truncated large tier");
+        vcx.background_executor.advance_clock(LARGE_TIER_SETTLE * 2);
+        vcx.run_until_parked();
+        view.update(vcx, |feed, cx| assert_eq!(feed.thumbnail_for_cell(&standard, None, cx), large, "the library took the file as rendered"));
+
+        // Across a decode step (404 → 420 device px), which drops every tile: the cell holds
+        // nothing and asks for the large tier alone.
+        resize_content_to(vcx, 422.);
+        view.update(vcx, |feed, _| assert_eq!((feed.columns, feed.cell_device_px()), (2, 420)));
+        let drawn = vcx.update(|window, cx| view.update(cx, |feed, cx| feed.thumbnail_to_draw(&standard, None, window, cx)));
+        assert_eq!(drawn, large, "nothing is known against it until the decode runs");
+        cache.read_with(vcx, |cache, _| assert!(!cache.holds(&resource(&standard))));
+        vcx.run_until_parked();
+        cache.update(vcx, |cache, _| {
+            assert!(cache.holds(&resource(&large)), "the failure is remembered");
+            assert!(cache.loaded(&resource(&large)).is_none());
+        });
+
+        let drawn = vcx.update(|window, cx| view.update(cx, |feed, cx| feed.thumbnail_to_draw(&standard, None, window, cx)));
+        assert_eq!(drawn, standard, "the standard tier is drawn instead of a picture that will never come");
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        vcx.run_until_parked();
+        cache.update(vcx, |cache, _| assert!(cache.loaded(&resource(&standard)).is_some(), "and drawing it decoded it"));
     }
 
     /// Scrolling the whole feed does not grow the thumbnail cache without bound. The cache this
