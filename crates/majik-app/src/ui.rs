@@ -48,6 +48,21 @@ impl Raised for gpui_component::dialog::Dialog {
     }
 }
 
+/// A control drawn straight on the panel, like the composer's model row and count stepper: the
+/// theme border and no fill of its own. gpui-component's outline button takes the lighter input
+/// border and a tint of it as fill, which is right for a text field but made the setting pickers
+/// a paler chip than the controls beside them.
+pub trait Flat: Sized {
+    fn flat(self, cx: &App) -> Self;
+}
+
+impl Flat for Button {
+    fn flat(self, cx: &App) -> Self {
+        let theme = cx.theme();
+        self.outline().border_color(theme.border).bg(theme.transparent)
+    }
+}
+
 /// HugeIcons icon from the embedded asset bundle (`packaging/icons.json` maps the name to its export).
 pub fn icon(name: &'static str) -> Icon {
     Icon::default().path(format!("icons/{name}.svg"))

@@ -20,7 +20,7 @@ use crate::composer_state::{unsupported_message, ComposeTab, ComposerState, Draf
 use crate::config::{update_config, Config};
 use crate::drafts::Drafts;
 use crate::state::{self, DraggedAssets, LibraryModel, PendingCompose};
-use crate::ui::{button, color_to, enter_card, exit_card, icon, now, section_label, segmented, spin, MOTION_FAST};
+use crate::ui::{button, color_to, enter_card, exit_card, icon, now, section_label, segmented, spin, Flat as _, MOTION_FAST};
 
 /// Asset cards are `ASSET_CARD` square.
 const ASSET_CARD: Pixels = px(84.);
@@ -867,8 +867,8 @@ impl ComposeView {
         }
     }
 
-    fn capsule(id: &'static str, icon_name: &'static str, label: impl Into<SharedString>, tooltip: &'static str) -> Button {
-        button(id).icon(icon(icon_name)).label(label).small().outline().dropdown_caret(true).tooltip(tooltip)
+    fn capsule(id: &'static str, icon_name: &'static str, label: impl Into<SharedString>, tooltip: &'static str, cx: &App) -> Button {
+        button(id).icon(icon(icon_name)).label(label).small().flat(cx).dropdown_caret(true).tooltip(tooltip)
     }
 
     /// An asset thumbnail. With `remove_index` it carries the ⊗ badge; exit ghosts pass `None`.
@@ -1137,7 +1137,7 @@ impl Render for ComposeView {
                     if caps.supports_aspect_ratio() {
                         let ratios: Vec<(AspectRatio, String)> = caps.supported_aspect_ratios.iter().map(|a| (*a, a.raw().to_string())).collect();
                         let label = self.state.image.aspect_ratio.map(|a| a.raw()).unwrap_or("Ratio");
-                        options = options.child(Self::capsule("ratio", ratio_icon(self.state.image.aspect_ratio.map(|a| a.is_portrait()).filter(|_| self.state.image.aspect_ratio != Some(AspectRatio::Square))), label, "Aspect ratio").dropdown_menu(Self::options_menu(this.clone(), ratios, self.state.image.aspect_ratio, |v, ar, cx| {
+                        options = options.child(Self::capsule("ratio", ratio_icon(self.state.image.aspect_ratio.map(|a| a.is_portrait()).filter(|_| self.state.image.aspect_ratio != Some(AspectRatio::Square))), label, "Aspect ratio", cx).dropdown_menu(Self::options_menu(this.clone(), ratios, self.state.image.aspect_ratio, |v, ar, cx| {
                             v.state.image.aspect_ratio = Some(ar);
                             cx.notify();
                         })));
@@ -1145,7 +1145,7 @@ impl Render for ComposeView {
                     if caps.supports_resolution() {
                         let res: Vec<(ImageResolution, String)> = caps.supported_resolutions.iter().map(|r| (*r, r.raw().to_string())).collect();
                         let label = self.state.image.resolution.map(|r| r.raw()).unwrap_or("Size");
-                        options = options.child(Self::capsule("res", "scaling", label, "Resolution").dropdown_menu(Self::options_menu(this.clone(), res, self.state.image.resolution, |v, r, cx| {
+                        options = options.child(Self::capsule("res", "scaling", label, "Resolution", cx).dropdown_menu(Self::options_menu(this.clone(), res, self.state.image.resolution, |v, r, cx| {
                             v.state.image.resolution = Some(r);
                             cx.notify();
                         })));
@@ -1158,7 +1158,7 @@ impl Render for ComposeView {
                         let ratios: Vec<(VideoAspectRatio, String)> = caps.aspect_ratios.iter().map(|a| (*a, a.raw().to_string())).collect();
                         let label = self.state.video.aspect_ratio.map(|a| a.raw()).unwrap_or("Ratio");
                         let portrait = self.state.video.aspect_ratio.and_then(|a| a.ratio()).filter(|(n, d)| n != d).map(|(n, d)| n < d);
-                        options = options.child(Self::capsule("vratio", ratio_icon(portrait), label, "Aspect ratio").dropdown_menu(Self::options_menu(this.clone(), ratios, self.state.video.aspect_ratio, |v, ar, cx| {
+                        options = options.child(Self::capsule("vratio", ratio_icon(portrait), label, "Aspect ratio", cx).dropdown_menu(Self::options_menu(this.clone(), ratios, self.state.video.aspect_ratio, |v, ar, cx| {
                             v.state.video.aspect_ratio = Some(ar);
                             cx.notify();
                         })));
@@ -1166,19 +1166,19 @@ impl Render for ComposeView {
                     if caps.supports_resolution() {
                         let res: Vec<(VideoResolution, String)> = caps.resolutions.iter().map(|r| (*r, r.display_name().to_string())).collect();
                         let label = self.state.video.resolution.map(|r| r.display_name()).unwrap_or("Size");
-                        options = options.child(Self::capsule("vres", "scaling", label, "Resolution").dropdown_menu(Self::options_menu(this.clone(), res, self.state.video.resolution, |v, r, cx| {
+                        options = options.child(Self::capsule("vres", "scaling", label, "Resolution", cx).dropdown_menu(Self::options_menu(this.clone(), res, self.state.video.resolution, |v, r, cx| {
                             v.state.video.resolution = Some(r);
                             cx.notify();
                         })));
                     }
                     let durations: Vec<(u32, String)> = caps.duration_range.presets_or_range().into_iter().map(|d| (d, format!("{d}s"))).collect();
-                    options = options.child(Self::capsule("duration", "timer", format!("{}s", self.state.video.duration), "Duration").dropdown_menu(Self::options_menu(this.clone(), durations, Some(self.state.video.duration), |v, d, cx| {
+                    options = options.child(Self::capsule("duration", "timer", format!("{}s", self.state.video.duration), "Duration", cx).dropdown_menu(Self::options_menu(this.clone(), durations, Some(self.state.video.duration), |v, d, cx| {
                         v.state.video.duration = d;
                         cx.notify();
                     })));
                     if caps.supports_audio_toggle() {
                         options = options.child(
-                            button("audio").icon(icon(if self.state.video.audio { "volume-2" } else { "volume-x" })).small().outline().selected(self.state.video.audio).tooltip("Generate audio").on_click(cx.listener(|v, _, _, cx| {
+                            button("audio").icon(icon(if self.state.video.audio { "volume-2" } else { "volume-x" })).small().outline().when(!self.state.video.audio, |b| b.flat(cx)).selected(self.state.video.audio).tooltip("Generate audio").on_click(cx.listener(|v, _, _, cx| {
                                 v.state.video.audio = !v.state.video.audio;
                                 cx.notify();
                             })),
@@ -1191,13 +1191,13 @@ impl Render for ComposeView {
                     let voices: Vec<AudioVoice> = caps.supported_voices.clone();
                     let s1 = self.state.audio.speaker1.as_ref().map(|v| v.display_name.clone()).unwrap_or_else(|| "Speaker 1".into());
                     let (t1, v1, cur1) = (this.clone(), voices.clone(), self.state.audio.speaker1.clone());
-                    options = options.child(Self::capsule("speaker1", "mic", s1, "Speaker 1").on_click(move |_, window, cx| {
+                    options = options.child(Self::capsule("speaker1", "mic", s1, "Speaker 1", cx).on_click(move |_, window, cx| {
                         crate::views::voice_picker::open_voice_picker(t1.clone(), crate::views::voice_picker::Speaker::One, v1.clone(), cur1.clone(), false, window, cx)
                     }));
                     if caps.supports_two_speakers {
                         let s2 = self.state.audio.speaker2.as_ref().map(|v| v.display_name.clone()).unwrap_or_else(|| "Speaker 2: None".into());
                         let (t2, v2, cur2) = (this.clone(), voices, self.state.audio.speaker2.clone());
-                        options = options.child(Self::capsule("speaker2", "user", s2, "Speaker 2").on_click(move |_, window, cx| {
+                        options = options.child(Self::capsule("speaker2", "user", s2, "Speaker 2", cx).on_click(move |_, window, cx| {
                             crate::views::voice_picker::open_voice_picker(t2.clone(), crate::views::voice_picker::Speaker::Two, v2.clone(), cur2.clone(), true, window, cx)
                         }));
                     }
@@ -1209,7 +1209,7 @@ impl Render for ComposeView {
                     if !caps.upscale_factors.is_empty() {
                         let factors: Vec<(u32, String)> = caps.upscale_factors.iter().map(|f| (*f, format!("{f}×"))).collect();
                         let label = draft_factor.map(|f| format!("{f}×")).unwrap_or_else(|| "Scale".into());
-                        options = options.child(Self::capsule("tool_factor", "scaling", label, "Upscale factor").dropdown_menu(Self::options_menu(
+                        options = options.child(Self::capsule("tool_factor", "scaling", label, "Upscale factor", cx).dropdown_menu(Self::options_menu(
                             this.clone(),
                             factors,
                             draft_factor,
@@ -1229,7 +1229,7 @@ impl Render for ComposeView {
                             .and_then(|id| caps.variants.iter().find(|t| t.id == id))
                             .map(|t| t.name.to_string())
                             .unwrap_or_else(|| "Model".into());
-                        options = options.child(Self::capsule("tool_variant", "sparkles", label, "Enhancement model").dropdown_menu(Self::options_menu(
+                        options = options.child(Self::capsule("tool_variant", "sparkles", label, "Enhancement model", cx).dropdown_menu(Self::options_menu(
                             this.clone(),
                             variants,
                             current,
