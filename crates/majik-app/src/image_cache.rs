@@ -17,6 +17,7 @@
 use futures::FutureExt as _;
 use gpui::{App, AppContext as _, Asset as _, AssetLogger, Entity, ImageAssetLoader, ImageCache, ImageCacheError, ImageCacheItem, RenderImage, Resource, WeakEntity, Window};
 use image::imageops::FilterType;
+use majik_core::thumbnails::Fit;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::path::Path;
@@ -66,12 +67,14 @@ pub struct LruImageCache {
     /// Bumped on every load; an entry's `last_used` is a stamp from it, which makes "least recently
     /// drawn" a `min` over the map instead of a second collection to keep in sync.
     tick: u64,
-    /// Longest edge, in device pixels, to decode at. The feed sets it from the cell it is about to
-    /// draw into: a 400 px thumbnail costs 640 KB decoded whatever it is drawn at, and at the
-    /// smallest zoom a cell is under 200 device px, so decoding at the file's size spends five
-    /// times the memory (and five times the sprite atlas) on pixels nobody sees. `None` decodes the
-    /// file as it is, which is what the detail's stage wants since it fills the window.
-    target: Option<u32>,
+    /// The square cell, in device pixels, to decode for, and how the cell draws the picture. The
+    /// feed sets it from the cell it is about to draw into: a 400 px thumbnail costs 640 KB decoded
+    /// whatever it is drawn at, and at the smallest zoom a cell is under 200 device px, so decoding
+    /// at the file's size spends five times the memory (and five times the sprite atlas) on pixels
+    /// nobody sees. Letterboxed, the long edge is shrunk to the cell; filled, the short edge is,
+    /// and the rest is cropped away as the cell would crop it. `None` decodes the file as it is,
+    /// which is what the detail's stage wants since it fills the window.
+    target: Option<(u32, Fit)>,
 }
 
 struct Entry {
@@ -141,17 +144,17 @@ impl LruImageCache {
         }
     }
 
-    /// Decode into cells `long_edge` device pixels on their longest side from now on. Entries
-    /// decoded for a different size are dropped: a zoom step is rare and re-decoding a screenful is
-    /// cheaper than keeping two sizes of everything.
-    pub fn set_target(&mut self, long_edge: u32, window: &mut Window, cx: &mut App) {
+    /// Decode for square cells `cell` device pixels on a side, drawn with `fit`, from now on.
+    /// Entries decoded for a different size or fit are dropped: a zoom step is rare and re-decoding
+    /// a screenful is cheaper than keeping two sizes of everything.
+    pub fn set_target(&mut self, cell: u32, fit: Fit, window: &mut Window, cx: &mut App) {
         // Round to a step so that a resize dragging the cells a pixel at a time doesn't re-decode
         // the feed on every frame.
-        let long_edge = long_edge.div_ceil(TARGET_STEP) * TARGET_STEP;
-        if self.target == Some(long_edge) {
+        let cell = cell.div_ceil(TARGET_STEP) * TARGET_STEP;
+        if self.target == Some((cell, fit)) {
             return;
         }
-        self.target = Some(long_edge);
+        self.target = Some((cell, fit));
         self.clear(window, cx);
     }
 
@@ -167,8 +170,8 @@ impl LruImageCache {
 
     /// [`Self::set_target`] before anything is cached, so the tests don't need a window to clear.
     #[cfg(test)]
-    pub fn set_target_for_test(&mut self, long_edge: u32) {
-        self.target = Some(long_edge.div_ceil(TARGET_STEP) * TARGET_STEP);
+    pub fn set_target_for_test(&mut self, cell: u32) {
+        self.target = Some((cell.div_ceil(TARGET_STEP) * TARGET_STEP, Fit::Contain));
     }
 
     #[cfg(test)]
@@ -212,9 +215,9 @@ impl ImageCache for LruImageCache {
         // are drawn at; without one, gpui's loader handles every source it knows (SVG, animated
         // GIF, remote URIs), which the detail's stage needs.
         let task = match (self.target, &resource) {
-            (Some(long_edge), Resource::Path(path)) => {
+            (Some((cell, fit)), Resource::Path(path)) => {
                 let path = path.clone();
-                cx.background_executor().spawn(async move { decode_scaled(&path, long_edge) }).shared()
+                cx.background_executor().spawn(async move { decode_scaled(&path, cell, fit) }).shared()
             }
             _ => {
                 let decode = AssetLogger::<ImageAssetLoader>::load(resource.clone(), cx);
@@ -251,23 +254,38 @@ impl ImageCache for LruImageCache {
 /// dragging a window edge doesn't re-decode the feed on every frame.
 const TARGET_STEP: u32 = 32;
 
-/// Decodes an image file, shrunk so its longest edge is at most `long_edge`. Never enlarges: a
-/// thumbnail drawn bigger than it was stored is stretched by the GPU, exactly as before, rather
+/// Decodes an image file for a square cell `cell` pixels on a side. Letterboxed (`Fit::Contain`),
+/// the image is shrunk so its longest edge is at most `cell`. Filled (`Fit::Cover`), the cell
+/// shows the centred square of the image's short edge and nothing else, so that is what is
+/// decoded: the short edge shrunk to at most `cell`, and the overhang cropped away. Either way a
+/// tile costs at most `cell²` pixels, which is what the budget arithmetic assumes. Never enlarges:
+/// a thumbnail drawn bigger than it was stored is stretched by the GPU, exactly as before, rather
 /// than costing memory for pixels that carry no detail.
 ///
 /// Produces the same thing as gpui's own loader, a `RenderImage` of BGRA frames, for the still
 /// images the feed draws. Anything with more than one frame or a source gpui has to fetch goes
 /// through its loader instead (see the caller).
-fn decode_scaled(path: &Path, long_edge: u32) -> Result<Arc<RenderImage>, ImageCacheError> {
+fn decode_scaled(path: &Path, cell: u32, fit: Fit) -> Result<Arc<RenderImage>, ImageCacheError> {
     let bytes = std::fs::read(path).map_err(|e| ImageCacheError::Io(Arc::new(e)))?;
     let image = image::load_from_memory(&bytes).map_err(|e| ImageCacheError::Image(Arc::new(e)))?;
-    let longest = image.width().max(image.height());
-    let image = if longest > long_edge && long_edge > 0 {
-        // Triangle: the thumbnails are already close to their drawn size, so a cheaper filter is
-        // enough and this runs on the scroll path.
-        image.resize(long_edge, long_edge, FilterType::Triangle)
-    } else {
-        image
+    let (width, height) = (image.width(), image.height());
+    // Triangle: the thumbnails are already close to their drawn size, so a cheaper filter is
+    // enough and this runs on the scroll path.
+    let image = match fit {
+        Fit::Contain if width.max(height) > cell && cell > 0 => image.resize(cell, cell, FilterType::Triangle),
+        Fit::Contain => image,
+        Fit::Cover => {
+            let short = width.min(height);
+            let image = if short > cell && cell > 0 {
+                let scale = cell as f64 / short as f64;
+                let scaled = |edge: u32| ((edge as f64 * scale).round() as u32).max(1);
+                image.resize_exact(scaled(width), scaled(height), FilterType::Triangle)
+            } else {
+                image
+            };
+            let side = image.width().min(image.height());
+            image.crop_imm((image.width() - side) / 2, (image.height() - side) / 2, side, side)
+        }
     };
     let mut frame = image.to_rgba8();
     // gpui renders BGRA.
@@ -513,7 +531,7 @@ mod tests {
         let large = cache.update(vcx, |cache, _| cache.loaded(&resource(&a))).expect("a decoded");
 
         // A zoom step: everything held is the wrong size now.
-        vcx.update(|window, cx| cache.update(cx, |cache, cx| cache.set_target(IMAGE / 2, window, cx)));
+        vcx.update(|window, cx| cache.update(cx, |cache, cx| cache.set_target(IMAGE / 2, Fit::Contain, window, cx)));
         cache.read_with(vcx, |cache, _| {
             assert_eq!(cache.len(), 0, "the old sizes went");
             assert_eq!(cache.bytes(), 0);
@@ -524,17 +542,48 @@ mod tests {
         assert_eq!(cache.read_with(vcx, |cache, _| cache.bytes()), (IMAGE / 2 * IMAGE / 2 * 4) as usize, "redecoded at the new size");
     }
 
+    /// A filled square cell shows the centred square of a picture's short edge, so that is all
+    /// that gets decoded: a 64 × 128 picture drawn into a 64 px cell decodes to the middle
+    /// 64 × 64, not the 32 × 64 that shrinking the long edge to the cell would leave it.
+    #[gpui::test]
+    fn a_filled_cell_decodes_the_centred_square_of_the_short_edge(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tall.png");
+        // Red above, blue below: the crop is the seam.
+        let mut tall = image::RgbaImage::new(IMAGE, 2 * IMAGE);
+        for (_, y, pixel) in tall.enumerate_pixels_mut() {
+            *pixel = image::Rgba(if y < IMAGE { [200, 30, 30, 255] } else { [30, 30, 200, 255] });
+        }
+        tall.save(&path).unwrap();
+        let (probe, vcx, cache) = probe(cx, 8 * IMAGE_BYTES);
+        vcx.update(|window, cx| cache.update(cx, |cache, cx| cache.set_target(IMAGE, Fit::Cover, window, cx)));
+        draw(&probe, vcx, &[&path]);
+
+        let decoded = cache.update(vcx, |cache, _| cache.loaded(&resource(&path))).expect("decoded");
+        assert_eq!(decoded.size(0), gpui::size(gpui::DevicePixels(IMAGE as i32), gpui::DevicePixels(IMAGE as i32)));
+        let pixels = decoded.as_bytes(0).unwrap();
+        let (top, bottom) = (&pixels[..4], &pixels[pixels.len() - 4..]);
+        assert_eq!((top, bottom), (&[30, 30, 200, 255][..], &[200, 30, 30, 255][..]), "BGRA: the seam sits in the middle, red on top");
+        assert_eq!(cache.read_with(vcx, |cache, _| cache.bytes()), IMAGE_BYTES, "a tile costs the cell, not the whole picture");
+
+        // Half the cell: still square, shrunk with the short edge.
+        vcx.update(|window, cx| cache.update(cx, |cache, cx| cache.set_target(IMAGE / 2, Fit::Cover, window, cx)));
+        draw(&probe, vcx, &[&path]);
+        let decoded = cache.update(vcx, |cache, _| cache.loaded(&resource(&path))).expect("redecoded");
+        assert_eq!(decoded.size(0), gpui::size(gpui::DevicePixels(IMAGE as i32 / 2), gpui::DevicePixels(IMAGE as i32 / 2)));
+    }
+
     /// Nudging a window edge must not re-decode the feed on every frame.
     #[gpui::test]
     fn a_target_within_the_same_step_is_not_a_change(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let a = image_file(dir.path(), "a.png", [200, 30, 30]);
         let (probe, vcx, cache) = probe(cx, 8 * IMAGE_BYTES);
-        vcx.update(|window, cx| cache.update(cx, |cache, cx| cache.set_target(100, window, cx)));
+        vcx.update(|window, cx| cache.update(cx, |cache, cx| cache.set_target(100, Fit::Contain, window, cx)));
         draw(&probe, vcx, &[&a]);
         let before = cache.update(vcx, |cache, _| cache.loaded(&resource(&a))).expect("a decoded");
 
-        vcx.update(|window, cx| cache.update(cx, |cache, cx| cache.set_target(101, window, cx)));
+        vcx.update(|window, cx| cache.update(cx, |cache, cx| cache.set_target(101, Fit::Contain, window, cx)));
 
         let after = cache.update(vcx, |cache, _| cache.loaded(&resource(&a))).expect("still there");
         assert_eq!(before.id, after.id, "the same decode was kept");

@@ -11,6 +11,7 @@ use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, Po
 use gpui_component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _};
 use majik_core::model::{Asset, AssetId, Entry, EntryId, GenerationId, Generation, MediaType, Status};
 use std::path::{Path, PathBuf};
+use majik_core::thumbnails::Fit;
 use majik_core::{feed, thumbnails, FeedFilter, MediaFilter, Modifiers, Selection};
 use std::collections::HashMap;
 use std::time::Instant;
@@ -763,30 +764,49 @@ impl FeedView {
         !matches!(self.filter, FeedFilter::Favorites | FeedFilter::Assets)
     }
 
-    /// The thumbnail to draw in a cell: the large tier once a cell is bigger than the standard one
-    /// (`THUMB_MAX`) in device pixels, so big tiles stop being a stretched 400 px image. Falls back
-    /// to the standard tier until the large one has been rendered — see
-    /// [`LibraryModel::request_large_thumbnails`], which the zoom and scroll paths drive.
-    fn thumbnail_for_cell(&self, standard: &std::path::Path, cx: &App) -> PathBuf {
-        if self.thumbnail_tier() == thumbnails::THUMB_MAX {
+    /// The thumbnail to draw in a cell: the large tier once the cell outgrows the standard one for
+    /// a picture of this shape, so big tiles stop being a stretched 400 px image. Falls back to
+    /// the standard tier until the large one has been rendered — see
+    /// [`LibraryModel::request_large_thumbnails`], which the zoom, scroll and library-change
+    /// paths drive.
+    fn thumbnail_for_cell(&self, standard: &std::path::Path, aspect_ratio: Option<f32>, cx: &App) -> PathBuf {
+        if self.tier_for_cell(aspect_ratio) == thumbnails::THUMB_MAX {
             return standard.to_path_buf();
         }
         state::library(cx).read(cx).large_thumbnail(standard).map(std::path::Path::to_path_buf).unwrap_or_else(|| standard.to_path_buf())
     }
 
-    /// The tier this feed's cells want, from the cell size the last render measured.
-    fn thumbnail_tier(&self) -> u32 {
-        if f32::from(self.cell_px) * self.scale_factor > thumbnails::THUMB_MAX as f32 {
-            thumbnails::THUMB_LARGE
-        } else {
-            thumbnails::THUMB_MAX
+    /// How the cells draw their pictures: square cells fill and crop, full-aspect cells letterbox.
+    fn fit(&self) -> Fit {
+        match self.shape {
+            ThumbnailShape::Square => Fit::Cover,
+            ThumbnailShape::AspectRatio => Fit::Contain,
         }
+    }
+
+    /// A cell's side in device pixels, from the cell size the last render measured.
+    fn cell_device_px(&self) -> u32 {
+        (f32::from(self.cell_px) * self.scale_factor).ceil().max(1.) as u32
+    }
+
+    /// The tier a cell wants for a picture of this shape. A square cell crops a picture to its
+    /// short edge, so a portrait picture outgrows the standard tier at a cell a fraction of the
+    /// size a square one does; see [`thumbnails::tier_for`].
+    fn tier_for_cell(&self, aspect_ratio: Option<f32>) -> u32 {
+        thumbnails::tier_for(self.cell_device_px(), self.fit(), aspect_ratio)
+    }
+
+    /// Whether any picture could want the large tier at this cell size. Square cells crop to the
+    /// short edge, so the narrowest picture on screen decides and nothing can be ruled out ahead
+    /// of looking; only a letterboxed grid can be, by the cell alone.
+    fn may_want_large(&self) -> bool {
+        self.fit() == Fit::Cover || self.tier_for_cell(None) == thumbnails::THUMB_LARGE
     }
 
     /// [`Self::request_large_thumbnails`] once the view has been still for [`LARGE_TIER_SETTLE`].
     /// Each call replaces the last, so a continuous scroll asks once, at the end.
     fn schedule_large_thumbnails(&mut self, cx: &mut Context<Self>) {
-        if self.thumbnail_tier() == thumbnails::THUMB_MAX {
+        if !self.may_want_large() {
             self.large_request = None;
             return;
         }
@@ -800,10 +820,15 @@ impl FeedView {
     /// need it. Called from the code that changes what is visible — the viewport, and the library
     /// itself — never from a render.
     fn request_large_thumbnails(&mut self, cx: &mut Context<Self>) {
-        if self.thumbnail_tier() == thumbnails::THUMB_MAX {
+        if !self.may_want_large() {
             return;
         }
-        let visible: Vec<AssetId> = self.last_rendered.keys().filter_map(|id| self.asset_of(id, cx)).collect();
+        let visible: Vec<AssetId> = self
+            .last_rendered
+            .iter()
+            .filter(|(_, snapshot)| self.tier_for_cell(snapshot.entry().aspect_ratio_f32()) == thumbnails::THUMB_LARGE)
+            .filter_map(|(id, _)| self.asset_of(id, cx))
+            .collect();
         if visible.is_empty() {
             return;
         }
@@ -861,7 +886,7 @@ impl FeedView {
                 .into_any_element(),
             (_, _, MediaType::Audio) => v_flex().size_full().items_center().justify_center().child(icon("audio-lines").size_8().text_color(muted_fg)).into_any_element(),
             (_, Some(thumb), _) => {
-                let thumb = self.thumbnail_for_cell(thumb, cx);
+                let thumb = self.thumbnail_for_cell(thumb, item.aspect_ratio_f32(), cx);
                 let selector = format!("thumb-{}", item.id);
                 gpui::div().size_full().opacity(thumbnail_opacity).child(cover_image(thumb).debug_selector(move || selector.clone())).into_any_element()
             }
@@ -899,7 +924,7 @@ impl FeedView {
                 .into_any_element(),
             (_, _, MediaType::Audio) => v_flex().size_full().items_center().justify_center().child(icon("audio-lines").size_8().text_color(muted_fg)).into_any_element(),
             (_, Some(thumb), _) => {
-                let thumb = self.thumbnail_for_cell(thumb, cx);
+                let thumb = self.thumbnail_for_cell(thumb, asset.aspect_ratio_f32(), cx);
                 gpui::div().size_full().opacity(thumbnail_opacity).child(cover_image(thumb)).into_any_element()
             }
             (_, None, _) => v_flex().size_full().items_center().justify_center().child(icon("image").size_6().text_color(muted_fg)).into_any_element(),
@@ -1384,7 +1409,7 @@ impl Render for FeedView {
         // stored: at the smallest zoom a cell is a fifth of a 400 px thumbnail's pixel count, and
         // the difference is paid twice over, in decoded bytes and in sprite-atlas space.
         self.scale_factor = window.scale_factor();
-        let cell_device_px = (f32::from(cell) * self.scale_factor).ceil().max(1.) as u32;
+        let cell_device_px = self.cell_device_px();
         // Whatever moved the grid — the wheel, an arrow key's `scroll_to_index`, a scrollbar drag,
         // a zoom, or simply the first frame after launch — different rows are on screen now, and
         // they may want the large tier. Only ever replaces a timer (see the field), never any work.
@@ -1393,7 +1418,7 @@ impl Render for FeedView {
             self.last_viewport = Some(viewport);
             self.schedule_large_thumbnails(cx);
         }
-        self.image_cache.update(cx, |cache, cx| cache.set_target(cell_device_px, window, cx));
+        self.image_cache.update(cx, |cache, cx| cache.set_target(cell_device_px, self.fit(), window, cx));
         let count = self.ids.len();
         let title = self.title(cx);
         let theme = cx.theme();
@@ -2537,19 +2562,19 @@ mod tests {
 
         // The default zoom draws cells the standard tier covers (test windows are 2x).
         view.update(vcx, |feed, cx| {
-            assert_eq!(feed.thumbnail_tier(), thumbnails::THUMB_MAX);
-            assert_eq!(feed.thumbnail_for_cell(&standard, cx), standard, "no other tier is wanted yet");
+            assert_eq!(feed.tier_for_cell(None), thumbnails::THUMB_MAX);
+            assert_eq!(feed.thumbnail_for_cell(&standard, None, cx), standard, "no other tier is wanted yet");
         });
 
         // Zoom to the largest tiles the way the user does, then let the request settle.
         vcx.dispatch_action(ZoomIn);
         vcx.dispatch_action(ZoomIn);
         vcx.run_until_parked();
-        view.update(vcx, |feed, _| assert_eq!(feed.thumbnail_tier(), thumbnails::THUMB_LARGE, "cells outgrew the standard tier"));
+        view.update(vcx, |feed, _| assert_eq!(feed.tier_for_cell(None), thumbnails::THUMB_LARGE, "cells outgrew the standard tier"));
         vcx.background_executor.advance_clock(LARGE_TIER_SETTLE * 2);
         vcx.run_until_parked();
 
-        let large = view.update(vcx, |feed, cx| feed.thumbnail_for_cell(&standard, cx));
+        let large = view.update(vcx, |feed, cx| feed.thumbnail_for_cell(&standard, None, cx));
         assert_ne!(large, standard, "the big cells draw the large tier");
         assert_eq!(thumbnails::sized_thumb_path(&standard, thumbnails::THUMB_LARGE), Some(large.clone()));
         assert!(large.exists(), "{} was rendered", large.display());
@@ -2578,10 +2603,10 @@ mod tests {
         vcx.run_until_parked();
 
         let drawn: Vec<PathBuf> = view.update(vcx, |feed, cx| {
-            feed.last_rendered.keys().filter_map(|id| feed.asset_of(id, cx)).filter_map(|asset| state::library(cx).read(cx).lib.asset(&asset)?.thumbnail.clone()).map(|standard| feed.thumbnail_for_cell(&standard, cx)).collect()
+            feed.last_rendered.keys().filter_map(|id| feed.asset_of(id, cx)).filter_map(|asset| state::library(cx).read(cx).lib.asset(&asset)?.thumbnail.clone()).map(|standard| feed.thumbnail_for_cell(&standard, None, cx)).collect()
         });
         assert!(!drawn.is_empty(), "rows are on screen");
-        assert!(drawn.iter().all(|path| path.to_string_lossy().contains("@800")), "every visible row draws the large tier: {drawn:?}");
+        assert!(drawn.iter().all(|path| path.to_string_lossy().contains("@fill800")), "every visible row draws the large tier: {drawn:?}");
     }
 
     /// Only the viewport (scroll, zoom, resize) used to ask for the tier, so a generation that
@@ -2610,9 +2635,50 @@ mod tests {
         vcx.run_until_parked();
 
         let standard = env.library.read_with(vcx, |m, _| m.lib.get(&id).unwrap().thumbnail.clone().expect("the new row was thumbnailed"));
-        let drawn = view.update(vcx, |feed, cx| feed.thumbnail_for_cell(&standard, cx));
+        let drawn = view.update(vcx, |feed, cx| feed.thumbnail_for_cell(&standard, None, cx));
         assert_eq!(thumbnails::sized_thumb_path(&standard, thumbnails::THUMB_LARGE), Some(drawn.clone()), "the new row draws the large tier, not the stretched standard one");
         assert!(drawn.exists(), "{} was rendered", drawn.display());
+    }
+
+    /// A 9:16 picture in the default square cells: the standard tier is 400 px tall but only
+    /// 225 px wide, and a square cell crops to the width, so at the default zoom on a 2x display
+    /// (cells of ~400 device px) it is already stretched nearly twice over. Neither zooming nor
+    /// resizing could fix that before, because no stored tier was any wider.
+    #[gpui::test]
+    fn a_portrait_picture_in_square_cells_wants_the_large_tier_at_the_default_zoom(cx: &mut TestAppContext) {
+        let (view, vcx, env) = feed_window!(cx, 1);
+        let id = env.library.update(vcx, |m, cx| {
+            let id = m.lib.add_generating(MediaType::Image, None, None, None, None);
+            m.apply(majik_generation::Event::Completed { id: id.clone(), job: m.attempt(&id), bytes: majik_core::images::solid_png(90, 160, [9, 8, 7]), is_upscaled: false }, cx);
+            id
+        });
+        env.library.update(vcx, |m, cx| m.start_thumbnails(cx));
+        vcx.run_until_parked();
+        vcx.simulate_resize(gpui::size(px(800.), px(600.)));
+        vcx.run_until_parked();
+        vcx.background_executor.advance_clock(LARGE_TIER_SETTLE * 2);
+        vcx.run_until_parked();
+
+        let (portrait, square) = env.library.read_with(vcx, |m, _| {
+            let portrait = m.lib.get(&id).unwrap().thumbnail.clone().expect("thumbnailed");
+            let square = m.lib.assets().iter().find(|a| a.thumbnail.as_ref() != Some(&portrait)).and_then(|a| a.thumbnail.clone()).expect("the seeded square one");
+            (portrait, square)
+        });
+        view.update(vcx, |feed, cx| {
+            assert_eq!(feed.tier_for_cell(Some(1.)), thumbnails::THUMB_MAX, "a square picture fills these cells from the standard tier");
+            assert_eq!(feed.thumbnail_for_cell(&square, Some(1.), cx), square);
+            let drawn = feed.thumbnail_for_cell(&portrait, Some(90. / 160.), cx);
+            assert_eq!(thumbnails::sized_thumb_path(&portrait, thumbnails::THUMB_LARGE), Some(drawn.clone()), "the portrait one is drawn from the large tier");
+            assert!(drawn.exists(), "{} was rendered without any zoom or scroll", drawn.display());
+        });
+
+        // Shown whole, the long edge spans the cell and the standard tier is enough again.
+        vcx.dispatch_action(ToggleThumbnailShape);
+        vcx.run_until_parked();
+        view.update(vcx, |feed, cx| {
+            assert_eq!(feed.shape, ThumbnailShape::AspectRatio);
+            assert_eq!(feed.thumbnail_for_cell(&portrait, Some(90. / 160.), cx), portrait);
+        });
     }
 
     /// Scrolling the whole feed does not grow the thumbnail cache without bound. The cache this

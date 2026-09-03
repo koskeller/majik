@@ -369,7 +369,7 @@ impl Library {
 
     fn sweep_thumbnails(&self) {
         // Every tier of a live asset's thumbnail, not just the standard one it records: the large
-        // tier is a sibling file (`<hash>@800.jpg`), and sweeping it would delete on every launch
+        // tier is a sibling file (`<hash>@fill800.jpg`), and sweeping it would delete on every launch
         // the work the feed did on the last one.
         let referenced: std::collections::HashSet<String> = self
             .assets
@@ -1062,7 +1062,7 @@ mod tests {
         assert!(large.exists(), "and so did the large one");
 
         // A thumbnail nothing references still goes.
-        let orphan = dir.path().join(thumbnails::THUMBS_PREFIX).join("deadbeef@800.jpg");
+        let orphan = dir.path().join(thumbnails::THUMBS_PREFIX).join("deadbeef@fill800.jpg");
         std::fs::write(&orphan, png(1)).unwrap();
         let mut lib = Library::open(dir.path()).unwrap();
         assert!(!orphan.exists(), "an unreferenced tier is still swept");

@@ -1,14 +1,16 @@
 //! Model picker, a searchable palette: a dialog with a search field on top and one row per model
-//! (logo tile, name, maker, description and capability chips), with the current model checked.
-//! Typing filters the rows, ↑/↓ move the highlight, Enter picks and Escape closes. Built on
-//! gpui-component's `List`, which owns the search input and the `"List"` key context, so the
-//! keyboard behaviour is the same as its `Select` / `ComboBox`.
+//! (logo tile, name, maker and capability chips), with the current model checked. Typing filters
+//! the rows, ↑/↓ move the highlight, Enter picks and Escape closes. Built on gpui-component's
+//! `List`; the search field is our own, drawn as a filled box with no rule under it, and hands
+//! the keys the list binds in its `"List"` context back to the list.
 //!
 //! The models generated with most recently (`Config::recent_models`, per tab) sit in a `Recent`
 //! section above `All models`, so alternating between a few is one click; the section goes away
 //! while a search is typed, since the matches are the shortcut then.
 
-use gpui::{prelude::*, px, App, Entity, ScrollStrategy, Task, WeakEntity, Window};
+use gpui::{prelude::*, px, App, Entity, Focusable as _, ScrollStrategy, Task, WeakEntity, Window};
+use gpui_base::actions::{Confirm, SelectDown, SelectUp};
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::list::{List, ListDelegate, ListItem, ListState};
 use crate::ui::Raised as _;
 use gpui_component::{h_flex, v_flex, ActiveTheme as _, IndexPath, Selectable, WindowExt as _};
@@ -17,7 +19,7 @@ use majik_providers::{ImageResolution, ProviderDescriptor, VideoResolution};
 
 use crate::composer_state::ComposeTab;
 use crate::config::Config;
-use crate::ui::{icon, logo_tile, section_label};
+use crate::ui::{icon, logo_tile};
 use crate::views::compose::ComposeView;
 
 #[derive(Clone, Debug)]
@@ -33,11 +35,6 @@ pub struct ModelRow {
 }
 
 impl ModelRow {
-    /// Whether the row draws a description line. `"TBD"` is a catalog placeholder, not a blurb.
-    pub fn has_description(&self) -> bool {
-        !self.description.is_empty() && self.description != "TBD"
-    }
-
     /// Case-insensitive match: every whitespace-separated term of `query` must occur in the name,
     /// the manufacturer or the description. An empty query matches everything.
     pub fn matches(&self, query: &str) -> bool {
@@ -147,33 +144,10 @@ pub fn rows(provider: &'static ProviderDescriptor, tab: ComposeTab) -> Vec<Model
     }
 }
 
-/// Every row gets the same explicit height because the list is virtualised and measures a single
-/// row for all of them: the name line plus whichever of the description and the chip row the
-/// models in the list carry. A chip row is taller than a text line (the chips have their own
-/// padding), so the two are sized apart rather than as "two lines" / "three lines".
-const NAME_LINE: f32 = 24.;
-const DESCRIPTION_LINE: f32 = 20.;
-const CHIP_ROW: f32 = 22.;
-/// The `gap_1p5` between the lines of a card.
-const LINE_GAP: f32 = 6.;
-/// The `py_2` of a card.
-const CARD_PADDING: f32 = 8.;
-const LOGO_SIZE: f32 = 36.;
-/// Air between the cards. The list can't space items itself (it lays them out by the measured
-/// size, which excludes margins), so each row carries half the gap above and below its card.
-const ROW_GAP: f32 = 8.;
-
-/// The card height for a list whose rows carry these lines.
-fn card_height(has_description: bool, has_chips: bool) -> f32 {
-    let mut lines = NAME_LINE;
-    if has_description {
-        lines += LINE_GAP + DESCRIPTION_LINE;
-    }
-    if has_chips {
-        lines += LINE_GAP + CHIP_ROW;
-    }
-    lines.max(LOGO_SIZE) + 2. * CARD_PADDING
-}
+/// Every row is one line, logo, name, maker and chips, at one height, because the list is
+/// virtualised and measures a single row for all of them.
+const ROW_HEIGHT: f32 = 40.;
+const LOGO_SIZE: f32 = 24.;
 
 pub struct ModelPickerDelegate {
     compose: WeakEntity<ComposeView>,
@@ -186,17 +160,11 @@ pub struct ModelPickerDelegate {
     /// Index into `all` of the model the composer currently uses.
     current: usize,
     selected: Option<IndexPath>,
-    /// Whether any row of this tab has chips / a description; together they decide the (uniform)
-    /// row height.
-    has_chips: bool,
-    has_description: bool,
 }
 
 impl ModelPickerDelegate {
     fn new(compose: WeakEntity<ComposeView>, all: Vec<ModelRow>, recent: Vec<ModelRow>, current: usize) -> Self {
-        let has_chips = all.iter().any(|row| !row.chips.is_empty());
-        let has_description = all.iter().any(|row| row.has_description());
-        Self { compose, matched: all.clone(), all, recent, searching: false, current, selected: None, has_chips, has_description }
+        Self { compose, matched: all.clone(), all, recent, searching: false, current, selected: None }
     }
 
     /// Whether the list opens with the `Recent` section: only while nothing is typed, since the
@@ -271,7 +239,7 @@ impl ListDelegate for ModelPickerDelegate {
     fn render_item(&mut self, ix: IndexPath, _window: &mut Window, _cx: &mut Context<ListState<Self>>) -> Option<Self::Item> {
         let row = self.row_at(ix)?.clone();
         let current = row.index == self.current;
-        Some(ModelListItem { base: ListItem::new(ix), row, current, selected: false, has_chips: self.has_chips, has_description: self.has_description })
+        Some(ModelListItem { base: ListItem::new(ix), row, current, selected: false })
     }
 
     /// Headings only once there are two sections to tell apart. The list measures every header
@@ -280,8 +248,8 @@ impl ListDelegate for ModelPickerDelegate {
         if !self.shows_recent() {
             return None;
         }
-        let text = if section == 0 { "Recent" } else { "All models" };
-        Some(gpui::div().px_2().pt_2().pb_1().child(section_label(text, None, cx)))
+        let text = if section == 0 { "RECENT" } else { "ALL MODELS" };
+        Some(gpui::div().px_2().pt_3().pb_1().text_xs().font_weight(gpui::FontWeight::SEMIBOLD).text_color(cx.theme().muted_foreground).child(text))
     }
 
     fn render_empty(&mut self, _window: &mut Window, cx: &mut Context<ListState<Self>>) -> impl IntoElement {
@@ -309,8 +277,6 @@ pub struct ModelListItem {
     row: ModelRow,
     current: bool,
     selected: bool,
-    has_chips: bool,
-    has_description: bool,
 }
 
 impl Selectable for ModelListItem {
@@ -330,72 +296,75 @@ impl RenderOnce for ModelListItem {
         let theme = cx.theme();
         let (muted, muted_fg, primary) = (theme.muted, theme.muted_foreground, theme.primary);
         let tile = logo_tile(self.row.logo, self.row.manufacturer, LOGO_SIZE, cx);
-        let description = self.row.description;
-        let has_description = self.row.has_description();
-        let mut chips = h_flex().gap_1().flex_nowrap().overflow_hidden();
+        let mut chips = h_flex().min_w_0().gap_1().flex_nowrap().overflow_hidden();
         for chip in &self.row.chips {
             chips = chips.child(gpui::div().flex_none().px_1p5().py_0p5().rounded_full().bg(muted).text_xs().whitespace_nowrap().text_color(muted_fg).child(chip.clone()));
         }
-        let card_height = card_height(self.has_description, self.has_chips);
-        let card = self
-            .base
-            .h_full()
-            .px_2()
-            .py_2()
-            .rounded_md()
-            .overflow_hidden()
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap_3()
-                    .items_center()
-                    .child(tile)
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_1p5()
-                            .overflow_hidden()
-                            .child(
-                                // Centred, not baseline-aligned: gpui reports no baselines to the
-                                // layout, so `items_baseline` bottom-aligns the boxes and the
-                                // smaller maker text sits visibly below the name.
-                                h_flex()
-                                    .gap_2()
-                                    .items_center()
-                                    .child(gpui::div().font_weight(gpui::FontWeight::SEMIBOLD).whitespace_nowrap().child(self.row.name))
-                                    .child(gpui::div().text_sm().text_color(muted_fg).whitespace_nowrap().text_ellipsis().overflow_hidden().child(self.row.manufacturer)),
-                            )
-                            .when(has_description, |d| d.child(gpui::div().text_sm().text_color(muted_fg).whitespace_nowrap().text_ellipsis().overflow_hidden().child(description)))
-                            .when(!self.row.chips.is_empty(), |d| d.child(chips)),
-                    )
-                    .when(self.current, |d| d.child(icon("check").size_4().flex_none().text_color(primary))),
-            );
-        gpui::div().h(px(card_height + ROW_GAP)).py(px(ROW_GAP / 2.)).child(card)
+        self.base.h(px(ROW_HEIGHT)).px_2().py_0().rounded_md().overflow_hidden().child(
+            h_flex()
+                .w_full()
+                .h_full()
+                .gap_3()
+                .items_center()
+                .child(tile)
+                .child(gpui::div().flex_none().font_weight(gpui::FontWeight::MEDIUM).whitespace_nowrap().child(self.row.name))
+                .child(gpui::div().flex_1().min_w_0().text_sm().text_color(muted_fg).whitespace_nowrap().text_ellipsis().overflow_hidden().child(self.row.manufacturer))
+                .when(!self.row.chips.is_empty(), |d| d.child(chips))
+                .when(self.current, |d| d.child(icon("check").size_4().flex_none().text_color(primary))),
+        )
     }
 }
 
 /// Opens the picker over the composer with the search field focused and the current model highlighted.
-/// Returns the list so tests can inspect it.
-pub fn open_model_picker(compose: WeakEntity<ComposeView>, provider: &'static ProviderDescriptor, tab: ComposeTab, current: usize, window: &mut Window, cx: &mut App) -> Entity<ListState<ModelPickerDelegate>> {
+/// Returns the list and the search field so tests can inspect them.
+pub fn open_model_picker(compose: WeakEntity<ComposeView>, provider: &'static ProviderDescriptor, tab: ComposeTab, current: usize, window: &mut Window, cx: &mut App) -> (Entity<ListState<ModelPickerDelegate>>, Entity<InputState>) {
     let all = rows(provider, tab);
     let recent = recent_rows(&all, cx.global::<Config>().recent_models.get(tab));
+    let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search models"));
     let delegate = ModelPickerDelegate::new(compose, all, recent, current);
     let path = delegate.path_of_current();
-    let list = cx.new(|cx| ListState::new(delegate, window, cx).searchable(true));
+    let list = cx.new(|cx| ListState::new(delegate, window, cx));
     list.update(cx, |list, cx| {
         list.set_selected_index(Some(path), window, cx);
         list.scroll_to_item(path, ScrollStrategy::Center, window, cx);
     });
-    let list_for_dialog = list.clone();
+    // The list's own search field sits on a rule; ours is a filled box, so the list is not
+    // searchable and we feed it the query instead.
+    let list_for_search = list.clone();
+    window
+        .subscribe(&search, cx, move |input, event: &InputEvent, window, cx| {
+            if matches!(event, InputEvent::Change) {
+                let query = input.read(cx).value().to_string();
+                list_for_search.update(cx, |list, cx| list.set_query(&query, window, cx));
+            }
+        })
+        .detach();
+    let (list_for_dialog, search_for_dialog) = (list.clone(), search.clone());
     // No scrollbar: the list's overlay bar rides over the rows and appears on open, since
-    // scrolling to the current model counts as a scroll. The padding is the list's, not the
-    // dialog's, so the highlighted card keeps clear of the edges and the rows still scroll under
-    // the search field.
-    window.open_dialog(cx, move |dialog, _window, cx| dialog.raised(cx).title("Choose a model").w(px(560.)).child(List::new(&list_for_dialog).search_placeholder("Search models").scrollbar_visible(false).px_2().py_1().max_h(px(520.))));
+    // scrolling to the current model counts as a scroll.
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let list = list_for_dialog.clone();
+        let (up, down, confirm) = (list.clone(), list.clone(), list.clone());
+        // A single-line input registers no handler for ↑ / ↓ and propagates Enter, so the keys
+        // fall through to the bindings of the `"List"` context this box takes, and go to the list.
+        let search_box = h_flex()
+            .key_context("List")
+            .on_action(move |action: &SelectUp, window, cx| up.focus_handle(cx).dispatch_action(action, window, cx))
+            .on_action(move |action: &SelectDown, window, cx| down.focus_handle(cx).dispatch_action(action, window, cx))
+            .on_action(move |action: &Confirm, window, cx| confirm.focus_handle(cx).dispatch_action(action, window, cx))
+            .h_9()
+            .px_3()
+            .gap_2()
+            .rounded_md()
+            .bg(cx.theme().muted)
+            .items_center()
+            .child(icon("search").size_4().flex_none().text_color(cx.theme().muted_foreground))
+            .child(Input::new(&search_for_dialog).appearance(false).cleanable(true).p_0().flex_1());
+        dialog.raised(cx).w(px(560.)).child(v_flex().gap_2().child(search_box).child(List::new(&list).scrollbar_visible(false).max_h(px(480.))))
+    });
     // `open_dialog` focuses the dialog itself; the search field has to win.
-    list.update(cx, |list, cx| list.focus(window, cx));
-    list
+    search.focus_handle(cx).focus(window, cx);
+    (list, search)
 }
 
 #[cfg(test)]
@@ -403,7 +372,7 @@ mod tests {
     use super::*;
     use crate::config::update_config;
     use crate::test_support::env;
-    use gpui::{Focusable as _, TestAppContext, VisualTestContext};
+    use gpui::{TestAppContext, VisualTestContext};
     use majik_providers::catalog::image;
 
     /// Stands in for `LibraryWindow`: the composer plus the dialog layer, inside a `Root`, so the
@@ -434,13 +403,17 @@ mod tests {
     }
 
     fn open(view: &Entity<ComposeView>, vcx: &mut VisualTestContext) -> Entity<ListState<ModelPickerDelegate>> {
-        let list = view.update_in(vcx, |view, window, cx| {
+        open_with_search(view, vcx).0
+    }
+
+    fn open_with_search(view: &Entity<ComposeView>, vcx: &mut VisualTestContext) -> (Entity<ListState<ModelPickerDelegate>>, Entity<InputState>) {
+        let opened = view.update_in(vcx, |view, window, cx| {
             let state = view.composer_state();
             let (provider, tab, current) = (state.provider, state.tab, state.model_index());
             open_model_picker(cx.entity().downgrade(), provider, tab, current, window, cx)
         });
         vcx.run_until_parked();
-        list
+        opened
     }
 
     fn select_model(view: &Entity<ComposeView>, vcx: &mut VisualTestContext, index: usize) {
@@ -491,9 +464,9 @@ mod tests {
         let (view, vcx) = compose_window(cx);
         let flux_pro = image_index("flux-2-pro");
         select_model(&view, vcx, flux_pro);
-        let list = open(&view, vcx);
+        let (list, search) = open_with_search(&view, vcx);
         assert!(dialog_open(vcx), "the picker is a dialog over the composer");
-        assert!(vcx.update(|window, cx| list.read(cx).focus_handle(cx).is_focused(window)), "typing goes straight into the search field");
+        assert!(vcx.update(|window, cx| search.focus_handle(cx).is_focused(window)), "typing goes straight into the search field");
         assert_eq!(highlighted(&list, vcx), Some(flux_pro));
         assert_eq!(shown(&list, vcx).len(), image::ALL.len(), "every model of the tab is listed before searching");
     }
@@ -572,7 +545,7 @@ mod tests {
         assert_eq!(shown(&list, vcx), ["Seedream 4.5"]);
         assert_eq!(highlighted_path(&list, vcx), Some((0, 0)), "the first match, now in the only section");
 
-        list.update_in(vcx, |list, window, cx| list.set_query("", window, cx));
+        vcx.simulate_keystrokes("secondary-a backspace");
         vcx.run_until_parked();
         assert_eq!(recent(&list, vcx), [image_name("flux-2-pro")], "clearing the search brings the section back");
 
@@ -704,7 +677,7 @@ mod tests {
     }
 
     /// Upscalers are picked by their maker and their factors, not by a blurb that repeats the
-    /// chips, so their rows carry no description line. Background removal keeps its own.
+    /// chips, so their rows carry no description to search. Background removal keeps its own.
     #[gpui::test]
     fn upscale_rows_have_no_description(cx: &mut TestAppContext) {
         let (view, vcx) = compose_window(cx);
@@ -712,10 +685,10 @@ mod tests {
 
         let upscalers = rows(provider, ComposeTab::Tool(ToolId::Upscale));
         assert!(!upscalers.is_empty());
-        assert!(upscalers.iter().all(|row| !row.has_description()), "{upscalers:?}");
+        assert!(upscalers.iter().all(|row| row.description.is_empty()), "{upscalers:?}");
 
         let remove_bg = rows(provider, ComposeTab::Tool(ToolId::RemoveBackground));
-        assert!(remove_bg.iter().all(|row| row.has_description()), "{remove_bg:?}");
+        assert!(remove_bg.iter().all(|row| !row.description.is_empty()), "{remove_bg:?}");
     }
 
     /// The models added in the 2026-08 catalog sweep have to reach the picker, with the capability
