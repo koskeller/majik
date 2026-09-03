@@ -243,7 +243,14 @@ impl LibraryWindow {
                 cx.notify();
             }
             FeedEvent::Compose(pending) => this.show_composer(Some(pending.clone()), window, cx),
-            FeedEvent::Imported => this.show_filter(FeedFilter::Assets, cx),
+            // The feed follows the import, but this is not where the user chose to be: the
+            // sidebar's row is set directly so the screen the app reopens on is left alone.
+            FeedEvent::Imported => {
+                this.detail = None;
+                this.sidebar.update(cx, |sidebar, _| sidebar.selected = FeedFilter::Assets);
+                Self::move_to(&this.feed, &this.compose, &FeedFilter::Assets, cx);
+                cx.notify();
+            }
         })
         .detach();
 
@@ -990,6 +997,7 @@ mod tests {
 
         assert_eq!(window.read_with(vcx, |w, cx| w.feed.read(cx).filter().clone()), FeedFilter::Assets, "the feed follows the import");
         assert_eq!(window.read_with(vcx, |w, cx| w.sidebar.read(cx).selected.clone()), FeedFilter::Assets);
+        assert_eq!(saved_screen_in_config(vcx), FeedFilter::Library, "but the app reopens where the user last chose to be, not where an import took them");
     }
 
     #[gpui::test]
