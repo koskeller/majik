@@ -2785,24 +2785,21 @@ mod tests {
         assert_eq!(drawn, large, "the large tier replaces it once it can be drawn");
     }
 
-    /// A cell holding neither tier — scrolled in, or every tile dropped by a zoom step — has
-    /// nothing to keep on screen, so it asks for the tier it wants rather than decoding the
-    /// standard one only to replace it a moment later.
+    /// A zoom or resize step drops the pending large decode along with everything else in flight,
+    /// but the standard tier the cell was showing is kept aside: the cell keeps drawing it while
+    /// the large tier is asked for again, rather than blinking to nothing.
     #[gpui::test]
-    fn a_cell_holding_no_tier_draws_the_large_one_straight_away(cx: &mut TestAppContext) {
+    fn a_cell_keeps_the_tier_it_showed_across_a_decode_step(cx: &mut TestAppContext) {
         let (LargeTierInFlight { view, cache, standard, large, decode: _decode }, vcx) = feed_with_a_large_tier_in_flight(cx);
 
         let drawn = vcx.update(|window, cx| {
-            // A zoom step drops everything held, the pending large decode included.
             cache.update(cx, |cache, cx| cache.set_target(1, Fit::Contain, window, cx));
-            assert_eq!(cache.read(cx).len(), 0);
+            assert_eq!(cache.read(cx).len(), 0, "the pending decode went");
+            assert!(cache.read(cx).holds(&resource(&standard)), "the picture on screen stayed");
             view.update(cx, |feed, cx| feed.thumbnail_to_draw(&standard, None, window, cx))
         });
-        assert_eq!(drawn, large, "nothing to keep, so the wanted tier is asked for directly");
-        cache.read_with(vcx, |cache, _| {
-            assert!(cache.holds(&resource(&large)), "its decode has started");
-            assert!(!cache.holds(&resource(&standard)), "and the standard tier was not decoded for nothing");
-        });
+        assert_eq!(drawn, standard, "still on screen");
+        cache.read_with(vcx, |cache, _| assert!(cache.holds(&resource(&large)), "and the large tier was asked for again"));
     }
 
     /// Resizes the window so the grid's content is `content_px` wide, and draws the two frames it
@@ -2889,13 +2886,13 @@ mod tests {
         vcx.run_until_parked();
         view.update(vcx, |feed, cx| assert_eq!(feed.thumbnail_for_cell(&standard, None, cx), large, "the library took the file as rendered"));
 
-        // Across a decode step (404 → 420 device px), which drops every tile: the cell holds
-        // nothing and asks for the large tier alone.
+        // Across a decode step (404 → 420 device px): the standard tier the cell showed is kept
+        // on screen while the large tier is asked for.
         resize_content_to(vcx, 422.);
         view.update(vcx, |feed, _| assert_eq!((feed.columns, feed.cell_device_px()), (2, 420)));
         let drawn = vcx.update(|window, cx| view.update(cx, |feed, cx| feed.thumbnail_to_draw(&standard, None, window, cx)));
-        assert_eq!(drawn, large, "nothing is known against it until the decode runs");
-        cache.read_with(vcx, |cache, _| assert!(!cache.holds(&resource(&standard))));
+        assert_eq!(drawn, standard, "kept from before the step while the large tier decodes");
+        cache.read_with(vcx, |cache, _| assert!(cache.holds(&resource(&large)), "which was asked for"));
         vcx.run_until_parked();
         cache.update(vcx, |cache, _| {
             assert!(cache.holds(&resource(&large)), "the failure is remembered");
@@ -2906,7 +2903,7 @@ mod tests {
         assert_eq!(drawn, standard, "the standard tier is drawn instead of a picture that will never come");
         vcx.update(|window, cx| window.draw(cx).clear(cx));
         vcx.run_until_parked();
-        cache.update(vcx, |cache, _| assert!(cache.loaded(&resource(&standard)).is_some(), "and drawing it decoded it"));
+        cache.update(vcx, |cache, _| assert!(cache.loaded(&resource(&standard)).is_some(), "and drawing it decoded it at the new step"));
     }
 
     /// Scrolling the whole feed does not grow the thumbnail cache without bound. The cache this

@@ -64,8 +64,18 @@ pub struct LruImageCache {
     bytes: usize,
     /// Keyed by `gpui::hash(&Resource)`, the key gpui's own caches use.
     entries: HashMap<u64, Entry>,
+    /// Pictures decoded for an earlier target, kept only to draw until their replacement lands.
+    /// A window resize moves the target a step at a time, and dropping everything at each step
+    /// painted every tile blank until it was decoded again: a screen-wide blink per step. So a
+    /// target change moves what is decoded here instead, a load that finds its picture still
+    /// decoding is served the old one, and [`Self::settle`] drops the old one the moment the new
+    /// one is charged. Only decoded pictures are kept; a load in flight at the change is dropped,
+    /// since its result would be the wrong size as well. Charged like the rest, and the first to go
+    /// when the budget is met.
+    stale: HashMap<u64, Entry>,
     /// Bumped on every load; an entry's `last_used` is a stamp from it, which makes "least recently
-    /// drawn" a `min` over the map instead of a second collection to keep in sync.
+    /// drawn" a `min` over the map instead of a second collection to keep in sync. Also stamps
+    /// each load's `id`.
     tick: u64,
     /// The square cell, in device pixels, to decode for, and how the cell draws the picture. The
     /// feed sets it from the cell it is about to draw into: a 400 px thumbnail costs 640 KB decoded
@@ -79,6 +89,9 @@ pub struct LruImageCache {
 
 struct Entry {
     item: ImageCacheItem,
+    /// Which load this is: the task that awaits a decode charges only the entry it started, so a
+    /// decode outlived by a target change cannot charge the load that replaced it.
+    id: u64,
     /// Decoded bytes charged to the budget: 0 while the decode is in flight, and 0 permanently if
     /// it failed. That costs a handful of bytes per broken thumbnail, kept so a failing file isn't
     /// re-decoded on every frame.
@@ -98,7 +111,7 @@ impl LruImageCache {
             // window is passed: `observe_release_in` would re-enter the window update that is
             // dropping these views, and gpui's own caches pass `None` here for the same reason.
             cx.on_release(|cache: &mut Self, cx| {
-                for (_, mut entry) in std::mem::take(&mut cache.entries) {
+                for (_, mut entry) in std::mem::take(&mut cache.entries).into_iter().chain(std::mem::take(&mut cache.stale)) {
                     if let Some(Ok(image)) = entry.item.get() {
                         cx.drop_image(image, None);
                     }
@@ -106,47 +119,68 @@ impl LruImageCache {
                 cache.bytes = 0;
             })
             .detach();
-            Self { this: cx.weak_entity(), budget, bytes: 0, entries: HashMap::new(), tick: 0, target: None }
+            Self { this: cx.weak_entity(), budget, bytes: 0, entries: HashMap::new(), stale: HashMap::new(), tick: 0, target: None }
         })
     }
 
     /// Charge a finished decode against the budget, then evict down to it. Called once per load,
-    /// from the task that awaited it.
-    fn settle(&mut self, key: u64, window: &mut Window, cx: &mut App) {
-        let Some(entry) = self.entries.get_mut(&key) else { return };
+    /// from the task that awaited it; `id` is that load's, so a decode dropped by a target change
+    /// finds nothing to charge.
+    fn settle(&mut self, key: u64, id: u64, window: &mut Window, cx: &mut App) {
+        let Some(entry) = self.entries.get_mut(&key).filter(|entry| entry.id == id) else { return };
         if entry.bytes != 0 {
             return;
         }
         // `get` turns `Loading` into `Loaded`; a failed decode stays at zero bytes and simply never
         // becomes an eviction candidate.
-        let Some(Ok(image)) = entry.item.get() else { return };
-        let bytes = decoded_bytes(&image);
-        entry.bytes = bytes;
-        self.bytes = self.bytes.saturating_add(bytes);
+        let Some(result) = entry.item.get() else { return };
+        if let Ok(image) = &result {
+            let bytes = decoded_bytes(image);
+            entry.bytes = bytes;
+            self.bytes = self.bytes.saturating_add(bytes);
+        }
+        // The picture this one replaces has stood in long enough, whether or not the
+        // replacement decoded: a failure is drawn as nothing either way.
+        if let Some(stale) = self.stale.remove(&key) {
+            self.drop_entry(stale, window, cx);
+        }
         self.evict(window, cx);
     }
 
-    /// Drop least-recently-drawn images until the budget is met.
+    /// Drop least-recently-drawn images until the budget is met: what is left over from an earlier
+    /// target first, then the current pictures.
     fn evict(&mut self, window: &mut Window, cx: &mut App) {
         while self.bytes > self.budget {
+            if let Some(key) = self.stale.keys().next().copied() {
+                let Some(entry) = self.stale.remove(&key) else { return };
+                self.drop_entry(entry, window, cx);
+                continue;
+            }
             // Only a charged entry is a candidate: evicting one still loading would free nothing
             // and start the same decode again next frame. Skipping them also makes this loop
             // terminate — every iteration removes bytes.
             let victim = self.entries.iter().filter(|(_, entry)| entry.bytes > 0).min_by_key(|(_, entry)| entry.last_used).map(|(key, _)| *key);
             let Some(key) = victim else { return };
-            let Some(mut entry) = self.entries.remove(&key) else { return };
-            self.bytes = self.bytes.saturating_sub(entry.bytes);
-            if let Some(Ok(image)) = entry.item.get() {
-                // Frees the decoded bytes *and* the sprite-atlas tile. `App::remove_asset` would
-                // only forget the asset and leave the GPU texture behind.
-                cx.drop_image(image, Some(window));
-            }
+            let Some(entry) = self.entries.remove(&key) else { return };
+            self.drop_entry(entry, window, cx);
+        }
+    }
+
+    /// Give an entry's bytes back to the budget and its tile to the atlas.
+    fn drop_entry(&mut self, mut entry: Entry, window: &mut Window, cx: &mut App) {
+        self.bytes = self.bytes.saturating_sub(entry.bytes);
+        if let Some(Ok(image)) = entry.item.get() {
+            // Frees the decoded bytes *and* the sprite-atlas tile. `App::remove_asset` would
+            // only forget the asset and leave the GPU texture behind.
+            cx.drop_image(image, Some(window));
         }
     }
 
     /// Decode for square cells `cell` device pixels on a side, drawn with `fit`, from now on.
-    /// Entries decoded for a different size or fit are dropped: a zoom step is rare and re-decoding
-    /// a screenful is cheaper than keeping two sizes of everything.
+    /// What is decoded for the old size or fit stays on screen until its replacement lands (see
+    /// `stale`), so a resize or a zoom step never paints the grid blank; a load still in flight
+    /// is dropped, and a stale picture the previous step left is kept only where the new one did
+    /// not land in time to replace it.
     pub fn set_target(&mut self, cell: u32, fit: Fit, window: &mut Window, cx: &mut App) {
         // Round to a step so that a resize dragging the cells a pixel at a time doesn't re-decode
         // the feed on every frame.
@@ -155,15 +189,20 @@ impl LruImageCache {
             return;
         }
         self.target = Some((cell, fit));
-        self.clear(window, cx);
-    }
-
-    /// Drop everything, returning the decoded bytes and the atlas tiles.
-    fn clear(&mut self, window: &mut Window, cx: &mut App) {
-        self.bytes = 0;
-        for (_, mut entry) in std::mem::take(&mut self.entries) {
-            if let Some(Ok(image)) = entry.item.get() {
-                cx.drop_image(image, Some(window));
+        for (key, mut entry) in std::mem::take(&mut self.entries) {
+            match entry.item.get() {
+                Some(Ok(image)) => {
+                    // A decode that finished but whose task has not charged it yet is charged
+                    // here, since that task will no longer find it.
+                    if entry.bytes == 0 {
+                        entry.bytes = decoded_bytes(&image);
+                        self.bytes = self.bytes.saturating_add(entry.bytes);
+                    }
+                    if let Some(older) = self.stale.insert(key, entry) {
+                        self.drop_entry(older, window, cx);
+                    }
+                }
+                _ => self.drop_entry(entry, window, cx),
             }
         }
     }
@@ -194,6 +233,12 @@ impl LruImageCache {
         self.entries.len()
     }
 
+    /// Pictures left over from an earlier target, still standing in.
+    #[cfg(test)]
+    pub fn stale_len(&self) -> usize {
+        self.stale.len()
+    }
+
     /// The decoded image for a resource, if the cache holds one.
     #[cfg(test)]
     pub fn loaded(&mut self, resource: &Resource) -> Option<Arc<RenderImage>> {
@@ -206,7 +251,8 @@ impl LruImageCache {
     /// never goes back to drawing nothing while a sharper tier decodes. Unlike a load, this is
     /// not a use: it leaves the entry's recency alone.
     pub fn holds(&self, resource: &Resource) -> bool {
-        self.entries.contains_key(&gpui::hash(resource))
+        let key = gpui::hash(resource);
+        self.entries.contains_key(&key) || self.stale.contains_key(&key)
     }
 
     /// Whether a resource is decoded and drawable this frame. If it is not, the decode is started
@@ -228,7 +274,11 @@ impl LruImageCache {
         self.tick += 1;
         if let Some(entry) = self.entries.get_mut(&key) {
             entry.last_used = self.tick;
-            return entry.item.get();
+            return match entry.item.get() {
+                // Still decoding for the new target: the old target's picture stands in.
+                None => self.stale.get_mut(&key).and_then(|stale| stale.item.get()).filter(Result::is_ok),
+                loaded => loaded,
+            };
         }
 
         // One shared task, held by both the entry and the waiter below, as gpui's own caches do.
@@ -246,7 +296,7 @@ impl LruImageCache {
             }
         };
         self.start(key, task, view, window, cx);
-        None
+        self.stale.get_mut(&key).and_then(|stale| stale.item.get()).filter(Result::is_ok)
     }
 
     /// An entry whose decode finishes only when the test sends its image, so a test can see the
@@ -262,7 +312,8 @@ impl LruImageCache {
 
     /// Hold a decode in flight and, when it finishes, charge it and redraw `view`.
     fn start(&mut self, key: u64, task: gpui::ImageLoadingTask, view: EntityId, window: &mut Window, cx: &mut App) {
-        self.entries.insert(key, Entry { item: ImageCacheItem::Loading(task.clone()), bytes: 0, last_used: self.tick });
+        let id = self.tick;
+        self.entries.insert(key, Entry { item: ImageCacheItem::Loading(task.clone()), id, bytes: 0, last_used: self.tick });
 
         let cache = self.this.clone();
         window
@@ -272,7 +323,7 @@ impl LruImageCache {
                     tracing::debug!(target: "majik", "thumbnail decode failed: {e}");
                 }
                 let settled = cx.update(|window, cx| {
-                    cache.update(cx, |cache, cx| cache.settle(key, window, cx)).ok();
+                    cache.update(cx, |cache, cx| cache.settle(key, id, window, cx)).ok();
                 });
                 if settled.is_err() {
                     // The window went away while the decode ran; there is nothing left to redraw.
@@ -636,8 +687,11 @@ mod tests {
         assert_eq!(cache.read_with(vcx, |cache, _| cache.bytes()), IMAGE_BYTES, "kept at its stored size");
     }
 
+    /// A window resize moves the target a step at a time, and dropping everything at each step
+    /// painted every tile blank until it was decoded again: a screen-wide blink per step. The old
+    /// picture stands in until the new one lands, and goes the moment it does.
     #[gpui::test]
-    fn changing_the_target_drops_what_was_decoded_for_the_old_one(cx: &mut TestAppContext) {
+    fn changing_the_target_keeps_the_old_picture_until_the_new_one_lands(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let a = image_file(dir.path(), "a.png", [200, 30, 30]);
         let (probe, vcx, cache) = probe(cx, 8 * IMAGE_BYTES);
@@ -645,16 +699,61 @@ mod tests {
         draw(&probe, vcx, &[&a]);
         let large = cache.update(vcx, |cache, _| cache.loaded(&resource(&a))).expect("a decoded");
 
-        // A zoom step: everything held is the wrong size now.
+        // A resize step: everything held is the wrong size now, but it is all there is to draw.
         vcx.update(|window, cx| cache.update(cx, |cache, cx| cache.set_target(IMAGE / 2, Fit::Contain, window, cx)));
         cache.read_with(vcx, |cache, _| {
-            assert_eq!(cache.len(), 0, "the old sizes went");
-            assert_eq!(cache.bytes(), 0);
+            assert_eq!((cache.len(), cache.stale_len()), (0, 1), "the old size is kept aside");
+            assert_eq!(cache.bytes(), IMAGE_BYTES, "and still charged");
+            assert!(cache.holds(&resource(&a)), "so a cell keeps drawing it");
         });
-        vcx.update(|window, _| assert!(!window.has_image_atlas_entry(&large), "and gave their atlas tiles back"));
+        vcx.update(|window, _| assert!(window.has_image_atlas_entry(&large), "its tile stays on the GPU"));
+
+        // The next frame asks for the picture: the new decode starts and the old one is served
+        // meanwhile, so the frame draws something.
+        let view = probe.entity_id();
+        let served = vcx.update(|window, cx| cache.update(cx, |cache, cx| cache.warm(&resource(&a), view, window, cx)));
+        assert_eq!(served, Warmth::Ready, "drawable this frame");
+        cache.read_with(vcx, |cache, _| assert_eq!((cache.len(), cache.stale_len()), (1, 1), "the new decode is in flight beside the old picture"));
 
         draw(&probe, vcx, &[&a]);
-        assert_eq!(cache.read_with(vcx, |cache, _| cache.bytes()), (IMAGE / 2 * IMAGE / 2 * 4) as usize, "redecoded at the new size");
+        cache.update(vcx, |cache, _| {
+            assert_eq!(cache.stale_len(), 0, "the old picture went the moment the new one landed");
+            assert_eq!(cache.bytes(), (IMAGE / 2 * IMAGE / 2 * 4) as usize, "only the new size is charged");
+            assert_eq!(cache.loaded(&resource(&a)).expect("redecoded").size(0).width.0 as u32, IMAGE / 2);
+        });
+        vcx.update(|window, _| assert!(!window.has_image_atlas_entry(&large), "and its tile went back"));
+    }
+
+    /// A fast drag moves the target twice before the first step's decode lands. The picture from
+    /// before the first step is kept for the second, and the decode the first started is dropped
+    /// without charging anything, so nothing goes blank in between and nothing leaks.
+    #[gpui::test]
+    fn a_second_target_change_keeps_the_last_decoded_picture(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        // Three distinct decode steps need a picture larger than the step: 128 → 64 → 32.
+        let a = dir.path().join("big.png");
+        std::fs::write(&a, solid_png(2 * IMAGE, 2 * IMAGE, [200, 30, 30])).unwrap();
+        let (probe, vcx, cache) = probe(cx, 8 * IMAGE_BYTES);
+        cache.update(vcx, |cache, _| cache.set_target_for_test(2 * IMAGE));
+        draw(&probe, vcx, &[&a]);
+        let view = probe.entity_id();
+
+        vcx.update(|window, cx| cache.update(cx, |cache, cx| cache.set_target(IMAGE, Fit::Contain, window, cx)));
+        vcx.update(|window, cx| cache.update(cx, |cache, cx| cache.warm(&resource(&a), view, window, cx)));
+        vcx.update(|window, cx| cache.update(cx, |cache, cx| cache.set_target(IMAGE / 2, Fit::Contain, window, cx)));
+        cache.read_with(vcx, |cache, _| {
+            assert_eq!((cache.len(), cache.stale_len()), (0, 1), "the first step's decode was dropped, the picture before it kept");
+            assert_eq!(cache.bytes(), 4 * IMAGE_BYTES);
+        });
+        let served = vcx.update(|window, cx| cache.update(cx, |cache, cx| cache.warm(&resource(&a), view, window, cx)));
+        assert_eq!(served, Warmth::Ready, "still drawable");
+
+        draw(&probe, vcx, &[&a]);
+        cache.update(vcx, |cache, _| {
+            assert_eq!(cache.stale_len(), 0);
+            assert_eq!(cache.bytes(), (IMAGE / 2 * IMAGE / 2 * 4) as usize, "the dropped decode charged nothing when it finished");
+            assert_eq!(cache.loaded(&resource(&a)).expect("redecoded").size(0).width.0 as u32, IMAGE / 2);
+        });
     }
 
     /// A filled square cell shows the centred square of a picture's short edge, so that is all
