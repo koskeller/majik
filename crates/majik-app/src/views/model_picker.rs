@@ -1,6 +1,7 @@
 //! Model picker, a searchable palette: a dialog with a search field on top and one row per model
 //! (logo tile, name, maker and capability chips), with the current model checked. Typing filters
-//! the rows, ↑/↓ move the highlight, Enter picks and Escape closes. Built on gpui-component's
+//! the rows by name, maker, description and capability, ↑/↓ move the highlight, Enter picks and
+//! Escape closes. Built on gpui-component's
 //! `List`; the search field is our own, drawn as a filled box with no rule under it, and hands
 //! the keys the list binds in its `"List"` context back to the list.
 //!
@@ -33,13 +34,24 @@ pub struct ModelRow {
     pub logo: &'static str,
     pub description: &'static str,
     pub chips: Vec<String>,
+    /// Search-only keywords the chips don't spell out: every resolution a range chip spans, and a
+    /// typeable spelling of a chip's glyph. Never drawn.
+    pub tags: Vec<String>,
 }
 
 impl ModelRow {
     /// Case-insensitive match: every whitespace-separated term of `query` must occur in the name,
-    /// the manufacturer or the description. An empty query matches everything.
+    /// the manufacturer, the description, a chip or a tag. An empty query matches everything.
+    /// Searching the chips is what makes `audio` list every model with sound — the ones that
+    /// generate it (`Audio`) and the ones that take a track (`Audio input`) — and `4k` the ones
+    /// whose range chip ends there; the tags cover the resolutions inside a range.
     pub fn matches(&self, query: &str) -> bool {
-        let haystack = format!("{} {} {}", self.name, self.manufacturer, self.description).to_lowercase();
+        let mut haystack = format!("{} {} {}", self.name, self.manufacturer, self.description);
+        for word in self.chips.iter().chain(&self.tags) {
+            haystack.push(' ');
+            haystack.push_str(word);
+        }
+        let haystack = haystack.to_lowercase();
         query.split_whitespace().all(|term| haystack.contains(&term.to_lowercase()))
     }
 }
@@ -73,15 +85,18 @@ pub fn rows(provider: &'static ProviderDescriptor, tab: ComposeTab) -> Vec<Model
             .enumerate()
             .map(|(i, m)| {
                 let mut chips = vec![m.media.label().to_string()];
+                let mut tags = Vec::new();
                 if let Some(c) = provider.tool_capabilities(m) {
                     if !c.upscale_factors.is_empty() {
                         chips.push(c.upscale_factors.iter().map(|f| format!("{f}×")).collect::<Vec<_>>().join(" / "));
+                        // `×` isn't on a keyboard; `4x` is what gets typed.
+                        tags.extend(c.upscale_factors.iter().map(|f| format!("{f}x")));
                     }
                 }
                 // An upscaler's description only restates the chips beside it, so its rows are
                 // the name, the maker and the chips.
                 let description = if tool == ToolId::Upscale { "" } else { m.short_description };
-                ModelRow { index: i, id: m.id, name: m.name, manufacturer: m.manufacturer, logo: m.logo, description, chips }
+                ModelRow { index: i, id: m.id, name: m.name, manufacturer: m.manufacturer, logo: m.logo, description, chips, tags }
             })
             .collect(),
         ComposeTab::Media(MediaType::Image) => provider
@@ -90,6 +105,7 @@ pub fn rows(provider: &'static ProviderDescriptor, tab: ComposeTab) -> Vec<Model
             .enumerate()
             .map(|(i, m)| {
                 let mut chips = Vec::new();
+                let mut tags = Vec::new();
                 if let Some(c) = provider.image_capabilities(m) {
                     if c.max_input_images > 0 {
                         chips.push(format!("{} reference{}", c.max_input_images, if c.max_input_images == 1 { "" } else { "s" }));
@@ -97,8 +113,9 @@ pub fn rows(provider: &'static ProviderDescriptor, tab: ComposeTab) -> Vec<Model
                     if let Some(r) = image_res_range(&c.supported_resolutions) {
                         chips.push(r);
                     }
+                    tags.extend(c.supported_resolutions.iter().map(|r| r.raw().to_string()));
                 }
-                ModelRow { index: i, id: m.id, name: m.name, manufacturer: m.manufacturer, logo: m.logo, description: m.short_description, chips }
+                ModelRow { index: i, id: m.id, name: m.name, manufacturer: m.manufacturer, logo: m.logo, description: m.short_description, chips, tags }
             })
             .collect(),
         ComposeTab::Media(MediaType::Video) => provider
@@ -107,12 +124,14 @@ pub fn rows(provider: &'static ProviderDescriptor, tab: ComposeTab) -> Vec<Model
             .enumerate()
             .map(|(i, m)| {
                 let mut chips = Vec::new();
+                let mut tags = Vec::new();
                 if let Some(c) = provider.video_capabilities(m) {
                     let d = &c.duration_range;
                     chips.push(if d.min == d.max { format!("{}s", d.min) } else { format!("{} - {}s", d.min, d.max) });
                     if let Some(r) = video_res_range(&c.resolutions) {
                         chips.push(r);
                     }
+                    tags.extend(c.resolutions.iter().map(|r| r.raw().to_string()));
                     let first = c.asset_constraints.accepts(majik_providers::AssetRole::FirstFrame);
                     let last = c.asset_constraints.accepts(majik_providers::AssetRole::LastFrame);
                     match (first, last) {
@@ -133,14 +152,18 @@ pub fn rows(provider: &'static ProviderDescriptor, tab: ComposeTab) -> Vec<Model
                         chips.push("Audio".into());
                     }
                 }
-                ModelRow { index: i, id: m.id, name: m.name, manufacturer: m.manufacturer, logo: m.logo, description: m.short_description, chips }
+                ModelRow { index: i, id: m.id, name: m.name, manufacturer: m.manufacturer, logo: m.logo, description: m.short_description, chips, tags }
             })
             .collect(),
         ComposeTab::Media(MediaType::Audio) => provider
             .supported_audio_models
             .iter()
             .enumerate()
-            .map(|(i, m)| ModelRow { index: i, id: m.id, name: m.name, manufacturer: m.manufacturer, logo: m.logo, description: m.short_description, chips: Vec::new() })
+            .map(|(i, m)| {
+                let dialogue = provider.audio_capabilities(m).is_some_and(|c| c.supports_two_speakers);
+                let tags = if dialogue { vec!["dialogue".to_string(), "two speakers".to_string()] } else { Vec::new() };
+                ModelRow { index: i, id: m.id, name: m.name, manufacturer: m.manufacturer, logo: m.logo, description: m.short_description, chips: Vec::new(), tags }
+            })
             .collect(),
     }
 }
@@ -325,6 +348,9 @@ pub struct PaletteExtras {
     pub on_dismiss: Option<PaletteDismiss>,
 }
 
+/// Wide enough for a video row's full run of chips beside its name and maker.
+const PALETTE_WIDTH: f32 = 720.;
+
 pub type PaletteBanner = Rc<dyn Fn(&mut Window, &mut App) -> Option<AnyElement>>;
 pub type PaletteDismiss = Rc<dyn Fn(&mut Window, &mut App)>;
 
@@ -366,7 +392,7 @@ pub fn open_palette<D: ListDelegate>(list: Entity<ListState<D>>, placeholder: &s
             .child(icon("search").size_4().flex_none().text_color(cx.theme().muted_foreground))
             .child(Input::new(&search_for_dialog).appearance(false).cleanable(true).p_0().flex_1());
         let banner = extras.banner.as_ref().and_then(|banner| banner(window, cx));
-        let dialog = dialog.raised(cx).w(px(560.)).child(v_flex().gap_2().child(search_box).children(banner).child(List::new(&list).scrollbar_visible(false).max_h(px(480.))));
+        let dialog = dialog.raised(cx).w(px(PALETTE_WIDTH)).child(v_flex().gap_2().child(search_box).children(banner).child(List::new(&list).scrollbar_visible(false).max_h(px(480.))));
         match extras.on_dismiss.clone() {
             Some(on_dismiss) => dialog.on_close(move |_, window, cx| on_dismiss(window, cx)),
             None => dialog,
@@ -389,7 +415,7 @@ pub fn open_model_picker(compose: WeakEntity<ComposeView>, provider: &'static Pr
         list.set_selected_index(Some(path), window, cx);
         list.scroll_to_item(path, ScrollStrategy::Center, window, cx);
     });
-    let search = open_palette(list.clone(), "Search models", PaletteExtras::default(), window, cx);
+    let search = open_palette(list.clone(), "Search models, makers or capabilities", PaletteExtras::default(), window, cx);
     (list, search)
 }
 
@@ -728,7 +754,7 @@ mod tests {
 
     #[test]
     fn matches_is_case_insensitive_over_name_maker_and_description() {
-        let row = ModelRow { index: 0, id: "flux-2-pro", name: "FLUX.2 Pro", manufacturer: "Black Forest Labs", logo: "", description: "Fast photoreal images", chips: Vec::new() };
+        let row = ModelRow { index: 0, id: "flux-2-pro", name: "FLUX.2 Pro", manufacturer: "Black Forest Labs", logo: "", description: "Fast photoreal images", chips: Vec::new(), tags: Vec::new() };
         assert!(row.matches(""));
         assert!(row.matches("flux"));
         assert!(row.matches("forest"));
@@ -737,5 +763,107 @@ mod tests {
         assert!(row.matches("pro flux"));
         assert!(!row.matches("flux max"));
         assert!(!row.matches("kling"));
+    }
+
+    #[test]
+    fn matches_searches_chips_and_tags() {
+        let chips = vec!["480p - 4K".to_string(), "Audio".to_string()];
+        let tags = vec!["480p".to_string(), "720p".to_string(), "4k".to_string()];
+        let row = ModelRow { index: 0, id: "veo-3.1", name: "Veo 3.1", manufacturer: "Google", logo: "", description: "", chips, tags };
+        assert!(row.matches("720"), "a resolution inside the range chip is found through its tag");
+        assert!(row.matches("4K"));
+        assert!(row.matches("audio"));
+        assert!(row.matches("veo audio"), "a name and a capability combine");
+        assert!(!row.matches("1080"), "a resolution the model lacks is not found, even inside the range");
+    }
+
+    fn names_matching<'a>(rows: &'a [ModelRow], query: &str) -> Vec<&'a str> {
+        rows.iter().filter(|row| row.matches(query)).map(|row| row.name).collect()
+    }
+
+    #[gpui::test]
+    fn video_rows_are_found_by_every_resolution_they_offer(cx: &mut TestAppContext) {
+        let (view, vcx) = compose_window(cx);
+        let provider = view.read_with(vcx, |view, _| view.composer_state().provider);
+        let video = rows(provider, ComposeTab::Media(MediaType::Video));
+
+        let hd = names_matching(&video, "720");
+        for name in ["Sora 2", "Sora 2 Pro", "Veo 3.1"] {
+            assert!(hd.contains(&name), "{name} does 720p: {hd:?}");
+        }
+        assert!(!hd.contains(&"Kling 3.0 Pro"), "no resolution setting, so no resolution match: {hd:?}");
+
+        let fhd = names_matching(&video, "1080");
+        assert!(fhd.contains(&"Sora 2 Pro") && !fhd.contains(&"Sora 2"), "{fhd:?}");
+
+        let uhd = names_matching(&video, "4k");
+        assert!(uhd.contains(&"Veo 3.1") && !uhd.contains(&"Sora 2 Pro"), "{uhd:?}");
+
+        let veo = video.iter().find(|row| row.name == "Veo 3.1").expect("Veo 3.1 in the Mock catalog");
+        assert!(veo.chips.contains(&"720p - 4K".to_string()), "the range chip stays: {:?}", veo.chips);
+    }
+
+    #[gpui::test]
+    fn audio_finds_the_video_models_that_do_sound(cx: &mut TestAppContext) {
+        let (view, vcx) = compose_window(cx);
+        let provider = view.read_with(vcx, |view, _| view.composer_state().provider);
+        let video = rows(provider, ComposeTab::Media(MediaType::Video));
+
+        let with_audio = names_matching(&video, "audio");
+        for name in ["Veo 3.1", "Kling 3.0 Pro"] {
+            assert!(with_audio.contains(&name), "{name} generates sound: {with_audio:?}");
+        }
+        for name in ["Sora 2", "Kling 2.5 Turbo Pro"] {
+            assert!(!with_audio.contains(&name), "{name} is silent: {with_audio:?}");
+        }
+        for row in video.iter().filter(|row| row.matches("audio")) {
+            assert!(row.chips.iter().any(|chip| chip.starts_with("Audio")), "{} matched without an audio chip: {:?}", row.name, row.chips);
+        }
+    }
+
+    #[gpui::test]
+    fn image_rows_are_found_by_resolution(cx: &mut TestAppContext) {
+        let (view, vcx) = compose_window(cx);
+        let provider = view.read_with(vcx, |view, _| view.composer_state().provider);
+        let image_rows = rows(provider, ComposeTab::Media(MediaType::Image));
+
+        let uhd = names_matching(&image_rows, "4k");
+        for name in ["Nano Banana Pro", "Nano Banana 2", "GPT Image 2"] {
+            assert!(uhd.contains(&name), "{name} renders 4K: {uhd:?}");
+        }
+        for name in ["Grok Imagine Image 2", "FLUX.2 Pro"] {
+            assert!(!uhd.contains(&name), "{name} stops short of 4K: {uhd:?}");
+        }
+
+        let sd = names_matching(&image_rows, "0.5k");
+        assert!(sd.contains(&"Nano Banana 2") && !sd.contains(&"Nano Banana Pro"), "{sd:?}");
+    }
+
+    #[gpui::test]
+    fn upscalers_are_found_by_a_plain_x_factor(cx: &mut TestAppContext) {
+        let (view, vcx) = compose_window(cx);
+        let provider = view.read_with(vcx, |view, _| view.composer_state().provider);
+
+        let upscalers = rows(provider, ComposeTab::Tool(ToolId::Upscale));
+        assert!(!upscalers.is_empty());
+        assert_eq!(names_matching(&upscalers, "4x").len(), upscalers.len(), "every upscaler offers 4×: {upscalers:?}");
+        assert!(names_matching(&upscalers, "8x").is_empty(), "{upscalers:?}");
+
+        let remove_bg = rows(provider, ComposeTab::Tool(ToolId::RemoveBackground));
+        assert!(remove_bg.iter().all(|row| row.tags.is_empty()), "nothing to spell out: {remove_bg:?}");
+    }
+
+    /// Typing a resolution in the dialog lists the models that render it, in catalog order.
+    #[gpui::test]
+    fn typing_a_resolution_filters_by_capability(cx: &mut TestAppContext) {
+        let (view, vcx) = compose_window(cx);
+        let provider = view.read_with(vcx, |view, _| view.composer_state().provider);
+        let list = open(&view, vcx);
+        vcx.simulate_input("4k");
+        vcx.run_until_parked();
+        let expected: Vec<&str> = image::ALL.iter().filter(|m| provider.image_capabilities(m).is_some_and(|c| c.supported_resolutions.contains(&ImageResolution::Uhd))).map(|m| m.name).collect();
+        assert!(!expected.is_empty() && expected.len() < image::ALL.len());
+        assert_eq!(shown(&list, vcx), expected);
+        assert_eq!(highlighted(&list, vcx), Some(0));
     }
 }
