@@ -373,7 +373,7 @@ impl ComposeView {
         cx.notify();
     }
 
-    fn set_media_type(&mut self, t: MediaType, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn set_media_type(&mut self, t: MediaType, window: &mut Window, cx: &mut Context<Self>) {
         self.set_tab(ComposeTab::Media(t), window, cx);
     }
 
@@ -1227,13 +1227,13 @@ impl Render for ComposeView {
                     let s1 = self.state.audio.speaker1.as_ref().map(|v| v.display_name.clone()).unwrap_or_else(|| "Speaker 1".into());
                     let (t1, v1, cur1) = (this.clone(), voices.clone(), self.state.audio.speaker1.clone());
                     options = options.child(Self::capsule("speaker1", "mic", s1, "Speaker 1").on_click(move |_, window, cx| {
-                        crate::views::voice_picker::open_voice_picker(t1.clone(), crate::views::voice_picker::Speaker::One, v1.clone(), cur1.clone(), false, window, cx)
+                        crate::views::voice_picker::open_voice_picker(t1.clone(), crate::views::voice_picker::Speaker::One, v1.clone(), cur1.clone(), false, window, cx);
                     }));
                     if caps.supports_two_speakers {
                         let s2 = self.state.audio.speaker2.as_ref().map(|v| v.display_name.clone()).unwrap_or_else(|| "Speaker 2: None".into());
                         let (t2, v2, cur2) = (this.clone(), voices, self.state.audio.speaker2.clone());
                         options = options.child(Self::capsule("speaker2", "user", s2, "Speaker 2").on_click(move |_, window, cx| {
-                            crate::views::voice_picker::open_voice_picker(t2.clone(), crate::views::voice_picker::Speaker::Two, v2.clone(), cur2.clone(), true, window, cx)
+                            crate::views::voice_picker::open_voice_picker(t2.clone(), crate::views::voice_picker::Speaker::Two, v2.clone(), cur2.clone(), true, window, cx);
                         }));
                     }
                 }

@@ -8,7 +8,8 @@
 //! section above `All models`, so alternating between a few is one click; the section goes away
 //! while a search is typed, since the matches are the shortcut then.
 
-use gpui::{prelude::*, px, App, Entity, Focusable as _, ScrollStrategy, Task, WeakEntity, Window};
+use gpui::{prelude::*, px, AnyElement, App, Entity, Focusable as _, ScrollStrategy, Task, WeakEntity, Window};
+use std::rc::Rc;
 use gpui_base::actions::{Confirm, SelectDown, SelectUp};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::list::{List, ListDelegate, ListItem, ListState};
@@ -19,7 +20,7 @@ use majik_providers::{ImageResolution, ProviderDescriptor, VideoResolution};
 
 use crate::composer_state::ComposeTab;
 use crate::config::Config;
-use crate::ui::{icon, logo_tile, tint};
+use crate::ui::{icon, logo_tile, pill, tint};
 use crate::views::compose::ComposeView;
 
 #[derive(Clone, Debug)]
@@ -294,11 +295,11 @@ impl Selectable for ModelListItem {
 impl RenderOnce for ModelListItem {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
-        let (chip_fill, muted_fg, primary) = (tint(cx), theme.muted_foreground, theme.primary);
+        let (muted_fg, primary) = (theme.muted_foreground, theme.primary);
         let tile = logo_tile(self.row.logo, self.row.manufacturer, LOGO_SIZE, cx);
         let mut chips = h_flex().min_w_0().gap_1().flex_nowrap().overflow_hidden();
         for chip in &self.row.chips {
-            chips = chips.child(gpui::div().flex_none().px_1p5().py_0p5().rounded_full().bg(chip_fill).text_xs().whitespace_nowrap().text_color(muted_fg).child(chip.clone()));
+            chips = chips.child(pill(chip.clone(), cx));
         }
         self.base.h(px(ROW_HEIGHT)).px_2().py_0().rounded_md().overflow_hidden().child(
             h_flex()
@@ -315,19 +316,23 @@ impl RenderOnce for ModelListItem {
     }
 }
 
-/// Opens the picker over the composer with the search field focused and the current model highlighted.
-/// Returns the list and the search field so tests can inspect them.
-pub fn open_model_picker(compose: WeakEntity<ComposeView>, provider: &'static ProviderDescriptor, tab: ComposeTab, current: usize, window: &mut Window, cx: &mut App) -> (Entity<ListState<ModelPickerDelegate>>, Entity<InputState>) {
-    let all = rows(provider, tab);
-    let recent = recent_rows(&all, cx.global::<Config>().recent_models.get(tab));
-    let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search models"));
-    let delegate = ModelPickerDelegate::new(compose, all, recent, current);
-    let path = delegate.path_of_current();
-    let list = cx.new(|cx| ListState::new(delegate, window, cx));
-    list.update(cx, |list, cx| {
-        list.set_selected_index(Some(path), window, cx);
-        list.scroll_to_item(path, ScrollStrategy::Center, window, cx);
-    });
+/// What a palette draws besides its search box and list: a line above the list (the voice
+/// picker's preview error) and what to do when the dialog is dismissed with Escape, a click
+/// outside or the close gesture (a pick closes the dialog itself and is not a dismissal).
+#[derive(Default)]
+pub struct PaletteExtras {
+    pub banner: Option<PaletteBanner>,
+    pub on_dismiss: Option<PaletteDismiss>,
+}
+
+pub type PaletteBanner = Rc<dyn Fn(&mut Window, &mut App) -> Option<AnyElement>>;
+pub type PaletteDismiss = Rc<dyn Fn(&mut Window, &mut App)>;
+
+/// Opens `list` as a palette over the window: a filled search box on top that filters the list,
+/// ↑ / ↓ / Enter handed to the list, Escape closing. The search field is focused and returned so
+/// tests can type into it. The caller has already highlighted and scrolled to the current row.
+pub fn open_palette<D: ListDelegate>(list: Entity<ListState<D>>, placeholder: &str, extras: PaletteExtras, window: &mut Window, cx: &mut App) -> Entity<InputState> {
+    let search = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder.to_string()));
     // The list's own search field sits on a rule; ours is a filled box, so the list is not
     // searchable and we feed it the query instead.
     let list_for_search = list.clone();
@@ -341,8 +346,8 @@ pub fn open_model_picker(compose: WeakEntity<ComposeView>, provider: &'static Pr
         .detach();
     let (list_for_dialog, search_for_dialog) = (list.clone(), search.clone());
     // No scrollbar: the list's overlay bar rides over the rows and appears on open, since
-    // scrolling to the current model counts as a scroll.
-    window.open_dialog(cx, move |dialog, _window, cx| {
+    // scrolling to the current row counts as a scroll.
+    window.open_dialog(cx, move |dialog, window, cx| {
         let list = list_for_dialog.clone();
         let (up, down, confirm) = (list.clone(), list.clone(), list.clone());
         // A single-line input registers no handler for ↑ / ↓ and propagates Enter, so the keys
@@ -360,10 +365,31 @@ pub fn open_model_picker(compose: WeakEntity<ComposeView>, provider: &'static Pr
             .items_center()
             .child(icon("search").size_4().flex_none().text_color(cx.theme().muted_foreground))
             .child(Input::new(&search_for_dialog).appearance(false).cleanable(true).p_0().flex_1());
-        dialog.raised(cx).w(px(560.)).child(v_flex().gap_2().child(search_box).child(List::new(&list).scrollbar_visible(false).max_h(px(480.))))
+        let banner = extras.banner.as_ref().and_then(|banner| banner(window, cx));
+        let dialog = dialog.raised(cx).w(px(560.)).child(v_flex().gap_2().child(search_box).children(banner).child(List::new(&list).scrollbar_visible(false).max_h(px(480.))));
+        match extras.on_dismiss.clone() {
+            Some(on_dismiss) => dialog.on_close(move |_, window, cx| on_dismiss(window, cx)),
+            None => dialog,
+        }
     });
     // `open_dialog` focuses the dialog itself; the search field has to win.
     search.focus_handle(cx).focus(window, cx);
+    search
+}
+
+/// Opens the picker over the composer with the search field focused and the current model highlighted.
+/// Returns the list and the search field so tests can inspect them.
+pub fn open_model_picker(compose: WeakEntity<ComposeView>, provider: &'static ProviderDescriptor, tab: ComposeTab, current: usize, window: &mut Window, cx: &mut App) -> (Entity<ListState<ModelPickerDelegate>>, Entity<InputState>) {
+    let all = rows(provider, tab);
+    let recent = recent_rows(&all, cx.global::<Config>().recent_models.get(tab));
+    let delegate = ModelPickerDelegate::new(compose, all, recent, current);
+    let path = delegate.path_of_current();
+    let list = cx.new(|cx| ListState::new(delegate, window, cx));
+    list.update(cx, |list, cx| {
+        list.set_selected_index(Some(path), window, cx);
+        list.scroll_to_item(path, ScrollStrategy::Center, window, cx);
+    });
+    let search = open_palette(list.clone(), "Search models", PaletteExtras::default(), window, cx);
     (list, search)
 }
 
@@ -371,36 +397,9 @@ pub fn open_model_picker(compose: WeakEntity<ComposeView>, provider: &'static Pr
 mod tests {
     use super::*;
     use crate::config::update_config;
-    use crate::test_support::env;
+    use crate::test_support::compose_with_dialogs as compose_window;
     use gpui::{TestAppContext, VisualTestContext};
     use majik_providers::catalog::image;
-
-    /// Stands in for `LibraryWindow`: the composer plus the dialog layer, inside a `Root`, so the
-    /// picker is actually drawn and its key handlers are on the focus path.
-    struct Host {
-        compose: Entity<ComposeView>,
-    }
-
-    impl Render for Host {
-        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            gpui::div().size_full().child(self.compose.clone()).children(gpui_component::Root::render_dialog_layer(window, cx))
-        }
-    }
-
-    fn compose_window(cx: &mut TestAppContext) -> (Entity<ComposeView>, &mut VisualTestContext) {
-        env(cx, 1, "Mock");
-        let slot: std::rc::Rc<std::cell::RefCell<Option<Entity<ComposeView>>>> = Default::default();
-        let slot_for_window = slot.clone();
-        let (_root, vcx) = cx.add_window_view(move |window, cx| {
-            let compose = cx.new(|cx| ComposeView::new(window, cx));
-            *slot_for_window.borrow_mut() = Some(compose.clone());
-            let host = cx.new(|_| Host { compose });
-            gpui_component::Root::new(gpui::AnyView::from(host), window, cx)
-        });
-        vcx.run_until_parked();
-        let view = slot.borrow().clone().unwrap();
-        (view, vcx)
-    }
 
     fn open(view: &Entity<ComposeView>, vcx: &mut VisualTestContext) -> Entity<ListState<ModelPickerDelegate>> {
         open_with_search(view, vcx).0

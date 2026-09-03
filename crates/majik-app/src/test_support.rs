@@ -336,3 +336,32 @@ pub fn seed_item(library: &Entity<LibraryModel>, cx: &mut TestAppContext, seed: 
         id
     })
 }
+
+/// Stands in for `LibraryWindow` for a picker's tests: the composer plus the dialog layer, inside
+/// a `Root`, so a picker opened over it is actually drawn and its key handlers are on the focus path.
+struct ComposeHost {
+    compose: Entity<crate::views::compose::ComposeView>,
+}
+
+impl gpui::Render for ComposeHost {
+    fn render(&mut self, window: &mut gpui::Window, cx: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+        use gpui::{ParentElement as _, Styled as _};
+        gpui::div().size_full().child(self.compose.clone()).children(gpui_component::Root::render_dialog_layer(window, cx))
+    }
+}
+
+/// A seeded Mock environment and a composer drawn under a dialog layer; see [`ComposeHost`].
+pub fn compose_with_dialogs(cx: &mut TestAppContext) -> (Entity<crate::views::compose::ComposeView>, &mut gpui::VisualTestContext) {
+    env(cx, 1, "Mock");
+    let slot: std::rc::Rc<std::cell::RefCell<Option<Entity<crate::views::compose::ComposeView>>>> = Default::default();
+    let slot_for_window = slot.clone();
+    let (_root, vcx) = cx.add_window_view(move |window, cx| {
+        let compose = cx.new(|cx| crate::views::compose::ComposeView::new(window, cx));
+        *slot_for_window.borrow_mut() = Some(compose.clone());
+        let host = cx.new(|_| ComposeHost { compose });
+        gpui_component::Root::new(gpui::AnyView::from(host), window, cx)
+    });
+    vcx.run_until_parked();
+    let view = slot.borrow().clone().unwrap();
+    (view, vcx)
+}

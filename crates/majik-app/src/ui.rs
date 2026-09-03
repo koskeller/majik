@@ -70,6 +70,12 @@ pub fn tint(cx: &App) -> Hsla {
     cx.theme().foreground.opacity(0.1)
 }
 
+/// A chip of information laid in a list row: the model picker's capability chips and the voice
+/// picker's gender / accent / language chips. A pill by nature, so `rounded_full`.
+pub fn pill(text: impl Into<SharedString>, cx: &App) -> Div {
+    div().flex_none().px_1p5().py_0p5().rounded_full().bg(tint(cx)).text_xs().whitespace_nowrap().text_color(cx.theme().muted_foreground).child(text.into())
+}
+
 /// A small control drawn straight on the panel: the composer's setting pickers and toggles. It
 /// draws the theme border on the panel, `muted` under the pointer and `accent` while selected or
 /// while its menu is open, which is what the model row, the role cards and the segmented tabs
