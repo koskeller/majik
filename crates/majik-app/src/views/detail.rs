@@ -6,7 +6,7 @@ use gpui::{
     prelude::*, point, px, size, App, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, NavigationDirection, ObjectFit, Pixels, Point, PromptLevel, ScrollWheelEvent, SharedString, Task, Window,
 };
-use gpui_component::button::{ButtonRounded, ButtonVariants as _};
+use gpui_component::button::ButtonVariants as _;
 use gpui_component::clipboard::Clipboard;
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _};
@@ -45,22 +45,23 @@ enum SaveState {
 
 const SAVE_STATE_RESET: Duration = Duration::from_secs(2);
 
-/// A control that floats over the stage (flarly's lightbox corners): a translucent pill that
-/// swallows the press so the stage doesn't take it for a divider drag or a pan.
+/// A control that floats over the stage (flarly's lightbox corners): a translucent bar with the
+/// composer's corners that swallows the press so the stage doesn't take it for a divider drag or
+/// a pan.
 fn floating(bg: Hsla, border: Hsla) -> gpui::Div {
     h_flex()
         .p_0p5()
         .gap_0p5()
-        .rounded_full()
+        .rounded_md()
         .bg(bg.opacity(0.85))
         .border_1()
         .border_color(border)
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
 }
 
-/// A small control in a floating pill, with a circular hover concentric with the pill's ends.
+/// A small control in a floating bar, rounded like the composer's own small buttons.
 fn floating_button(id: &'static str, icon_name: &'static str) -> gpui_component::button::Button {
-    button(id).icon(icon(icon_name)).ghost().small().rounded(ButtonRounded::Size(px(12.)))
+    button(id).icon(icon(icon_name)).ghost().small()
 }
 
 /// Grab cursor when the image can be panned, closed hand while it is being dragged.
@@ -1538,7 +1539,7 @@ impl Render for DetailView {
                 .absolute()
                 .bottom_3()
                 .left_3()
-                // The glyph takes a control's slot so the pill matches the top-right ones.
+                // The glyph takes a control's slot so the bar matches the top-right ones.
                 .child(gpui::div().size_6().flex().items_center().justify_center().child(icon("zoom-in").size_4().text_color(muted_fg)))
                 .children(ZOOM_PRESETS.into_iter().enumerate().map(|(i, preset)| {
                     let label: SharedString = format!("{preset}×").into();
@@ -1547,7 +1548,6 @@ impl Render for DetailView {
                             .label(label)
                             .ghost()
                             .small()
-                            .rounded(ButtonRounded::Size(px(12.)))
                             .selected(active == Some(preset))
                             .on_click(cx.listener(move |this, _, window, cx| this.zoom_preset(preset, window, cx))),
                     )
