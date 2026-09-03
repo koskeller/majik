@@ -1,13 +1,14 @@
 //! Small shared UI helpers.
 
 use gpui::prelude::*;
-use gpui::{canvas, div, fill, percentage, px, Animation, AnimationElement, AnimationExt as _, App, Bounds, Canvas, Context, Div, ElementId, Hsla, Interactivity, Pixels, SharedString, Size, Stateful, StyleRefinement, Transformation, WeakEntity, Window};
+use gpui::{canvas, div, fill, percentage, px, Animation, AnimationElement, AnimationExt as _, App, Bounds, Canvas, Context, Div, ElementId, Global, Hsla, Interactivity, Pixels, SharedString, Size, Stateful, StyleRefinement, Transformation, WeakEntity, Window};
 use gpui_component::button::{Button, Toggle, ToggleGroup, ToggleVariants as _};
 use gpui_component::menu::DropdownMenu;
 use gpui_component::select::Caret;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme as _, Icon, Selectable, Sizable as _, Size as ControlSize, StyledExt as _, Theme, ThemeRegistry};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -245,8 +246,20 @@ pub fn button(id: impl Into<ElementId>) -> Button {
 /// A single-choice segmented control, Zed's `ToggleButtonGroup`: one outlined run of small toggles
 /// with `selected` checked. `on_select` receives the index of the item clicked.
 pub fn segmented(id: impl Into<ElementId>, items: impl IntoIterator<Item = (impl Into<ElementId>, impl Into<SharedString>)>, selected: usize, on_select: impl Fn(usize, &mut Window, &mut App) + 'static) -> ToggleGroup {
-    let toggles = items.into_iter().enumerate().map(|(index, (id, label))| Toggle::new(id).label(label).px_2().cursor_pointer().checked(index == selected));
-    ToggleGroup::new(id).segmented().outline().small().children(toggles).on_click(move |next, window, cx| {
+    let toggles = items.into_iter().map(|(id, label)| Toggle::new(id).label(label).px_2());
+    segmented_group(id, toggles, selected, on_select).small()
+}
+
+/// [`segmented`] with a glyph before each label, at the medium control height: the composer's type
+/// row, where the icons do most of the telling.
+pub fn segmented_with_icons(id: impl Into<ElementId>, items: impl IntoIterator<Item = (impl Into<ElementId>, &'static str, impl Into<SharedString>)>, selected: usize, on_select: impl Fn(usize, &mut Window, &mut App) + 'static) -> ToggleGroup {
+    let toggles = items.into_iter().map(|(id, glyph, label)| Toggle::new(id).icon(icon(glyph).with_size(ControlSize::Medium)).label(label).gap_1p5().px_2p5().text_sm());
+    segmented_group(id, toggles, selected, on_select)
+}
+
+fn segmented_group(id: impl Into<ElementId>, toggles: impl IntoIterator<Item = Toggle>, selected: usize, on_select: impl Fn(usize, &mut Window, &mut App) + 'static) -> ToggleGroup {
+    let toggles = toggles.into_iter().enumerate().map(|(index, toggle)| toggle.cursor_pointer().checked(index == selected));
+    ToggleGroup::new(id).segmented().outline().children(toggles).on_click(move |next, window, cx| {
         // The group reports every item's next state; the one that flipped is the click.
         if let Some(index) = next.iter().enumerate().position(|(index, on)| *on != (index == selected)) {
             on_select(index, window, cx);
@@ -463,60 +476,17 @@ pub fn checkerboard(a: Hsla, b: Hsla) -> Canvas<()> {
 
 // ----- logos ------------------------------------------------------------------------------------
 
-use gpui::{Global, RenderImage};
-use std::collections::HashMap;
-use std::sync::Arc;
-
-#[derive(Default)]
-struct LogoCache(HashMap<String, Option<Arc<RenderImage>>>);
-impl Global for LogoCache {}
-
-/// Rasterize an embedded SVG logo (`assets/logos/<name>.svg`) to a BGRA `RenderImage` at `size` device px.
-fn rasterize_svg(bytes: &[u8], size: u32) -> Option<Arc<RenderImage>> {
-    let tree = resvg::usvg::Tree::from_data(bytes, &resvg::usvg::Options::default()).ok()?;
-    let (w, h) = (tree.size().width(), tree.size().height());
-    if w <= 0.0 || h <= 0.0 {
-        return None;
-    }
-    let scale = size as f32 / w.max(h);
-    let (pw, ph) = (((w * scale).round() as u32).max(1), ((h * scale).round() as u32).max(1));
-    let mut pixmap = resvg::tiny_skia::Pixmap::new(pw, ph)?;
-    resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
-    // tiny-skia is premultiplied RGBA; gpui wants straight BGRA.
-    let mut data = Vec::with_capacity((pw * ph * 4) as usize);
-    for px in pixmap.pixels() {
-        let c = px.demultiply();
-        data.extend_from_slice(&[c.blue(), c.green(), c.red(), c.alpha()]);
-    }
-    let buf = image::RgbaImage::from_raw(pw, ph, data)?;
-    Some(Arc::new(RenderImage::new(vec![image::Frame::new(buf)])))
-}
-
-/// A manufacturer / provider logo by asset name (`logo-google`, `logo-fal`, …). SVGs are rasterized
-/// once and cached; PNGs load through the embedded asset source. Returns `None` when unknown.
-pub fn logo(name: &str, dark: bool, cx: &mut App) -> Option<gpui::AnyElement> {
+/// A manufacturer / provider logo by asset name (`logo-google`, `logo-fal`, …): a monochrome SVG in
+/// `assets/logos/`, drawn the way icons are — as a mask filled with the theme's foreground — so one
+/// file serves the light and the dark theme. Fills the box it is given, fitted by width, so a
+/// drawing may be wider than tall but never taller than wide (`logos_are_no_taller_than_wide`).
+/// Returns `None` when there is no such file, so callers can fall back to initials.
+pub fn logo(name: &str, cx: &App) -> Option<gpui::Svg> {
     use gpui::Styled as _;
-    let svg_path = format!("logos/{name}.svg");
-    if let Some(bytes) = crate::assets::Assets::get(&svg_path) {
-        if !cx.has_global::<LogoCache>() {
-            cx.set_global(LogoCache::default());
-        }
-        let cached = cx.global::<LogoCache>().0.get(name).cloned();
-        let image = match cached {
-            Some(v) => v,
-            None => {
-                let v = rasterize_svg(&bytes.data, 128);
-                cx.global_mut::<LogoCache>().0.insert(name.to_string(), v.clone());
-                v
-            }
-        };
-        return image.map(|img| gpui::img(img).size_full().object_fit(gpui::ObjectFit::Contain).into_any_element());
-    }
-    let png = if dark && crate::assets::Assets::get(&format!("logos/{name}-dark.png")).is_some() { format!("logos/{name}-dark.png") } else { format!("logos/{name}.png") };
-    if crate::assets::Assets::get(&png).is_some() {
-        return Some(gpui::img(gpui::SharedString::from(png)).size_full().object_fit(gpui::ObjectFit::Contain).into_any_element());
-    }
-    None
+    use gpui_component::ActiveTheme as _;
+    let path = format!("logos/{name}.svg");
+    crate::assets::Assets::get(&path)?;
+    Some(gpui::svg().path(path).size_full().text_color(cx.theme().foreground))
 }
 
 /// A picture filling its frame edge to edge, cropped to it from the centre. gpui's image element
@@ -544,10 +514,9 @@ pub fn logo_tile(name: &str, fallback_label: &str, size: f32, cx: &mut App) -> g
     use gpui::ParentElement as _;
     use gpui::Styled as _;
     use gpui_component::ActiveTheme as _;
-    let dark = cx.theme().mode.is_dark();
     let (bg, fg) = (cx.theme().muted, cx.theme().muted_foreground);
     let tile = gpui::div().w(px(size)).h(px(size)).rounded_md().bg(bg).p(px(size * 0.15)).flex().items_center().justify_center().overflow_hidden();
-    match logo(name, dark, cx) {
+    match logo(name, cx) {
         Some(el) => tile.child(el).into_any_element(),
         None => {
             let initials: String = fallback_label.split_whitespace().filter_map(|w| w.chars().next()).take(2).collect::<String>().to_uppercase();
@@ -680,6 +649,15 @@ mod tests {
         assert_eq!(duration_badges(Some(5.0), MediaType::Image, false), Vec::<SharedString>::new(), "a still has no length to state");
         assert_eq!(duration_badges(Some(75.0), MediaType::Audio, false), vec!["1:15"]);
         assert_eq!(duration_badges(None, MediaType::Video, false), Vec::<SharedString>::new(), "a clip not yet probed says nothing");
+    }
+
+    #[gpui::test]
+    fn a_logo_is_the_theme_tinted_svg_or_nothing(cx: &mut TestAppContext) {
+        crate::test_support::env(cx, 0, "Mock");
+        cx.update(|cx| {
+            assert!(logo(majik_providers::logo::GOOGLE, cx).is_some(), "an embedded logo draws");
+            assert!(logo("logo-nobody", cx).is_none(), "an unknown name draws nothing, so the tile shows initials");
+        });
     }
 
     #[test]

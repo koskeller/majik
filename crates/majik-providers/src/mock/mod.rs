@@ -23,7 +23,7 @@ pub fn descriptor() -> &'static ProviderDescriptor {
     DESCRIPTOR.get_or_init(|| ProviderDescriptor {
         id: ProviderId::mock(),
         display_name: "Mock",
-        logo_asset_name: logo::FAL, // borrows the fal logo for now
+        logo_asset_name: logo::MOCK,
         api_key_placeholder: "mock-any-key",
         api_key_instructions: "Mock provider — any non-empty value works",
         api_key_url: "https://github.com",

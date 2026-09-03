@@ -26,6 +26,7 @@ impl AssetSource for Assets {
 #[cfg(test)]
 mod tests {
     use super::Assets;
+    use crate::composer_state::ComposeTab;
     use crate::views::settings::SettingsPage;
     use gpui_component::{IconName, IconNamed as _};
     use majik_generation::recovery::RecoveryAction;
@@ -121,6 +122,51 @@ mod tests {
         }
     }
 
+    fn logo_svgs() -> Vec<(String, String)> {
+        Assets::iter()
+            .filter(|path| path.starts_with("logos/") && path.ends_with(".svg"))
+            .map(|path| (path.to_string(), String::from_utf8(Assets::get(&path).expect("listed").data.into_owned()).expect("utf-8")))
+            .collect()
+    }
+
+    /// Every model and provider names a logo, and `ui::logo` draws only an embedded SVG.
+    #[test]
+    fn every_catalog_and_provider_logo_is_embedded() {
+        use majik_providers::catalog::{audio, image, tool, video};
+        let mut names: Vec<&str> = Vec::new();
+        names.extend(image::ALL.iter().map(|m| m.logo));
+        names.extend(video::ALL.iter().map(|m| m.logo));
+        names.extend(audio::ALL.iter().map(|m| m.logo));
+        names.extend(tool::ALL.iter().map(|m| m.logo));
+        names.extend(majik_providers::ProviderRegistry::shared().all().iter().map(|d| d.logo_asset_name));
+        for name in names {
+            assert!(Assets::get(&format!("logos/{name}.svg")).is_some(), "logos/{name}.svg is missing");
+        }
+    }
+
+    /// Logos are drawn as a mask filled with the theme's foreground, like icons, so the same file
+    /// serves both themes. A colour in the file would be silently ignored — a white cut-out
+    /// becomes solid — so a logo carries none.
+    #[test]
+    fn logos_are_monochrome() {
+        for (path, svg) in logo_svgs() {
+            let coloured = ["fill=\"#", "fill:#", "stroke=\"#", "stroke:#", "fill=\"black", "fill=\"white"];
+            assert!(!coloured.iter().any(|c| svg.contains(c)), "{path} names a colour; leave fills unset (or currentColor)");
+        }
+    }
+
+    /// gpui fits an SVG to its box's width and lets the height follow, so a drawing taller than
+    /// wide overflows the logo tile. Pad the viewBox to a square instead.
+    #[test]
+    fn logos_are_no_taller_than_wide() {
+        for (path, svg) in logo_svgs() {
+            let view_box = svg.split("viewBox=\"").nth(1).and_then(|rest| rest.split('"').next()).unwrap_or_else(|| panic!("{path} has no viewBox"));
+            let dims: Vec<f32> = view_box.split_whitespace().map(|n| n.parse().expect("a number")).collect();
+            assert_eq!(dims.len(), 4, "{path}: viewBox {view_box:?}");
+            assert!(dims[2] >= dims[3], "{path} is taller ({}) than wide ({}): pad its viewBox to a square", dims[3], dims[2]);
+        }
+    }
+
     /// Icon names that reach `ui::icon` through an enum rather than a literal at the call site.
     #[test]
     fn role_recovery_and_settings_icons_resolve() {
@@ -132,6 +178,9 @@ mod tests {
         }
         for page in SettingsPage::ALL {
             assert!(embedded(page.icon()), "{page:?} → {}", page.icon());
+        }
+        for tab in ComposeTab::ALL {
+            assert!(embedded(tab.icon()), "{tab:?} → {}", tab.icon());
         }
     }
 }

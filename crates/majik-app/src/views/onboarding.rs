@@ -174,7 +174,7 @@ impl OnboardingView {
 
     fn render_provider(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (muted, tile, dark, danger) = (theme.muted_foreground, theme.secondary, theme.mode.is_dark(), theme.danger);
+        let (muted, tile, danger) = (theme.muted_foreground, theme.secondary, theme.danger);
         let providers = ProviderRegistry::shared().user_selectable();
         let current = self.provider.clone();
         let descriptor = self.descriptor();
@@ -195,7 +195,7 @@ impl OnboardingView {
                     // Unselected logos sit at 0.3 opacity, eased over 0.2 s.
                     .opacity(fade_to(("provider-logo", d.id.0.clone()), if selected { 1.0 } else { 0.3 }, MOTION_NORMAL, window, cx))
                     .cursor_pointer()
-                    .child(gpui::img(logo_path(d.logo_asset_name, dark)).w(px(56.)).h(px(56.)))
+                    .child(gpui::div().w(px(56.)).h(px(56.)).children(crate::ui::logo(d.logo_asset_name, cx)))
                     .on_click(cx.listener(move |this, _, window, cx| this.select_provider(id.clone(), window, cx))),
             );
         }
@@ -279,15 +279,6 @@ impl Render for OnboardingView {
 
 fn placeholder_for(id: &ProviderId) -> String {
     ProviderRegistry::shared().descriptor(id).map(|d| d.api_key_placeholder.to_string()).unwrap_or_else(|| "API key".into())
-}
-
-/// Embedded logo path for a provider's `logo_asset_name`, preferring the `-dark` variant when one exists.
-pub fn logo_path(asset: &str, dark: bool) -> String {
-    let dark_name = format!("logos/{asset}-dark.png");
-    if dark && crate::assets::Assets::get(&dark_name).is_some() {
-        return dark_name;
-    }
-    format!("logos/{asset}.png")
 }
 
 #[cfg(test)]
