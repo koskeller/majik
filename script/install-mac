@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Build the stable macOS bundle and install it as /Applications/Majik.app for local testing.
+#
+#   script/install-mac [target-triple]      # arguments go to script/bundle-mac
+#
+# The installed app is a Stable-channel build, so it keeps its own library and config next to the
+# shipped app's and never touches the Dev channel `cargo run` uses. The first run pins it to the Dock;
+# later runs replace the bundle under the existing Dock tile. Like the tarball's install.sh on Linux
+# and the Inno Setup installer on Windows, this is the one per-platform step: there is no portable
+# way to install an app, so each OS gets its own script.
+set -euo pipefail
+# shellcheck source=script/lib/release.sh
+source "$(dirname "$0")/lib/release.sh"
+cd "$(repo_root)"
+
+script/bundle-mac "$@"
+
+host_triple="$(rustc --version --verbose | sed -n 's/^host: //p')"
+target="${1:-$host_triple}"
+bundle="target/${target}/release/Majik.app"
+installed="/Applications/Majik.app"
+binary="$installed/Contents/MacOS/majik"
+
+# Only the installed copy: dev instances run from target/debug and keep going.
+if pgrep -f "^${binary}" > /dev/null; then
+    echo "Quitting the running ${installed}"
+    pkill -f "^${binary}"
+    # Give it a moment to exit; replacing the binary under a live process confuses the Dock's tile.
+    for _ in $(seq 1 20); do
+        pgrep -f "^${binary}" > /dev/null || break
+        sleep 0.25
+    done
+fi
+
+echo "Installing ${bundle} as ${installed}"
+rm -rf "$installed"
+cp -R "$bundle" "$installed"
+# An ad-hoc-signed local build would otherwise hit Gatekeeper's "unidentified developer" prompt.
+xattr -dr com.apple.quarantine "$installed" 2> /dev/null || true
+# Refresh Launch Services so Finder and the Dock pick up a changed icon or Info.plist.
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+    -f "$installed"
+
+if ! defaults read com.apple.dock persistent-apps 2> /dev/null | grep -q "Majik.app"; then
+    echo "Pinning ${installed} to the Dock"
+    defaults write com.apple.dock persistent-apps -array-add \
+        "<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>${installed}</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>"
+    killall Dock
+fi
+
+open "$installed"
+echo "Installed Majik $(crate_version) (${RELEASE_CHANNEL}) at ${installed}"
