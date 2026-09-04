@@ -1282,6 +1282,7 @@ mod tests {
     }
 
     /// A fake Linux tarball: `majik-linux-x86_64/bin/majik` holding `binary`, plus one icon.
+    #[cfg(unix)]
     fn linux_tarball(dir: &Path, binary: &str) -> PathBuf {
         let root = dir.join("package").join("majik-linux-x86_64");
         std::fs::create_dir_all(root.join("bin")).unwrap();
@@ -1295,6 +1296,7 @@ mod tests {
     }
 
     /// A fake `<prefix>` an `install.sh` filled: the old binary and two icons.
+    #[cfg(unix)]
     fn linux_prefix(dir: &Path) -> PathBuf {
         let prefix = dir.join("prefix");
         std::fs::create_dir_all(prefix.join("bin")).unwrap();
