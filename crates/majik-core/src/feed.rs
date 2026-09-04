@@ -1,6 +1,8 @@
-//! Feed logic: multi-selection helpers, double-click detection, carousel windowing, zoom levels
-//! and keyboard navigation over the grid.
+//! Feed logic: multi-selection helpers, double-click detection, carousel windowing, zoom levels,
+//! the grid's geometry ([`Layout`]: square cells in rows, or masonry columns) and keyboard
+//! navigation over it.
 
+use std::ops::{Range, RangeInclusive};
 use std::time::{Duration, Instant};
 
 pub const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(300);
@@ -60,6 +62,148 @@ pub fn sanitize_zoom(saved: u32) -> u32 {
 /// gutters; at least one. Cells fill the width, so they end up in `tile..2 * tile + GRID_GAP`.
 pub fn columns_for(width: f32, tile: u32) -> usize {
     (((width + GRID_GAP) / (tile as f32 + GRID_GAP)).floor() as usize).max(1)
+}
+
+/// Width / height a masonry cell may have. Wide enough for 21:9 and tall enough for 9:21, which
+/// is every ratio the catalogs offer; beyond it a cell is cropped, so a 1:10 import can't take a
+/// whole column and its decoded pixels stay bounded (the image cache's budget counts on this).
+pub const MASONRY_RATIO_RANGE: RangeInclusive<f32> = (1. / 3.)..=3.;
+
+/// The width / height a masonry cell gets for a picture: square while the size is unknown
+/// (audio, a generation still running, a file that went missing, a broken probe), otherwise the
+/// picture's own, clamped to [`MASONRY_RATIO_RANGE`].
+pub fn masonry_ratio(ratio: Option<f32>) -> f32 {
+    match ratio {
+        Some(ratio) if ratio.is_finite() && ratio > 0. => ratio.clamp(*MASONRY_RATIO_RANGE.start(), *MASONRY_RATIO_RANGE.end()),
+        _ => 1.,
+    }
+}
+
+/// A cell's box in the grid content, in pixels, and the column it sits in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Slot {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub column: usize,
+}
+
+impl Slot {
+    pub fn bottom(&self) -> f32 {
+        self.y + self.height
+    }
+}
+
+/// Where every cell of the feed is drawn, for one width and column count: either rows of square
+/// cells, or masonry — cells at their picture's shape, each dropped into the column that is
+/// shortest at its turn (leftmost on a tie). In both a cell's `y` never decreases along the index
+/// (masonry places each cell at the running minimum of the column bottoms, which only rises), so
+/// the cells at a scroll offset are found by binary search; what a scroll can't see by `y` alone
+/// is a tall cell that started above it, which is why the tallest cell's height is kept.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Layout {
+    slots: Vec<Slot>,
+    columns: usize,
+    height: f32,
+    max_height: f32,
+    masonry: bool,
+}
+
+impl Layout {
+    /// Square cells `cell` on a side in rows of `columns`, `gap` apart.
+    pub fn uniform(count: usize, columns: usize, cell: f32, gap: f32) -> Self {
+        let columns = columns.max(1);
+        let pitch = cell + gap;
+        let slots = (0..count).map(|index| Slot { x: (index % columns) as f32 * pitch, y: (index / columns) as f32 * pitch, width: cell, height: cell, column: index % columns }).collect();
+        let rows = count.div_ceil(columns);
+        let height = if rows == 0 { 0. } else { rows as f32 * pitch - gap };
+        Self { slots, columns, height, max_height: if count == 0 { 0. } else { cell }, masonry: false }
+    }
+
+    /// Cells `cell` wide at their pictures' shapes (see [`masonry_ratio`]) in `columns` columns
+    /// `gap` apart, each in the column that is shortest when its turn comes.
+    pub fn masonry(ratios: impl IntoIterator<Item = Option<f32>>, columns: usize, cell: f32, gap: f32) -> Self {
+        let columns = columns.max(1);
+        let mut bottoms = vec![0.0f32; columns];
+        let mut slots = Vec::new();
+        let mut max_height = 0.0f32;
+        for ratio in ratios {
+            // The first place `min_by` finds wins a tie, so ties go leftmost.
+            let column = (0..columns).min_by(|a, b| bottoms[*a].total_cmp(&bottoms[*b])).unwrap_or(0);
+            let y = if bottoms[column] > 0. { bottoms[column] + gap } else { 0. };
+            let height = cell / masonry_ratio(ratio);
+            slots.push(Slot { x: column as f32 * (cell + gap), y, width: cell, height, column });
+            bottoms[column] = y + height;
+            max_height = max_height.max(height);
+        }
+        let height = bottoms.iter().copied().fold(0.0f32, f32::max);
+        Self { slots, columns, height, max_height, masonry: true }
+    }
+
+    pub fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+
+    pub fn columns(&self) -> usize {
+        self.columns
+    }
+
+    /// Height of the whole content, to the bottom of the lowest cell.
+    pub fn height(&self) -> f32 {
+        self.height
+    }
+
+    /// The tallest cell: how far above a scroll offset a cell can start and still reach it.
+    pub fn max_height(&self) -> f32 {
+        self.max_height
+    }
+
+    pub fn is_masonry(&self) -> bool {
+        self.masonry
+    }
+
+    pub fn slot(&self, index: usize) -> Option<Slot> {
+        self.slots.get(index).copied()
+    }
+
+    /// The first cell whose top is at or below `y` (the last cell when every one starts above).
+    pub fn first_index_at(&self, y: f32) -> usize {
+        self.slots.partition_point(|slot| slot.y < y).min(self.slots.len().saturating_sub(1))
+    }
+
+    /// The indices of every cell that overlaps `top..bottom`, plus any cell in between that
+    /// doesn't (the range is contiguous, so a caller iterating it still has to check each cell).
+    pub fn visible_range(&self, top: f32, bottom: f32) -> Range<usize> {
+        let first = self.slots.partition_point(|slot| slot.y + self.max_height <= top);
+        let last = self.slots.partition_point(|slot| slot.y < bottom);
+        first..last.max(first)
+    }
+
+    /// Keyboard navigation over this layout: rows of cells step by the column count; masonry
+    /// keeps Left / Right in index order and moves Up / Down to the nearest cell in the same
+    /// column, staying put at the column's ends.
+    pub fn step_selection(&self, current: Option<usize>, arrow: Arrow) -> Option<usize> {
+        if !self.masonry {
+            return step_selection(current, arrow, self.columns, self.len());
+        }
+        if self.is_empty() {
+            return None;
+        }
+        let Some(current) = current else { return Some(0) };
+        let current = current.min(self.len() - 1);
+        let column = self.slots[current].column;
+        Some(match arrow {
+            Arrow::Left => current.saturating_sub(1),
+            Arrow::Right => (current + 1).min(self.len() - 1),
+            Arrow::Up => (0..current).rev().find(|&index| self.slots[index].column == column).unwrap_or(current),
+            Arrow::Down => (current + 1..self.len()).find(|&index| self.slots[index].column == column).unwrap_or(current),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -151,5 +295,136 @@ mod tests {
         assert_eq!(visible_range(2, 3, 1), 1..=2);
         assert_eq!(safe_index(10, 3), 2);
         assert_eq!(safe_index(0, 0), 0);
+    }
+
+    const CELL: f32 = 100.;
+    const GAP: f32 = 2.;
+
+    /// A deterministic spread of shapes: portrait, square, landscape and a few unknowns.
+    fn ratios(count: usize) -> Vec<Option<f32>> {
+        (0..count).map(|i| match i % 7 { 0 => Some(0.5), 1 => Some(1.), 2 => Some(2.), 3 => None, 4 => Some(0.75), 5 => Some(16. / 9.), _ => Some(9. / 16.) }).collect()
+    }
+
+    #[test]
+    fn uniform_layout_matches_the_row_grid() {
+        let layout = Layout::uniform(7, 3, CELL, GAP);
+        assert_eq!(layout.len(), 7);
+        assert!(!layout.is_masonry());
+        assert_eq!(layout.slot(0), Some(Slot { x: 0., y: 0., width: CELL, height: CELL, column: 0 }));
+        assert_eq!(layout.slot(4), Some(Slot { x: CELL + GAP, y: CELL + GAP, width: CELL, height: CELL, column: 1 }));
+        assert_eq!(layout.slot(6).map(|s| s.column), Some(0));
+        assert_eq!(layout.slot(7), None);
+        assert_eq!(layout.height(), 3. * CELL + 2. * GAP, "three rows, two gutters");
+        assert_eq!(layout.max_height(), CELL);
+        assert_eq!(Layout::uniform(0, 3, CELL, GAP), Layout { columns: 3, ..Default::default() });
+    }
+
+    #[test]
+    fn masonry_places_each_cell_in_the_shortest_column() {
+        // 2:1, 1:2, 1:1 over two columns: the third goes under the short landscape, not the tall portrait.
+        let layout = Layout::masonry([Some(2.), Some(0.5), Some(1.), Some(1.)], 2, CELL, GAP);
+        assert!(layout.is_masonry());
+        assert_eq!(layout.slot(0), Some(Slot { x: 0., y: 0., width: CELL, height: CELL / 2., column: 0 }));
+        assert_eq!(layout.slot(1), Some(Slot { x: CELL + GAP, y: 0., width: CELL, height: 2. * CELL, column: 1 }));
+        assert_eq!(layout.slot(2), Some(Slot { x: 0., y: CELL / 2. + GAP, width: CELL, height: CELL, column: 0 }));
+        assert_eq!(layout.slot(3), Some(Slot { x: 0., y: 1.5 * CELL + 2. * GAP, width: CELL, height: CELL, column: 0 }), "column 0 is still shorter than the portrait");
+        assert_eq!(layout.height(), 2.5 * CELL + 2. * GAP, "the lowest bottom");
+        assert_eq!(layout.max_height(), 2. * CELL);
+    }
+
+    #[test]
+    fn masonry_ties_go_to_the_leftmost_column() {
+        let layout = Layout::masonry([Some(1.), Some(1.), Some(1.), Some(1.)], 3, CELL, GAP);
+        assert_eq!((0..4).map(|i| layout.slot(i).unwrap().column).collect::<Vec<_>>(), [0, 1, 2, 0]);
+        assert_eq!(layout.slot(3).unwrap().y, CELL + GAP);
+    }
+
+    #[test]
+    fn masonry_y_is_monotone_and_columns_never_overlap() {
+        for columns in 1..=6 {
+            let layout = Layout::masonry(ratios(500), columns, CELL, GAP);
+            let mut bottoms = vec![0.0f32; columns];
+            let mut last_y = 0.;
+            for index in 0..500 {
+                let slot = layout.slot(index).unwrap();
+                assert!(slot.y >= last_y, "{columns} columns: cell {index} starts above cell {}", index - 1);
+                last_y = slot.y;
+                assert!(slot.y >= bottoms[slot.column], "{columns} columns: cell {index} overlaps the one above");
+                bottoms[slot.column] = slot.bottom();
+                assert_eq!(slot.x, slot.column as f32 * (CELL + GAP));
+            }
+            assert_eq!(layout.height(), bottoms.iter().copied().fold(0., f32::max));
+        }
+    }
+
+    #[test]
+    fn masonry_treats_unknown_and_extreme_ratios_as_square_or_clamped() {
+        assert_eq!(masonry_ratio(None), 1.);
+        assert_eq!(masonry_ratio(Some(0.)), 1.);
+        assert_eq!(masonry_ratio(Some(f32::NAN)), 1.);
+        assert_eq!(masonry_ratio(Some(f32::INFINITY)), 1.);
+        assert_eq!(masonry_ratio(Some(10.)), 3.);
+        assert_eq!(masonry_ratio(Some(0.1)), 1. / 3.);
+        assert_eq!(masonry_ratio(Some(21. / 9.)), 21. / 9., "every catalog ratio passes through");
+        assert_eq!(masonry_ratio(Some(9. / 21.)), 9. / 21.);
+        let layout = Layout::masonry([None, Some(0.1)], 1, CELL, GAP);
+        assert_eq!(layout.slot(0).unwrap().height, CELL);
+        assert_eq!(layout.slot(1).unwrap().height, 3. * CELL);
+    }
+
+    #[test]
+    fn visible_range_covers_every_slot_that_overlaps() {
+        let layout = Layout::masonry(ratios(300), 4, CELL, GAP);
+        for top in (0..layout.height() as usize).step_by(37) {
+            let (top, bottom) = (top as f32, top as f32 + 500.);
+            let range = layout.visible_range(top, bottom);
+            for index in 0..layout.len() {
+                let slot = layout.slot(index).unwrap();
+                let overlaps = slot.bottom() > top && slot.y < bottom;
+                assert!(!overlaps || range.contains(&index), "cell {index} ({slot:?}) overlaps {top}..{bottom} but {range:?} misses it");
+            }
+            // Tight at the bottom, and at the top no wider than the tallest cell.
+            assert!(range.end == layout.len() || layout.slot(range.end).unwrap().y >= bottom);
+            assert!(range.start == 0 || layout.slot(range.start - 1).unwrap().y + layout.max_height() <= top);
+        }
+        assert_eq!(Layout::default().visible_range(0., 100.), 0..0);
+    }
+
+    #[test]
+    fn first_index_at_follows_the_scroll_top() {
+        let layout = Layout::uniform(10, 3, CELL, GAP);
+        assert_eq!(layout.first_index_at(0.), 0);
+        assert_eq!(layout.first_index_at(1.), 3, "a row scrolled off by a pixel is behind us");
+        assert_eq!(layout.first_index_at(CELL + GAP), 3, "exactly at a row's top");
+        assert_eq!(layout.first_index_at(10_000.), 9, "past the end: the last cell");
+        assert_eq!(Layout::default().first_index_at(0.), 0);
+    }
+
+    #[test]
+    fn masonry_step_selection_moves_within_the_column() {
+        // Columns: 0 → [0, 2, 3], 1 → [1] (the portrait fills its column).
+        let layout = Layout::masonry([Some(2.), Some(0.5), Some(1.), Some(1.)], 2, CELL, GAP);
+        assert_eq!(layout.step_selection(None, Arrow::Down), Some(0));
+        assert_eq!(layout.step_selection(Some(0), Arrow::Down), Some(2));
+        assert_eq!(layout.step_selection(Some(2), Arrow::Down), Some(3));
+        assert_eq!(layout.step_selection(Some(3), Arrow::Down), Some(3), "the column's end");
+        assert_eq!(layout.step_selection(Some(3), Arrow::Up), Some(2));
+        assert_eq!(layout.step_selection(Some(1), Arrow::Up), Some(1), "alone in its column");
+        assert_eq!(layout.step_selection(Some(1), Arrow::Down), Some(1));
+        assert_eq!(layout.step_selection(Some(1), Arrow::Left), Some(0));
+        assert_eq!(layout.step_selection(Some(1), Arrow::Right), Some(2), "index order, whatever the column");
+        assert_eq!(layout.step_selection(Some(3), Arrow::Right), Some(3));
+        assert_eq!(layout.step_selection(Some(9), Arrow::Up), Some(2), "a stale index is clamped first");
+        assert_eq!(Layout::masonry([], 2, CELL, GAP).step_selection(Some(0), Arrow::Down), None);
+    }
+
+    #[test]
+    fn uniform_step_selection_matches_the_free_function() {
+        let layout = Layout::uniform(8, 5, CELL, GAP);
+        for current in [None, Some(0), Some(1), Some(4), Some(6), Some(7)] {
+            for arrow in [Arrow::Left, Arrow::Right, Arrow::Up, Arrow::Down] {
+                assert_eq!(layout.step_selection(current, arrow), step_selection(current, arrow, 5, 8), "{current:?} {arrow:?}");
+            }
+        }
     }
 }

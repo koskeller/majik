@@ -28,13 +28,15 @@ pub const TIERS: [u32; 2] = [THUMB_MAX, THUMB_LARGE];
 /// a square cell up to 800 px whatever the picture's shape, and a letterboxed cell further still.
 pub const THUMB_LARGE: u32 = 800;
 
-/// How a cell draws a picture: whole, letterboxed so the long edge spans the cell, or filling it,
-/// so the short edge spans the cell and the long edge is cropped. Which edge spans the cell decides
-/// how many pixels a tier has to carry to draw sharp.
+/// How a cell draws a picture: whole, letterboxed so the long edge spans the cell; filling it,
+/// so the short edge spans the cell and the long edge is cropped; or at the cell's width with the
+/// height following the picture (a masonry column). Which edge spans the cell decides how many
+/// pixels a tier has to carry to draw sharp.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fit {
     Contain,
     Cover,
+    Width,
 }
 
 /// Which edge a tier's size bounds: the standard tier's long edge (the whole picture at 400 px,
@@ -52,12 +54,15 @@ pub fn tier_fit(tier: u32) -> Fit {
 /// (width / height) drawn with `fit`: the standard one while the edge that spans the cell is at
 /// least as long as the cell, the large one after. Letterboxed, that edge is the long one, 400 px.
 /// Filling a square cell it is the short one, `400 × short / long`, so a portrait picture outgrows
-/// the standard tier at a cell a fraction of the size a square one does. A picture whose size is
-/// not known yet is treated as square.
+/// the standard tier at a cell a fraction of the size a square one does. Spanning the width, a
+/// landscape picture's width is its long edge and a portrait one's is its short edge. A picture
+/// whose size is not known yet is treated as square.
 pub fn tier_for(cell_px: u32, fit: Fit, aspect_ratio: Option<f32>) -> u32 {
+    let ratio = aspect_ratio.filter(|ratio| ratio.is_finite() && *ratio > 0.);
     let spanning = match fit {
         Fit::Contain => 1.,
-        Fit::Cover => aspect_ratio.filter(|ratio| ratio.is_finite() && *ratio > 0.).map_or(1., |ratio| if ratio > 1. { 1. / ratio } else { ratio }),
+        Fit::Cover => ratio.map_or(1., |ratio| if ratio > 1. { 1. / ratio } else { ratio }),
+        Fit::Width => ratio.map_or(1., |ratio| ratio.min(1.)),
     };
     if cell_px as f32 <= THUMB_MAX as f32 * spanning {
         THUMB_MAX
@@ -74,6 +79,7 @@ fn shrink_to(image: image::DynamicImage, size: u32, fit: Fit) -> image::DynamicI
     let spanning = match fit {
         Fit::Contain => width.max(height),
         Fit::Cover => width.min(height),
+        Fit::Width => width,
     };
     if spanning <= size || spanning == 0 {
         return image;
@@ -113,9 +119,10 @@ pub const POSTER_MARK: &str = "@poster";
 /// bounded the short edge is never mistaken for one. A video poster's `hash` already carries
 /// [`POSTER_MARK`], for the same reason.
 fn thumb_blob_key(hash: &str, tier: u32, ext: &str) -> String {
+    // `tier_fit` never yields `Width`: no tier is stored at a column's width.
     match tier_fit(tier) {
         Fit::Contain => format!("{THUMBS_PREFIX}/{hash}.{ext}"),
-        Fit::Cover => format!("{THUMBS_PREFIX}/{hash}@fill{tier}.{ext}"),
+        Fit::Cover | Fit::Width => format!("{THUMBS_PREFIX}/{hash}@fill{tier}.{ext}"),
     }
 }
 
@@ -302,6 +309,18 @@ mod tests {
         assert_eq!(tier_for(400, Fit::Cover, Some(1.)), THUMB_MAX);
         assert_eq!(tier_for(400, Fit::Cover, None), THUMB_MAX);
         assert_eq!(tier_for(401, Fit::Cover, None), THUMB_LARGE);
+    }
+
+    #[test]
+    fn tier_for_a_width_bound_cell_follows_the_pictures_width() {
+        let portrait = Some(608. / 1088.);
+        // A portrait picture's width is its short edge, so a 300 px column outgrows the standard
+        // tier's 400 × 0.56 = 223 px width; a landscape one's width is the long edge, all 400 px.
+        assert_eq!(tier_for(300, Fit::Width, portrait), THUMB_LARGE);
+        assert_eq!(tier_for(223, Fit::Width, portrait), THUMB_MAX);
+        assert_eq!(tier_for(300, Fit::Width, Some(1088. / 608.)), THUMB_MAX);
+        assert_eq!(tier_for(400, Fit::Width, None), THUMB_MAX);
+        assert_eq!(tier_for(401, Fit::Width, None), THUMB_LARGE);
     }
 
     #[test]

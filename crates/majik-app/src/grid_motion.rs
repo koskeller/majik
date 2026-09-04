@@ -3,7 +3,7 @@
 //! changes (|Δcount| ≤ 4) animate at all, so the initial load and bulk deletes don't flood the grid.
 //!
 //! Every id has a [`Place`] (index + column count). When a place changes, the cell's on-screen
-//! [`Visual`] (position + side) is interpolated from where it was to where it belongs, so deleting
+//! [`Visual`] (position + size) is interpolated from where it was to where it belongs, so deleting
 //! a cell slides its neighbours into the gap and zooming resizes and rearranges in place. Removed
 //! cells linger as fading "ghosts" drawn from a render snapshot, since the library drops deleted
 //! items immediately. Pure, like `paging.rs`: the view supplies the executor clock and pixel
@@ -43,6 +43,11 @@ pub enum Change {
     /// The feed's width changed the column count: instant, nothing animates (a live drag-resize
     /// would otherwise keep every cell sliding).
     Resize,
+    /// The grid switched between rows and masonry: every cell's box changed even where its place
+    /// did not, so every survivor moves, ease-in-out, nothing fades. (A masonry cell that learns
+    /// its picture's size and shifts the cells below it is a plain `Library` change: their places
+    /// are the same, so they jump rather than slide.)
+    Layout,
 }
 
 /// A cell's slot in a layout.
@@ -52,17 +57,25 @@ pub struct Place {
     pub columns: usize,
 }
 
-/// Where a cell is drawn: top-left within the grid content and its side, in pixels.
+/// Where a cell is drawn: top-left within the grid content and its size, in pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Visual {
     pub x: f32,
     pub y: f32,
-    pub size: f32,
+    pub width: f32,
+    pub height: f32,
 }
 
 impl Visual {
     pub fn lerp(self, to: Visual, t: f32) -> Visual {
-        Visual { x: self.x + (to.x - self.x) * t, y: self.y + (to.y - self.y) * t, size: self.size + (to.size - self.size) * t }
+        let mix = |from: f32, to: f32| from + (to - from) * t;
+        Visual { x: mix(self.x, to.x), y: mix(self.y, to.y), width: mix(self.width, to.width), height: mix(self.height, to.height) }
+    }
+}
+
+impl From<majik_core::feed::Slot> for Visual {
+    fn from(slot: majik_core::feed::Slot) -> Self {
+        Visual { x: slot.x, y: slot.y, width: slot.width, height: slot.height }
     }
 }
 
@@ -162,7 +175,7 @@ impl<S, K: Clone + Eq + Hash> GridMotion<S, K> {
             Change::Resize => None,
             Change::Library if delta == 0 || delta > MAX_ANIMATED_DELTA => None,
             Change::Library => Some((Curve::Snappy, Curve::Ease(EXIT_DURATION), Curve::Snappy)),
-            Change::Filter | Change::Zoom => Some((Curve::Ease(REFLOW_DURATION), Curve::Ease(REFLOW_DURATION), Curve::Ease(REFLOW_DURATION))),
+            Change::Filter | Change::Zoom | Change::Layout => Some((Curve::Ease(REFLOW_DURATION), Curve::Ease(REFLOW_DURATION), Curve::Ease(REFLOW_DURATION))),
         };
         match curves {
             Some((enter, exit, shift)) => {
@@ -175,7 +188,7 @@ impl<S, K: Clone + Eq + Hash> GridMotion<S, K> {
                             self.moving.remove(id);
                             self.entering.insert(id.clone(), Enter { started: now, curve: enter });
                         }
-                        Some(previous) if previous != place => {
+                        Some(previous) if previous != place || change == Change::Layout => {
                             // A cell retargeted mid-flight continues from where it is now.
                             let from = match self.moving.get(id) {
                                 Some(m) => m.from.lerp(visual(*previous), m.curve.sample(now.saturating_duration_since(m.started)).0),
@@ -312,7 +325,7 @@ mod tests {
     /// A fixed-width grid: cell side shrinks with the column count.
     fn visual(place: Place) -> Visual {
         let size = CELL * 4.0 / place.columns as f32;
-        Visual { x: (place.index % place.columns) as f32 * size, y: (place.index / place.columns) as f32 * size, size }
+        Visual { x: (place.index % place.columns) as f32 * size, y: (place.index / place.columns) as f32 * size, width: size, height: size }
     }
 
     fn target(m: &GridMotion<&str>, id: &GenerationId) -> Visual {
@@ -334,7 +347,7 @@ mod tests {
         m.apply(&ids(&["a", "b"]), 4, Change::Library, |_| None, visual, t0);
         assert!(m.is_entering(&id("b")));
         let (visual_b, style) = m.cell(&id("b"), target(&m, &id("b")), t0);
-        assert_eq!(visual_b, Visual { x: CELL, y: 0.0, size: CELL }, "enters at its resting place");
+        assert_eq!(visual_b, Visual { x: CELL, y: 0.0, width: CELL, height: CELL }, "enters at its resting place");
         assert_eq!(style, CellStyle { scale: ENTER_SCALE, opacity: 0.0 });
         assert_eq!(m.cell(&id("a"), target(&m, &id("a")), t0).1, CellStyle::default());
         let mid = m.cell(&id("b"), target(&m, &id("b")), at(t0, 100)).1;
@@ -357,22 +370,22 @@ mod tests {
         assert_eq!(m.ghost_count(), 1);
         let ghost = m.ghosts().next().unwrap();
         assert_eq!(ghost.snapshot, "b-snapshot");
-        assert_eq!(ghost.from, Visual { x: CELL, y: 0.0, size: CELL }, "fades where it was");
+        assert_eq!(ghost.from, Visual { x: CELL, y: 0.0, width: CELL, height: CELL }, "fades where it was");
         assert_eq!(m.ghost_style(ghost, t0), CellStyle::default());
         let late = m.ghost_style(ghost, at(t0, 100));
         assert!(late.opacity < 0.5 && late.scale < 1.0, "{late:?}");
         // "c" slides from column 2 to column 1; "a" stays put; "e" wraps up from row 1.
         assert!(m.is_moving(&id("c")) && m.is_moving(&id("e")) && !m.is_moving(&id("a")));
-        assert_eq!(m.cell(&id("c"), target(&m, &id("c")), t0).0, Visual { x: 2.0 * CELL, y: 0.0, size: CELL });
+        assert_eq!(m.cell(&id("c"), target(&m, &id("c")), t0).0, Visual { x: 2.0 * CELL, y: 0.0, width: CELL, height: CELL });
         let mid = m.cell(&id("c"), target(&m, &id("c")), at(t0, 120)).0;
         assert!(mid.x > CELL && mid.x < 2.0 * CELL, "{mid:?}");
-        assert_eq!(m.cell(&id("e"), target(&m, &id("e")), t0).0, Visual { x: 0.0, y: CELL, size: CELL });
+        assert_eq!(m.cell(&id("e"), target(&m, &id("e")), t0).0, Visual { x: 0.0, y: CELL, width: CELL, height: CELL });
         m.tick(at(t0, 150));
         assert_eq!(m.ghost_count(), 0, "the fade is quick");
         assert!(m.is_moving(&id("c")), "the slide is still settling");
         m.tick(at(t0, 800));
         assert!(!m.is_animating());
-        assert_eq!(m.cell(&id("c"), target(&m, &id("c")), at(t0, 800)).0, Visual { x: CELL, y: 0.0, size: CELL });
+        assert_eq!(m.cell(&id("c"), target(&m, &id("c")), at(t0, 800)).0, Visual { x: CELL, y: 0.0, width: CELL, height: CELL });
     }
 
     #[test]
@@ -409,13 +422,13 @@ mod tests {
         assert!(["a", "b", "c", "d", "e"].iter().all(|n| m.is_moving(&id(n))));
         // "c" was (2, 0) at side 100; it rests at (0, 1) at side 200.
         let (start, style) = m.cell(&id("c"), target(&m, &id("c")), t0);
-        assert_eq!(start, Visual { x: 2.0 * CELL, y: 0.0, size: CELL });
+        assert_eq!(start, Visual { x: 2.0 * CELL, y: 0.0, width: CELL, height: CELL });
         assert_eq!(style, CellStyle::default(), "no fade on zoom");
         let (mid, _) = m.cell(&id("c"), target(&m, &id("c")), at(t0, 125));
-        assert!((mid.size - 150.0).abs() < 1.0 && mid.x < 2.0 * CELL && mid.y > 0.0, "{mid:?}");
+        assert!((mid.width - 150.0).abs() < 1.0 && (mid.height - 150.0).abs() < 1.0 && mid.x < 2.0 * CELL && mid.y > 0.0, "{mid:?}");
         m.tick(at(t0, 250));
         assert!(!m.is_animating());
-        assert_eq!(m.cell(&id("c"), target(&m, &id("c")), at(t0, 250)).0, Visual { x: 0.0, y: 2.0 * CELL, size: 2.0 * CELL });
+        assert_eq!(m.cell(&id("c"), target(&m, &id("c")), at(t0, 250)).0, Visual { x: 0.0, y: 2.0 * CELL, width: 2.0 * CELL, height: 2.0 * CELL });
     }
 
     /// A width change re-places every cell without motion, and the next zoom animates from the
@@ -431,7 +444,7 @@ mod tests {
         assert_eq!(m.place(&id("c")), Some(Place { index: 2, columns: 2 }));
         m.apply(&ids(&["a", "b", "c", "d", "e"]), 4, Change::Zoom, |_| Some("x"), visual, t0);
         // "c" starts from its 2-column place (0, 1) at side 200, not the original 4-column one.
-        assert_eq!(m.cell(&id("c"), target(&m, &id("c")), t0).0, Visual { x: 0.0, y: 2.0 * CELL, size: 2.0 * CELL });
+        assert_eq!(m.cell(&id("c"), target(&m, &id("c")), t0).0, Visual { x: 0.0, y: 2.0 * CELL, width: 2.0 * CELL, height: 2.0 * CELL });
     }
 
     #[test]

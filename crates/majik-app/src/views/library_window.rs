@@ -289,11 +289,12 @@ impl LibraryWindow {
         })
         .detach();
 
-        // `onboarding_completed` flips via `update_config` (onboarding finish / debug reset);
-        // re-render so the check below picks it up. Other config writes (draft prompt, appearance)
-        // don't concern this window.
+        // `onboarding_completed` flips via `update_config` (onboarding finish / debug reset), and
+        // so does the feed's layout, which the View menu ticks; re-render so `sync_menus` picks
+        // them up. Other config writes (draft prompt, appearance) don't concern this window.
         cx.observe_global::<Config>(|this, cx| {
-            if cx.global::<Config>().onboarding_completed == this.onboarding.is_some() {
+            let config = cx.global::<Config>();
+            if config.onboarding_completed == this.onboarding.is_some() || config.grid_layout != this.menu_state.grid_layout {
                 cx.notify();
             }
         })
@@ -429,12 +430,17 @@ impl LibraryWindow {
             composer_open: self.panel(Side::Composer).open,
             detail_open: self.detail.is_some(),
             selection: self.feed.read(cx).selected_count() > 0,
+            grid_layout: cx.global::<Config>().grid_layout,
         };
         if state == self.menu_state {
             return;
         }
+        let layout_changed = state.grid_layout != self.menu_state.grid_layout;
         self.menu_state = state;
         crate::actions::refresh(state, cx);
+        if layout_changed {
+            crate::actions::rebuild_native(state, cx);
+        }
         self.menu_bar.update(cx, |bar, cx| bar.reload(cx));
     }
 
@@ -609,8 +615,9 @@ fn follow_system_appearance(window: &mut Window, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::{Generate, NewGeneration, Recreate, SelectAll, ShowFavorites, ShowLibrary};
+    use crate::actions::{Generate, LayoutMasonry, NewGeneration, Recreate, SelectAll, ShowFavorites, ShowLibrary};
     use crate::composer_state::{ComposeTab, DraftAsset};
+    use crate::config::GridLayout;
     use crate::test_support::{env, seed_asset, seed_item, seed_request, Seed, TestEnv};
     use gpui::{size, TestAppContext, VisualTestContext};
     use majik_core::model::{EntryId, MediaType, ToolId};
@@ -922,6 +929,35 @@ mod tests {
         still_unreachable(&mut unreachable, &actions, vcx);
 
         assert!(unreachable.is_empty(), "menu items that do nothing anywhere: {unreachable:?}");
+    }
+
+    /// Picking a layout in the feed re-ticks the View menu: the window notices the config write,
+    /// and the drawn bar is rebuilt with the new tick.
+    #[gpui::test]
+    fn switching_the_grid_layout_rechecks_the_view_menu(cx: &mut TestAppContext) {
+        let (_e, window, vcx) = library(cx, 2);
+        let drawn_checked = |vcx: &mut VisualTestContext| -> Vec<String> {
+            vcx.update(|_, cx| {
+                gpui_component::global_state::GlobalState::global(cx)
+                    .app_menus()
+                    .iter()
+                    .flat_map(|menu| menu.items.iter())
+                    .filter_map(|item| match item {
+                        gpui::OwnedMenuItem::Action { name, checked: true, .. } => Some(name.to_string()),
+                        _ => None,
+                    })
+                    .collect()
+            })
+        };
+        window.update(vcx, |this, _| assert_eq!(this.menu_state.grid_layout, GridLayout::Square));
+        assert_eq!(drawn_checked(vcx), ["Square"]);
+        vcx.dispatch_action(LayoutMasonry);
+        draw(vcx);
+        window.update(vcx, |this, cx| {
+            assert_eq!(cx.global::<Config>().grid_layout, GridLayout::Masonry, "the feed took the action");
+            assert_eq!(this.menu_state.grid_layout, GridLayout::Masonry, "and the window's menu state followed");
+        });
+        assert_eq!(drawn_checked(vcx), ["Masonry"]);
     }
 
     /// ⌘⏎ and Media → Generate belong to the window while the composer is open, not only to the

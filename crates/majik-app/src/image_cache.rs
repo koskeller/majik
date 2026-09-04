@@ -82,8 +82,9 @@ pub struct LruImageCache {
     /// whatever it is drawn at, and at the smallest zoom a cell is under 200 device px, so decoding
     /// at the file's size spends five times the memory (and five times the sprite atlas) on pixels
     /// nobody sees. Letterboxed, the long edge is shrunk to the cell; filled, the short edge is,
-    /// and the rest is cropped away as the cell would crop it. `None` decodes the file as it is,
-    /// which is what the detail's stage wants since it fills the window.
+    /// and the rest is cropped away as the cell would crop it; in a masonry column the width is,
+    /// and the height follows the picture. `None` decodes the file as it is, which is what the
+    /// detail's stage wants since it fills the window.
     target: Option<(u32, Fit)>,
 }
 
@@ -356,11 +357,14 @@ impl ImageCache for LruImageCache {
 /// dragging a window edge doesn't re-decode the feed on every frame.
 const TARGET_STEP: u32 = 32;
 
-/// Decodes an image file for a square cell `cell` pixels on a side. Letterboxed (`Fit::Contain`),
-/// the image is shrunk so its longest edge is at most `cell`. Filled (`Fit::Cover`), the cell
-/// shows the centred square of the image's short edge and nothing else, so that is what is
-/// decoded: the short edge shrunk to at most `cell`, and the overhang cropped away. Either way a
-/// tile costs at most `cell²` pixels, which is what the budget arithmetic assumes. Never enlarges:
+/// Decodes an image file for a cell `cell` pixels wide. Letterboxed (`Fit::Contain`), the image
+/// is shrunk so its longest edge is at most `cell`. Filled (`Fit::Cover`), the cell shows the
+/// centred square of the image's short edge and nothing else, so that is what is decoded: the
+/// short edge shrunk to at most `cell`, and the overhang cropped away. Either way a tile costs at
+/// most `cell²` pixels. In a masonry column (`Fit::Width`) the width is shrunk to at most `cell`
+/// and the height follows, up to the tallest cell the column allows
+/// (`majik_core::feed::MASONRY_RATIO_RANGE`), beyond which the middle is kept as the cell would
+/// crop it: at most `3 · cell²` pixels. The budget arithmetic assumes both bounds. Never enlarges:
 /// a thumbnail drawn bigger than it was stored is stretched by the GPU, exactly as before, rather
 /// than costing memory for pixels that carry no detail.
 ///
@@ -387,6 +391,21 @@ fn decode_scaled(path: &Path, cell: u32, fit: Fit) -> Result<Arc<RenderImage>, I
             };
             let side = image.width().min(image.height());
             image.crop_imm((image.width() - side) / 2, (image.height() - side) / 2, side, side)
+        }
+        Fit::Width => {
+            let image = if width > cell && cell > 0 {
+                let scale = cell as f64 / width as f64;
+                let scaled = |edge: u32| ((edge as f64 * scale).round() as u32).max(1);
+                image.resize_exact(scaled(width), scaled(height), FilterType::Triangle)
+            } else {
+                image
+            };
+            let tallest = ((image.width() as f32 / *majik_core::feed::MASONRY_RATIO_RANGE.start()).round() as u32).max(1);
+            if image.height() > tallest {
+                image.crop_imm(0, (image.height() - tallest) / 2, image.width(), tallest)
+            } else {
+                image
+            }
         }
     };
     let mut frame = image.to_rgba8();
@@ -787,6 +806,60 @@ mod tests {
         assert_eq!(decoded.size(0), gpui::size(gpui::DevicePixels(IMAGE as i32 / 2), gpui::DevicePixels(IMAGE as i32 / 2)));
     }
 
+    /// Red above, blue below, `IMAGE` wide and `height` tall: any crop shows at the seam.
+    fn seam_picture(dir: &Path, height: u32) -> PathBuf {
+        let path = dir.join("tall.png");
+        let mut tall = image::RgbaImage::new(IMAGE, height);
+        for (_, y, pixel) in tall.enumerate_pixels_mut() {
+            *pixel = image::Rgba(if y < height / 2 { [200, 30, 30, 255] } else { [30, 30, 200, 255] });
+        }
+        tall.save(&path).unwrap();
+        path
+    }
+
+    /// A masonry cell is as tall as its picture, so the whole picture is decoded, at the column's
+    /// width: a 64 × 128 picture in a 32 px column decodes to 32 × 64, nothing cropped.
+    #[gpui::test]
+    fn a_width_fitted_cell_decodes_the_whole_picture_at_the_column_width(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = seam_picture(dir.path(), 2 * IMAGE);
+        let (probe, vcx, cache) = probe(cx, 8 * IMAGE_BYTES);
+        vcx.update(|window, cx| cache.update(cx, |cache, cx| cache.set_target(IMAGE / 2, Fit::Width, window, cx)));
+        draw(&probe, vcx, &[&path]);
+
+        let decoded = cache.update(vcx, |cache, _| cache.loaded(&resource(&path))).expect("decoded");
+        assert_eq!(decoded.size(0), gpui::size(gpui::DevicePixels(IMAGE as i32 / 2), gpui::DevicePixels(IMAGE as i32)));
+        let pixels = decoded.as_bytes(0).unwrap();
+        let (top, bottom) = (&pixels[..4], &pixels[pixels.len() - 4..]);
+        assert_eq!((top, bottom), (&[30, 30, 200, 255][..], &[200, 30, 30, 255][..]), "BGRA: red top edge and blue bottom edge both survive");
+        assert_eq!(cache.read_with(vcx, |cache, _| cache.bytes()), IMAGE_BYTES / 2, "half the width, the full height");
+
+        // A column wider than the picture never enlarges it.
+        vcx.update(|window, cx| cache.update(cx, |cache, cx| cache.set_target(4 * IMAGE, Fit::Width, window, cx)));
+        draw(&probe, vcx, &[&path]);
+        let decoded = cache.update(vcx, |cache, _| cache.loaded(&resource(&path))).expect("redecoded");
+        assert_eq!(decoded.size(0), gpui::size(gpui::DevicePixels(IMAGE as i32), gpui::DevicePixels(2 * IMAGE as i32)));
+    }
+
+    /// The column crops a picture taller than the masonry range allows (1:3), and so does the
+    /// decode: a 64 × 256 picture in a 64 px column decodes to the middle 64 × 192.
+    #[gpui::test]
+    fn a_width_fitted_cell_crops_a_picture_taller_than_the_masonry_range(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = seam_picture(dir.path(), 4 * IMAGE);
+        let (probe, vcx, cache) = probe(cx, 8 * IMAGE_BYTES);
+        vcx.update(|window, cx| cache.update(cx, |cache, cx| cache.set_target(IMAGE, Fit::Width, window, cx)));
+        draw(&probe, vcx, &[&path]);
+
+        let decoded = cache.update(vcx, |cache, _| cache.loaded(&resource(&path))).expect("decoded");
+        assert_eq!(decoded.size(0), gpui::size(gpui::DevicePixels(IMAGE as i32), gpui::DevicePixels(3 * IMAGE as i32)));
+        let pixels = decoded.as_bytes(0).unwrap();
+        let (top, middle, bottom) = (&pixels[..4], &pixels[pixels.len() / 2..pixels.len() / 2 + 4], &pixels[pixels.len() - 4..]);
+        assert_eq!((top, bottom), (&[30, 30, 200, 255][..], &[200, 30, 30, 255][..]), "cropped equally at both ends");
+        assert_eq!(middle, &[200, 30, 30, 255][..], "the seam is still in the middle, so the crop was centred");
+        assert_eq!(cache.read_with(vcx, |cache, _| cache.bytes()), 3 * IMAGE_BYTES, "at most three square tiles");
+    }
+
     /// Nudging a window edge must not re-decode the feed on every frame.
     #[gpui::test]
     fn a_target_within_the_same_step_is_not_a_change(cx: &mut TestAppContext) {
@@ -824,6 +897,15 @@ mod tests {
                 assert!(
                     frame <= FEED_IMAGE_BUDGET,
                     "a {width}x{height} window at zoom {zoom} draws {frame} B in one frame, over the {FEED_IMAGE_BUDGET} B budget"
+                );
+                // Masonry: each column is a strip of tiles at the column's width; the strip covers
+                // the viewport plus a cell's width of overscan on each side, and at each end a
+                // cell as tall as the range allows (3 × the width) may straddle it.
+                let strip = ((height + 2. * cell + 2. * 3. * cell) * 2.).ceil() as usize;
+                let masonry = columns as usize * decoded * strip * 4;
+                assert!(
+                    masonry <= FEED_IMAGE_BUDGET,
+                    "a {width}x{height} window at zoom {zoom} draws {masonry} B of masonry in one frame, over the {FEED_IMAGE_BUDGET} B budget"
                 );
             }
         }

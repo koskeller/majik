@@ -188,9 +188,10 @@ pub struct Config {
     /// Feed zoom level: the minimum tile width in px, one of `majik_core::feed::ZOOM_LEVELS`.
     #[serde(default = "default_zoom")]
     pub grid_zoom: u32,
-    /// Feed cells crop thumbnails to squares or show them whole (Photos' "Square / Aspect Ratio").
+    /// How the feed lays its cells out: square cells that crop, square cells that letterbox, or
+    /// masonry columns.
     #[serde(default)]
-    pub thumbnail_shape: ThumbnailShape,
+    pub grid_layout: GridLayout,
     /// The composer's unsent prompts, one per media tab and shared across providers: an image
     /// prompt and a video prompt are different texts, and switching tabs shows each its own.
     #[serde(default)]
@@ -234,22 +235,38 @@ pub struct Config {
     pub save_directory: Option<PathBuf>,
 }
 
-/// How the feed fits a thumbnail into its square cell.
+/// How the feed lays out its cells. The first two are Photos' "Square / Aspect Ratio": square
+/// cells in rows that crop or letterbox the picture. Masonry gives each picture its own shape at
+/// one column width and stacks them in columns, shortest first (`majik_core::feed::Layout`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ThumbnailShape {
-    /// Fill the cell, cropping the long edge.
+pub enum GridLayout {
+    /// Square cells; the picture fills the cell, its long edge cropped.
     #[default]
     Square,
-    /// Fit the whole image, letterboxed inside the cell.
+    /// Square cells; the whole picture, letterboxed inside the cell.
     AspectRatio,
+    /// Columns of cells at their pictures' shapes, edge to edge.
+    Masonry,
 }
 
-impl ThumbnailShape {
-    pub fn toggled(self) -> Self {
+impl GridLayout {
+    /// In the order the Layout menu lists them.
+    pub const ALL: [GridLayout; 3] = [GridLayout::Square, GridLayout::AspectRatio, GridLayout::Masonry];
+
+    pub fn label(self) -> &'static str {
         match self {
-            Self::Square => Self::AspectRatio,
-            Self::AspectRatio => Self::Square,
+            Self::Square => "Square",
+            Self::AspectRatio => "Aspect Ratio",
+            Self::Masonry => "Masonry",
+        }
+    }
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::Square => "square",
+            Self::AspectRatio => "ratio",
+            Self::Masonry => "masonry",
         }
     }
 }
@@ -289,7 +306,7 @@ impl Default for Config {
             library_root: None,
             onboarding_completed: false,
             grid_zoom: default_zoom(),
-            thumbnail_shape: ThumbnailShape::default(),
+            grid_layout: GridLayout::default(),
             draft_prompts: DraftPrompts::default(),
             draft_assets: TabAssets::default(),
             recent_models: RecentModels::default(),
@@ -688,6 +705,18 @@ mod tests {
         config.draft_assets.video = vec![DraftAsset { asset: AssetId("b".into()), role: AssetRole::FirstFrame }, DraftAsset { asset: AssetId("c".into()), role: AssetRole::LastFrame }];
         let json = serde_json::to_string(&config).unwrap();
         assert_eq!(serde_json::from_str::<Config>(&json).unwrap().draft_assets, config.draft_assets);
+    }
+
+    #[test]
+    fn grid_layout_round_trips_and_an_old_thumbnail_shape_key_is_ignored() {
+        for layout in GridLayout::ALL {
+            let config = Config { grid_layout: layout, ..Default::default() };
+            let json = serde_json::to_string(&config).unwrap();
+            assert_eq!(serde_json::from_str::<Config>(&json).unwrap().grid_layout, layout);
+        }
+        assert_eq!(serde_json::to_value(Config { grid_layout: GridLayout::Masonry, ..Default::default() }).unwrap()["grid_layout"], "masonry", "the saved shape");
+        let config: Config = serde_json::from_str(r#"{"thumbnail_shape":"aspect_ratio"}"#).unwrap();
+        assert_eq!(config.grid_layout, GridLayout::Square, "a config from before the layout menu opens square");
     }
 
     #[test]

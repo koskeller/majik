@@ -4,6 +4,7 @@ use gpui::{actions, Action, App, KeyBinding, Keystroke, Menu, MenuItem, OsAction
 use gpui_component::input::{Cut as CutText, Paste as PasteText, Redo, Undo};
 use gpui_component::kbd::Kbd;
 
+use crate::config::GridLayout;
 use crate::views::settings::{SettingsPage, SettingsTarget};
 
 actions!(
@@ -36,7 +37,9 @@ actions!(
         ZoomIn,
         ZoomOut,
         ResetZoom,
-        ToggleThumbnailShape,
+        LayoutSquare,
+        LayoutAspectRatio,
+        LayoutMasonry,
         ShowInfo,
         Recreate,
         Retry,
@@ -182,6 +185,8 @@ pub struct MenuState {
     pub detail_open: bool,
     /// At least one cell is selected in the feed.
     pub selection: bool,
+    /// The feed's layout, so the View menu ticks the current one.
+    pub grid_layout: GridLayout,
 }
 
 impl MenuState {
@@ -235,6 +240,13 @@ pub fn refresh(state: MenuState, cx: &mut App) {
     gpui_component::global_state::GlobalState::global_mut(cx).set_app_menus(menus(state).into_iter().map(Menu::owned).collect());
 }
 
+/// Rebuild the native menu bar too. Unlike greying, a tick (the View menu's layout) is baked into
+/// the `NSMenuItem` when the menus are set, so it goes stale unless they are set again; the
+/// window calls this only when the ticked item changed.
+pub fn rebuild_native(state: MenuState, cx: &mut App) {
+    cx.set_menus(menus(state));
+}
+
 /// The application menus, mirrored in two places: `cx.set_menus` drives the native macOS menu
 /// bar, and `GlobalState::set_app_menus` feeds the [`AppMenuBar`](gpui_component::menu::AppMenuBar)
 /// the Library window draws itself on Windows and Linux, where gpui only stores them.
@@ -244,15 +256,17 @@ pub fn menus(state: MenuState) -> Vec<Menu> {
     let (library, feed, media) = (state.library, state.feed(), state.media());
     // The variants are built by hand rather than through `MenuItem::action`, which takes an owned
     // `impl Action` and so can't be handed one action per call site from a shared helper.
-    let entry = |name: &str, action: &dyn Action, os_action: Option<OsAction>, enabled: bool| MenuItem::Action {
+    let entry = |name: &str, action: &dyn Action, os_action: Option<OsAction>, enabled: bool, checked: bool| MenuItem::Action {
         name: name.to_string().into(),
         action: action.boxed_clone(),
         os_action,
-        checked: false,
+        checked,
         disabled: !enabled,
     };
-    let item = move |name: &str, action: &dyn Action, enabled: bool| entry(name, action, None, enabled);
-    let os_item = move |name: &str, action: &dyn Action, os: OsAction, enabled: bool| entry(name, action, Some(os), enabled);
+    let item = move |name: &str, action: &dyn Action, enabled: bool| entry(name, action, None, enabled, false);
+    let os_item = move |name: &str, action: &dyn Action, os: OsAction, enabled: bool| entry(name, action, Some(os), enabled, false);
+    // The View menu's layouts: a group of choices, the current one ticked.
+    let layout = move |layout: GridLayout, action: &dyn Action| entry(layout.label(), action, None, feed, state.grid_layout == layout);
     vec![
         Menu {
             // The channel's name, so a dev build says so wherever we draw the menu ourselves. On
@@ -301,7 +315,10 @@ pub fn menus(state: MenuState) -> Vec<Menu> {
                 item("Zoom In", &ZoomIn, library),
                 item("Zoom Out", &ZoomOut, library),
                 item("Actual Size", &ResetZoom, library),
-                item("Square / Aspect Ratio", &ToggleThumbnailShape, feed),
+                MenuItem::separator(),
+                layout(GridLayout::Square, &LayoutSquare),
+                layout(GridLayout::AspectRatio, &LayoutAspectRatio),
+                layout(GridLayout::Masonry, &LayoutMasonry),
                 MenuItem::separator(),
                 item("Show Info", &ShowInfo, state.detail_open),
                 item("Play / Pause", &TogglePlayback, state.detail_open),
@@ -460,7 +477,7 @@ mod tests {
     fn menus_grey_out_what_the_window_cannot_do() {
         // Onboarding, or no Library window at all: the library can't act on anything.
         let none = menus(MenuState::default());
-        for name in ["New Generation", "New Album…", "Import…", "Generate", "Save…", "Show Info", "Favorites", "Show / Hide Sidebar", "Square / Aspect Ratio"] {
+        for name in ["New Generation", "New Album…", "Import…", "Generate", "Save…", "Show Info", "Favorites", "Show / Hide Sidebar", "Masonry"] {
             assert!(greyed(&none, name), "{name} is greyed with no library on screen");
         }
         let about = format!("About {}", crate::config::app_name());
@@ -472,7 +489,7 @@ mod tests {
 
         // The feed, with nothing selected: navigation and the panels work, media doesn't.
         let feed = menus(MenuState { library: true, ..Default::default() });
-        for name in ["New Generation", "New Album…", "Import…", "Favorites", "Assets", "Square / Aspect Ratio", "Select All", "Zoom In"] {
+        for name in ["New Generation", "New Album…", "Import…", "Favorites", "Assets", "Square", "Aspect Ratio", "Masonry", "Select All", "Zoom In"] {
             assert!(!greyed(&feed, name), "{name} works on a feed");
         }
         for name in ["Open", "Save…", "Copy", "Delete", "Recreate", "Retry", "Clear Selection", "Show Info", "Play / Pause", "Generate", "Paste", "Improve Prompt"] {
@@ -491,7 +508,7 @@ mod tests {
         for name in ["Show Info", "Play / Pause", "Next Item", "Previous Item", "Back"] {
             assert!(greyed(&selected, name), "{name} needs a detail, not a selection");
         }
-        for name in ["Open", "Select All", "Square / Aspect Ratio"] {
+        for name in ["Open", "Select All", "Square", "Aspect Ratio", "Masonry"] {
             assert!(greyed(&detail, name), "{name} belongs to the feed, which the detail covers");
         }
 
@@ -548,6 +565,38 @@ mod tests {
             refresh(MenuState { library: true, selection: true, ..Default::default() }, cx);
             assert!(!disabled(cx, "Save…"));
             assert!(disabled(cx, "Generate"), "the composer closed again");
+        });
+    }
+
+    /// The View menu's layouts are a group of choices: exactly the current one is ticked, in
+    /// both the native menus and the drawn bar.
+    #[gpui::test]
+    fn menus_check_exactly_the_current_grid_layout(cx: &mut TestAppContext) {
+        fn checked(menus: &[Menu]) -> Vec<String> {
+            menus.iter().flat_map(|menu| menu.items.iter()).filter_map(|item| match item {
+                MenuItem::Action { name, checked: true, .. } => Some(name.to_string()),
+                _ => None,
+            }).collect()
+        }
+        for layout in GridLayout::ALL {
+            let state = MenuState { library: true, grid_layout: layout, ..Default::default() };
+            assert_eq!(checked(&menus(state)), [layout.label()], "{layout:?}");
+        }
+        assert_eq!(checked(&menus(MenuState::default())), ["Square"], "the default layout is ticked even with no window");
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            init(cx);
+            refresh(MenuState { library: true, grid_layout: GridLayout::Masonry, ..Default::default() }, cx);
+            let drawn: Vec<String> = gpui_component::global_state::GlobalState::global(cx)
+                .app_menus()
+                .iter()
+                .flat_map(|menu| menu.items.iter())
+                .filter_map(|item| match item {
+                    OwnedMenuItem::Action { name, checked: true, .. } => Some(name.to_string()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(drawn, ["Masonry"], "the drawn bar ticks what the state says");
         });
     }
 

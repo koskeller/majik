@@ -182,5 +182,8 @@ mod tests {
         for tab in ComposeTab::ALL {
             assert!(embedded(tab.icon()), "{tab:?} → {}", tab.icon());
         }
+        for layout in crate::config::GridLayout::ALL {
+            assert!(embedded(layout.icon()), "{layout:?} → {}", layout.icon());
+        }
     }
 }

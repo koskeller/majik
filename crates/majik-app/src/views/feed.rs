@@ -1,4 +1,5 @@
-//! Feed grid: virtualized square cells, Finder-style selection, zoom, filter, context menu.
+//! Feed grid: virtualized cells in rows of squares or masonry columns (`feed::Layout`),
+//! Finder-style selection, zoom, filter, context menu.
 
 use gpui::{
     prelude::*, point, px, App, Bounds, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Image, ImageFormat, MouseButton, Point,
@@ -17,8 +18,8 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use crate::actions::*;
-use crate::config::{update_config, Config, ThumbnailShape};
-use crate::grid_motion::{CellStyle, Change, Ghost, GridMotion, Place, Visual};
+use crate::config::{update_config, Config, GridLayout};
+use crate::grid_motion::{CellStyle, Change, Ghost, GridMotion, Visual};
 use crate::image_cache::{LruImageCache, Warmth};
 use crate::state::{self, DraggedAsset, DraggedAssets, LibraryModel, PendingCompose};
 use crate::ui::{BoundsSlot, bounds_slot, button, cover_image, format_duration, icon, measure_then, now, record_bounds, slot_size, spin, toolbar};
@@ -123,8 +124,14 @@ impl From<Entry<'_>> for CellSnapshot {
 }
 
 pub struct FeedView {
-    /// Square-cropped or whole thumbnails (persisted in `Config`).
-    shape: ThumbnailShape,
+    /// Rows of square cells (cropped or letterboxed) or masonry columns (persisted in `Config`).
+    grid_layout: GridLayout,
+    /// Where every cell of `ids` is drawn, for the current width and column count. Rebuilt by
+    /// `refresh_with` and `relayout`, never in `render`.
+    layout: feed::Layout,
+    /// Each id's picture shape, read with the ids, so a masonry layout can be rebuilt on a
+    /// resize without asking the library.
+    ratios: Vec<Option<f32>>,
     filter: FeedFilter,
     media_filter: MediaFilter,
     /// The toolbar's favorites-only toggle: like `media_filter`, the grid's own and never stored.
@@ -151,8 +158,8 @@ pub struct FeedView {
     deferred_click: Option<(EntryId, usize)>,
     /// Cell transitions (pop-in/out, filter fade, zoom crossfade, thumbnail fade); see `grid_motion`.
     motion: GridMotion<CellSnapshot, EntryId>,
-    /// The cells the last `uniform_list` pass drew: a render cache, not the source of truth. An
-    /// exit ghost keeps drawing from this snapshot after the library has already dropped the item.
+    /// The cells the last render drew: a render cache, not the source of truth. An exit ghost
+    /// keeps drawing from this snapshot after the library has already dropped the item.
     last_rendered: HashMap<EntryId, CellSnapshot>,
     /// The window's scale factor as of the last render: cells are sized in points, thumbnails in
     /// device pixels, and the tier depends on the second.
@@ -216,7 +223,7 @@ fn cell_badge() -> gpui::Div {
 /// screen. Long enough that a fling costs nothing, short enough to feel immediate when you stop.
 const LARGE_TIER_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// Cell side for `columns` across `width` (with 2 pt gutters).
+/// Cell (column) width for `columns` across `width` (with 2 pt gutters).
 fn cell_for(width: Pixels, columns: usize) -> Pixels {
     let columns = columns.max(1);
     if width > px(0.) {
@@ -226,14 +233,6 @@ fn cell_for(width: Pixels, columns: usize) -> Pixels {
     }
 }
 
-/// Pixel position of a place in the grid content for the current width.
-fn visual_for(width: Pixels, place: Place) -> Visual {
-    let columns = place.columns.max(1);
-    let size = f32::from(cell_for(width, columns));
-    let pitch = size + GAP;
-    Visual { x: (place.index % columns) as f32 * pitch, y: (place.index / columns) as f32 * pitch, size }
-}
-
 impl FeedView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let library = state::library(cx);
@@ -241,9 +240,11 @@ impl FeedView {
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         let zoom = feed::sanitize_zoom(cx.global::<Config>().grid_zoom);
-        let shape = cx.global::<Config>().thumbnail_shape;
+        let grid_layout = cx.global::<Config>().grid_layout;
         let mut this = Self {
-            shape,
+            grid_layout,
+            layout: feed::Layout::default(),
+            ratios: Vec::new(),
             filter: FeedFilter::Library,
             media_filter: MediaFilter::All,
             favorites_only: false,
@@ -316,18 +317,34 @@ impl FeedView {
     }
 
     fn refresh(&mut self, change: Change, cx: &mut Context<Self>) {
+        self.refresh_with(change, None, cx);
+    }
+
+    /// Read the feed's ids again and lay them out. The cells move from `baseline` when the caller
+    /// has already replaced the layout (a zoom or a layout switch hands over the one it displaced);
+    /// otherwise from the layout this call replaces.
+    fn refresh_with(&mut self, change: Change, baseline: Option<feed::Layout>, cx: &mut Context<Self>) {
         let now = now(cx);
-        let ids = self.library.read(cx).lib.entries(&self.filter, self.media_filter, self.favorites_only);
-        if ids != self.ids {
+        let (ids, ratios) = {
+            let lib = &self.library.read(cx).lib;
+            let ids = lib.entries(&self.filter, self.media_filter, self.favorites_only);
+            let ratios = ids.iter().map(|id| lib.entry(id).and_then(|entry| entry.aspect_ratio_f32())).collect();
+            (ids, ratios)
+        };
+        let ids_changed = ids != self.ids;
+        self.ids = ids;
+        self.ratios = ratios;
+        let next = self.build_layout(self.columns, self.cell_px);
+        let old = std::mem::replace(&mut self.layout, next);
+        if ids_changed || old != self.layout {
             // The boxes recorded by the last frame belong to the old layout. The grid may not be
             // drawn again before someone asks for one (the detail closing after a delete), so
             // forget them rather than hand out a cell that has since moved.
             self.cell_bounds.borrow_mut().clear();
         }
-        self.ids = ids;
+        let baseline = baseline.unwrap_or(old);
         let rendered = &self.last_rendered;
-        let width = slot_size(&self.content_size).width;
-        self.motion.apply(&self.ids, self.columns, change, |id| rendered.get(id).cloned(), |place| visual_for(width, place), now);
+        self.motion.apply(&self.ids, self.columns, change, |id| rendered.get(id).cloned(), |place| baseline.slot(place.index).map(Visual::from).unwrap_or_default(), now);
         let lib = &self.library.read(cx).lib;
         self.motion.sync_thumbnails(self.ids.iter().map(|id| (id, lib.entry(id).is_some_and(|e| e.thumbnail().is_some()))), now);
         self.selection.retain_in(&self.ids);
@@ -525,26 +542,24 @@ impl FeedView {
 
     /// Arrow keys: move the (single) selection and keep it on screen.
     fn move_selection(&mut self, arrow: feed::Arrow, cx: &mut Context<Self>) {
-        let Some(next) = feed::step_selection(self.selection.last_index, arrow, self.columns.max(1), self.ids.len()) else { return };
+        let Some(next) = self.layout.step_selection(self.selection.last_index, arrow) else { return };
         let Some(id) = self.ids.get(next).cloned() else { return };
         self.selection.click(&id, next, Modifiers::default(), &self.ids);
         self.scroll_to_index(next, false);
         cx.notify();
     }
 
-    /// Scroll so the row holding `index` is visible (`center`: put it in the middle).
+    /// Scroll so the cell at `index` is visible (`center`: put it in the middle).
     fn scroll_to_index(&mut self, index: usize, center: bool) {
-        let pitch = f32::from(self.cell_px) + GAP;
-        let cell = f32::from(self.cell_px);
-        let row_y = (index / self.columns.max(1)) as f32 * pitch;
+        let Some(slot) = self.layout.slot(index) else { return };
         let viewport = f32::from(slot_size(&self.content_size).height);
         let current = -f32::from(self.scroll.offset().y);
         let target = if center {
-            row_y - (viewport - cell) / 2.
-        } else if row_y < current {
-            row_y
-        } else if row_y + cell > current + viewport {
-            row_y + cell - viewport
+            slot.y - (viewport - slot.height) / 2.
+        } else if slot.y < current {
+            slot.y
+        } else if slot.bottom() > current + viewport {
+            slot.bottom() - viewport
         } else {
             return;
         };
@@ -586,10 +601,20 @@ impl FeedView {
         feed::zoom_out(self.zoom) != self.zoom
     }
 
-    /// Index of the topmost visible row.
-    fn top_row(&self) -> usize {
-        let pitch = f32::from(self.cell_px) + GAP;
-        (-f32::from(self.scroll.offset().y) / pitch).floor().max(0.) as usize
+    /// The first cell (by index) still showing at the scroll top: in rows, the first cell of the
+    /// row the top cuts through; in masonry, the earliest cell that reaches below it.
+    fn top_index(&self) -> usize {
+        let top = -f32::from(self.scroll.offset().y);
+        self.layout.visible_range(top, top + 1.).find(|&index| self.layout.slot(index).is_some_and(|slot| slot.bottom() > top)).unwrap_or_else(|| self.layout.first_index_at(top))
+    }
+
+    /// The geometry for `columns` columns `cell` wide: rows of squares, or masonry from the
+    /// entries' shapes.
+    fn build_layout(&self, columns: usize, cell: Pixels) -> feed::Layout {
+        match self.grid_layout {
+            GridLayout::Masonry => feed::Layout::masonry(self.ratios.iter().copied(), columns, f32::from(cell), GAP),
+            GridLayout::Square | GridLayout::AspectRatio => feed::Layout::uniform(self.ids.len(), columns, f32::from(cell), GAP),
+        }
     }
 
     /// Change the zoom level: every cell slides and resizes to its new place
@@ -601,52 +626,90 @@ impl FeedView {
         }
         self.zoom = zoom;
         let width = slot_size(&self.content_size).width;
-        if self.relayout(feed::columns_for(f32::from(width), zoom)) {
-            self.refresh(Change::Zoom, cx);
+        if let Some(old) = self.relayout(feed::columns_for(f32::from(width), zoom)) {
+            self.refresh_with(Change::Zoom, Some(old), cx);
         }
         update_config(cx, |c| c.grid_zoom = zoom);
     }
 
     /// The measured width changed (window or panel resize): fit the zoom level's columns to it.
     /// A changed count re-places every cell without motion, so the next zoom or library change
-    /// animates from this layout rather than the previous one.
+    /// animates from this layout rather than the previous one; a width change that keeps the
+    /// count only moves the boxes.
     fn fit_columns(&mut self, cx: &mut Context<Self>) {
         let width = slot_size(&self.content_size).width;
-        if width > px(0.) && self.relayout(feed::columns_for(f32::from(width), self.zoom)) {
-            let now = now(cx);
-            self.motion.apply(&self.ids, self.columns, Change::Resize, |_| None, |place| visual_for(width, place), now);
+        if width > px(0.) {
+            let columns = feed::columns_for(f32::from(width), self.zoom);
+            let columns_changed = columns != self.columns;
+            if self.relayout(columns).is_some() && columns_changed {
+                let now = now(cx);
+                self.motion.apply(&self.ids, self.columns, Change::Resize, |_| None, |_| Visual::default(), now);
+            }
         }
         cx.notify();
     }
 
-    /// Adopt a column count, keeping the top row's first item on screen. Returns whether it changed;
-    /// the caller decides how the cells get to their new places.
-    fn relayout(&mut self, columns: usize) -> bool {
-        if columns == self.columns {
-            return false;
-        }
-        let top_item = self.top_row() * self.columns.max(1);
-        self.columns = columns;
+    /// Lay the cells out again for `columns` across the measured width. Returns the layout this
+    /// replaced, or `None` when no box moved; the caller decides how the cells get to their new
+    /// places. The cell at the scroll top stays there when the column count or the kind of layout
+    /// changed; a width change alone (a live resize) leaves the offset be, so the scroll doesn't
+    /// snap to a cell's edge on every frame.
+    fn relayout(&mut self, columns: usize) -> Option<feed::Layout> {
         let width = slot_size(&self.content_size).width;
-        self.cell_px = cell_for(width, columns);
-        let pitch = f32::from(self.cell_px) + GAP;
-        self.scroll.set_offset(point(px(0.), px(-((top_item / columns.max(1)) as f32 * pitch))));
-        true
+        let cell = cell_for(width, columns);
+        let next = self.build_layout(columns, cell);
+        if next == self.layout {
+            return None;
+        }
+        let anchor = (columns != self.columns || next.is_masonry() != self.layout.is_masonry()).then(|| self.top_index());
+        self.columns = columns;
+        self.cell_px = cell;
+        let old = std::mem::replace(&mut self.layout, next);
+        if let Some(index) = anchor {
+            let y = self.layout.slot(index).map_or(0., |slot| slot.y);
+            self.scroll.set_offset(point(px(0.), px(-y)));
+        }
+        Some(old)
     }
 
-    /// Photos' "Square / Aspect Ratio" toggle: crop thumbnails to the cell or show them whole.
-    fn toggle_shape(&mut self, _: &ToggleThumbnailShape, _: &mut Window, cx: &mut Context<Self>) {
-        self.shape = self.shape.toggled();
-        update_config(cx, |c| c.thumbnail_shape = self.shape);
-        cx.notify();
+    /// The Layout menu's choice: rows of squares that crop or letterbox, or masonry columns.
+    /// Between rows and masonry every cell slides and resizes to its new box, eased like a zoom;
+    /// between the two square layouts nothing moves, the cells just draw their pictures differently.
+    fn set_grid_layout(&mut self, layout: GridLayout, cx: &mut Context<Self>) {
+        if layout == self.grid_layout {
+            return;
+        }
+        self.grid_layout = layout;
+        update_config(cx, |c| c.grid_layout = layout);
+        match self.relayout(self.columns) {
+            Some(old) => self.refresh_with(Change::Layout, Some(old), cx),
+            None => {
+                // A crop became a letterbox or back: the cells may want another tier now.
+                self.schedule_large_thumbnails(cx);
+                cx.notify();
+            }
+        }
+    }
+
+    fn layout_square(&mut self, _: &LayoutSquare, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_grid_layout(GridLayout::Square, cx);
+    }
+
+    fn layout_aspect_ratio(&mut self, _: &LayoutAspectRatio, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_grid_layout(GridLayout::AspectRatio, cx);
+    }
+
+    fn layout_masonry(&mut self, _: &LayoutMasonry, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_grid_layout(GridLayout::Masonry, cx);
     }
 
     /// Width and height of a cell's frame as fractions of the cell: the whole cell, or the largest
-    /// box with the item's aspect ratio that fits when showing thumbnails whole.
+    /// box with the item's aspect ratio that fits when showing thumbnails whole in a square cell.
+    /// A masonry cell already has the picture's shape.
     fn frame_fractions(&self, aspect_ratio: Option<f32>) -> (f32, f32) {
-        match (self.shape, aspect_ratio) {
-            (ThumbnailShape::AspectRatio, Some(ratio)) if ratio > 1.0 => (1.0, 1.0 / ratio),
-            (ThumbnailShape::AspectRatio, Some(ratio)) if ratio < 1.0 => (ratio, 1.0),
+        match (self.grid_layout, aspect_ratio) {
+            (GridLayout::AspectRatio, Some(ratio)) if ratio > 1.0 => (1.0, 1.0 / ratio),
+            (GridLayout::AspectRatio, Some(ratio)) if ratio < 1.0 => (ratio, 1.0),
             _ => (1.0, 1.0),
         }
     }
@@ -805,11 +868,13 @@ impl FeedView {
         })
     }
 
-    /// How the cells draw their pictures: square cells fill and crop, full-aspect cells letterbox.
+    /// How the cells draw their pictures: square cells fill and crop, full-aspect cells letterbox,
+    /// masonry cells span the column's width.
     fn fit(&self) -> Fit {
-        match self.shape {
-            ThumbnailShape::Square => Fit::Cover,
-            ThumbnailShape::AspectRatio => Fit::Contain,
+        match self.grid_layout {
+            GridLayout::Square => Fit::Cover,
+            GridLayout::AspectRatio => Fit::Contain,
+            GridLayout::Masonry => Fit::Width,
         }
     }
 
@@ -826,10 +891,11 @@ impl FeedView {
     }
 
     /// Whether any picture could want the large tier at this cell size. Square cells crop to the
-    /// short edge, so the narrowest picture on screen decides and nothing can be ruled out ahead
-    /// of looking; only a letterboxed grid can be, by the cell alone.
+    /// short edge, and a masonry column is a portrait picture's short edge, so the narrowest
+    /// picture on screen decides and nothing can be ruled out ahead of looking; only a letterboxed
+    /// grid can be, by the cell alone.
     fn may_want_large(&self) -> bool {
-        self.fit() == Fit::Cover || self.tier_for_cell(None) == thumbnails::THUMB_LARGE
+        matches!(self.fit(), Fit::Cover | Fit::Width) || self.tier_for_cell(None) == thumbnails::THUMB_LARGE
     }
 
     /// [`Self::request_large_thumbnails`] once the view has been still for [`LARGE_TIER_SETTLE`].
@@ -981,15 +1047,16 @@ impl FeedView {
     /// `style.scale` becomes symmetric padding (the body shrinks toward its centre) and
     /// `style.opacity` applies to the whole box.
     fn cell_slot(id: impl Into<gpui::ElementId>, visual: Visual, style: CellStyle) -> gpui::Stateful<gpui::Div> {
-        let side = px(visual.size);
+        let (width, height) = (px(visual.width), px(visual.height));
         gpui::div()
             .id(id)
             .absolute()
             .left(px(visual.x))
             .top(px(visual.y))
-            .w(side)
-            .h(side)
-            .p(side * ((1.0 - style.scale) / 2.0))
+            .w(width)
+            .h(height)
+            .px(width * ((1.0 - style.scale) / 2.0))
+            .py(height * ((1.0 - style.scale) / 2.0))
             .opacity(style.opacity)
             .flex()
             .items_center()
@@ -1084,6 +1151,8 @@ struct MenuInfo {
 struct MenuEntry {
     label: SharedString,
     enabled: bool,
+    /// Ticked, for a menu of choices (the Layout menu).
+    checked: bool,
     kind: MenuEntryKind,
 }
 
@@ -1097,7 +1166,7 @@ enum MenuEntryKind {
 
 impl MenuEntry {
     fn action(label: impl Into<SharedString>, action: impl gpui::Action) -> Self {
-        Self { label: label.into(), enabled: true, kind: MenuEntryKind::Action(Box::new(action)) }
+        Self { label: label.into(), enabled: true, checked: false, kind: MenuEntryKind::Action(Box::new(action)) }
     }
 
     fn enabled(mut self, enabled: bool) -> Self {
@@ -1105,12 +1174,17 @@ impl MenuEntry {
         self
     }
 
+    fn checked(mut self, checked: bool) -> Self {
+        self.checked = checked;
+        self
+    }
+
     fn custom(label: impl Into<SharedString>, kind: MenuEntryKind) -> Self {
-        Self { label: label.into(), enabled: true, kind }
+        Self { label: label.into(), enabled: true, checked: false, kind }
     }
 
     fn separator() -> Self {
-        Self { label: SharedString::default(), enabled: false, kind: MenuEntryKind::Separator }
+        Self { label: SharedString::default(), enabled: false, checked: false, kind: MenuEntryKind::Separator }
     }
 }
 
@@ -1208,13 +1282,29 @@ fn build_context_menu(info: MenuInfo, menu: PopupMenu) -> PopupMenu {
     render_menu_entries(&entries, &info.library, menu)
 }
 
+/// The toolbar's Layout menu: one row per layout, the current one ticked. Each row dispatches its
+/// action to the feed, the same handler the View menu reaches.
+fn layout_menu_entries(current: GridLayout) -> Vec<MenuEntry> {
+    GridLayout::ALL
+        .into_iter()
+        .map(|layout| {
+            let entry = match layout {
+                GridLayout::Square => MenuEntry::action(layout.label(), LayoutSquare),
+                GridLayout::AspectRatio => MenuEntry::action(layout.label(), LayoutAspectRatio),
+                GridLayout::Masonry => MenuEntry::action(layout.label(), LayoutMasonry),
+            };
+            entry.checked(layout == current)
+        })
+        .collect()
+}
+
 fn render_menu_entries(entries: &[MenuEntry], library: &Entity<LibraryModel>, mut menu: PopupMenu) -> PopupMenu {
     for entry in entries {
         let label = entry.label.clone();
         let disabled = !entry.enabled;
         menu = match &entry.kind {
             MenuEntryKind::Separator => menu.separator(),
-            MenuEntryKind::Action(action) => menu.menu_with_disabled(label, action.boxed_clone(), disabled),
+            MenuEntryKind::Action(action) => menu.menu_with_check_and_disabled(label, entry.checked, action.boxed_clone(), disabled),
             MenuEntryKind::AddToAlbum(ids) => {
                 let ids = ids.clone();
                 menu.item(PopupMenuItem::new(label).disabled(disabled).on_click(move |_, window, cx| {
@@ -1480,6 +1570,11 @@ impl Render for FeedView {
             .tooltip("Favorites only")
             .on_click(cx.listener(|this, _, _, cx| this.set_favorites_only(!this.favorites_only, cx)));
 
+        let layout_button = button("layout").icon(icon(self.grid_layout.icon())).ghost().small().tooltip("Layout").dropdown_menu({
+            let (library, focus, current) = (self.library.clone(), self.focus.clone(), self.grid_layout);
+            move |menu, _, _| render_menu_entries(&layout_menu_entries(current), &library, menu.action_context(focus.clone()))
+        });
+
         let assets_feed = self.filter == FeedFilter::Assets;
         // The panel toggles are the Library window's, in its title bar.
         let toolbar = toolbar(cx)
@@ -1491,36 +1586,27 @@ impl Render for FeedView {
             })
             .when(self.shows_favorites_toggle(), |t| t.child(favorites_button))
             .child(filter_button)
-            .child(
-                button("shape")
-                    .icon(icon(match self.shape {
-                        ThumbnailShape::Square => "square",
-                        ThumbnailShape::AspectRatio => "ratio",
-                    }))
-                    .ghost()
-                    .small()
-                    .tooltip_with_action("Square or full-aspect thumbnails", &ToggleThumbnailShape, Some("Feed"))
-                    .on_click(cx.listener(|this, _, w, cx| this.toggle_shape(&ToggleThumbnailShape, w, cx))),
-            )
+            .child(layout_button)
             .child(button("zoom-out").icon(icon("zoom-out")).ghost().small().disabled(!self.can_zoom_out()).tooltip_with_action("Smaller thumbnails", &ZoomOut, Some("Feed")).on_click(cx.listener(|this, _, w, cx| this.zoom_out(&ZoomOut, w, cx))))
             .child(button("zoom-in").icon(icon("zoom-in")).ghost().small().disabled(!self.can_zoom_in()).tooltip_with_action("Larger thumbnails", &ZoomIn, Some("Feed")).on_click(cx.listener(|this, _, w, cx| this.zoom_in(&ZoomIn, w, cx))));
 
-        // Virtualized grid of absolutely positioned cells: the rows around the viewport, plus any
-        // cell still sliding in from elsewhere and the fading ghosts.
-        let pitch = f32::from(cell) + GAP;
-        let rows = count.div_ceil(cols);
-        let content_height = px(rows as f32 * pitch);
+        // Virtualized grid of absolutely positioned cells: the cells around the viewport (a
+        // cell's width of overscan on each side; `visible_range` itself adds the cells that
+        // start above and reach in), plus any cell still sliding in from elsewhere and the
+        // fading ghosts.
+        let overscan = f32::from(cell) + GAP;
+        let content_height = px(self.layout.height());
         let viewport = f32::from(size.height);
         // The handle clamps its offset only when it paints; a single large wheel delta (a fling)
-        // would otherwise pick rows past the end and draw an empty frame.
+        // would otherwise pick cells past the end and draw an empty frame.
         let scroll_y = (-f32::from(self.scroll.offset().y)).clamp(0., (f32::from(content_height) - viewport).max(0.));
-        let visible = |v: &Visual| v.y + v.size >= scroll_y - pitch && v.y <= scroll_y + viewport + pitch;
-        let first = ((scroll_y / pitch).floor().max(0.) as usize).saturating_sub(1) * cols;
-        let last = (((scroll_y + viewport) / pitch).ceil() as usize + 1) * cols;
-        let mut indices: Vec<usize> = (first.min(count)..last.min(count)).collect();
+        let (top, bottom) = (scroll_y - overscan, scroll_y + viewport + overscan);
+        let visible = |v: &Visual| v.y + v.height >= top && v.y <= bottom;
+        let window_range = self.layout.visible_range(top, bottom);
+        let mut indices: Vec<usize> = window_range.clone().collect();
         for id in self.motion.moving_ids() {
             if let Some(place) = self.motion.place(id) {
-                if place.index < first || place.index >= last {
+                if !window_range.contains(&place.index) {
                     indices.push(place.index);
                 }
             }
@@ -1531,7 +1617,7 @@ impl Render for FeedView {
         for ix in indices {
             let Some(id) = self.ids.get(ix).cloned() else { continue };
             let Some(snapshot) = self.library.read(cx).lib.entry(&id).map(CellSnapshot::from) else { continue };
-            let target = visual_for(width, Place { index: ix, columns: cols });
+            let Some(target) = self.layout.slot(ix).map(Visual::from) else { continue };
             let (visual, style) = self.motion.cell(&id, target, now);
             if !visible(&visual) && !visible(&target) {
                 continue;
@@ -1586,7 +1672,9 @@ impl Render for FeedView {
             .on_action(cx.listener(Self::zoom_in))
             .on_action(cx.listener(Self::zoom_out))
             .on_action(cx.listener(Self::reset_zoom))
-            .on_action(cx.listener(Self::toggle_shape))
+            .on_action(cx.listener(Self::layout_square))
+            .on_action(cx.listener(Self::layout_aspect_ratio))
+            .on_action(cx.listener(Self::layout_masonry))
             .on_action(cx.listener(Self::toggle_favorite))
             .on_action(cx.listener(Self::delete))
             .on_action(cx.listener(Self::copy))
@@ -1634,6 +1722,7 @@ impl Render for FeedView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::grid_motion::Place;
     use crate::test_support::{env, seed_item, Seed, TestEnv};
     use gpui::{Modifiers as GModifiers, MouseButton, MouseDownEvent, Point, ScrollWheelEvent, TestAppContext, VisualTestContext};
     use std::path::PathBuf;
@@ -1986,7 +2075,7 @@ mod tests {
             vcx.run_until_parked();
         }
         let (ids, side) = view.update(vcx, |f, _| (f.ids.clone(), f.cell_px));
-        view.update(vcx, |f, _| assert_eq!(f.shape, ThumbnailShape::Square));
+        view.update(vcx, |f, _| assert_eq!(f.grid_layout, GridLayout::Square));
         // Seeded as 64×64, 96×48 and 48×96.
         for id in &ids {
             let frame = view.update(vcx, |f, _| f.cell_bounds(id).expect("cell drawn"));
@@ -1998,12 +2087,12 @@ mod tests {
         }
 
         // Full-aspect frames: the picture is still exactly its frame.
-        vcx.dispatch_action(ToggleThumbnailShape);
+        vcx.dispatch_action(LayoutAspectRatio);
         for _ in 0..2 {
             vcx.update(|window, cx| window.draw(cx).clear(cx));
             vcx.run_until_parked();
         }
-        view.update(vcx, |f, _| assert_eq!(f.shape, ThumbnailShape::AspectRatio));
+        view.update(vcx, |f, _| assert_eq!(f.grid_layout, GridLayout::AspectRatio));
         for id in &ids {
             let frame = view.update(vcx, |f, _| f.cell_bounds(id).expect("cell drawn"));
             let selector: &'static str = Box::leak(format!("thumb-{}", id.media().expect("a generation")).into_boxed_str());
@@ -2194,14 +2283,14 @@ mod tests {
         let three_rows = view.update(vcx, |f, _| 3. * (f32::from(f.cell_px) + GAP));
         vcx.simulate_event(ScrollWheelEvent { position: over_grid, delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-three_rows))), modifiers: gpui::Modifiers::default(), touch_phase: gpui::TouchPhase::Moved });
         let top_item = view.update(vcx, |f, _| {
-            assert_eq!(f.top_row(), 3);
-            f.ids[f.top_row() * f.columns].clone()
+            assert_eq!(f.top_index(), 3 * f.columns);
+            f.ids[f.top_index()].clone()
         });
         vcx.simulate_resize(gpui::size(px(500.), px(600.)));
         vcx.run_until_parked();
         view.update(vcx, |f, _| {
             assert_eq!(f.columns, 3);
-            assert_eq!(f.ids[f.top_row() * f.columns], top_item, "the item that led the top row still does");
+            assert_eq!(f.ids[f.top_index()], top_item, "the item that led the top row still does");
         });
     }
 
@@ -2300,8 +2389,8 @@ mod tests {
         let three_rows = view.update(vcx, |f, _| 3. * (f32::from(cell_for(slot_size(&f.content_size).width, f.columns)) + GAP));
         vcx.simulate_event(wheel(-three_rows));
         let top_item = view.update(vcx, |f, _| {
-            assert_eq!(f.top_row(), 3);
-            f.ids[f.top_row() * f.columns].clone()
+            assert_eq!(f.top_index(), 3 * f.columns);
+            f.ids[f.top_index()].clone()
         });
 
         vcx.dispatch_action(super::super::super::actions::ZoomIn);
@@ -2310,7 +2399,7 @@ mod tests {
             assert_eq!((f.zoom, f.columns), (200, 3));
             let viewport = slot_size(&f.content_size).height;
             assert!(viewport > px(0.) && viewport <= px(600.), "still clipped to the window: {viewport:?}");
-            assert_eq!(f.ids[f.top_row() * f.columns], top_item, "the item that led the top row still does");
+            assert_eq!(f.ids[f.top_index()], top_item, "the item that led the top row still does");
         });
         let before = view.update(vcx, |f, _| f.scroll.offset().y);
         vcx.simulate_event(wheel(-100.));
@@ -2498,27 +2587,62 @@ mod tests {
     }
 
     #[gpui::test]
-    fn thumbnail_shape_toggles_and_persists(cx: &mut TestAppContext) {
+    fn layout_actions_switch_the_grid_and_persist(cx: &mut TestAppContext) {
         let (view, vcx, _env) = feed_window!(cx, 3);
-        view.update(vcx, |f, _| assert_eq!(f.shape, ThumbnailShape::Square, "Photos' default"));
-        vcx.dispatch_action(ToggleThumbnailShape);
+        view.update(vcx, |f, _| assert_eq!(f.grid_layout, GridLayout::Square, "Photos' default"));
+        vcx.dispatch_action(LayoutAspectRatio);
         view.update(vcx, |f, cx| {
-            assert_eq!(f.shape, ThumbnailShape::AspectRatio);
-            assert_eq!(cx.global::<Config>().thumbnail_shape, ThumbnailShape::AspectRatio);
+            assert_eq!(f.grid_layout, GridLayout::AspectRatio);
+            assert_eq!(cx.global::<Config>().grid_layout, GridLayout::AspectRatio);
+            assert!(!f.layout.is_masonry(), "still rows of squares");
         });
-        vcx.dispatch_action(ToggleThumbnailShape);
+        vcx.dispatch_action(LayoutMasonry);
         view.update(vcx, |f, cx| {
-            assert_eq!(f.shape, ThumbnailShape::Square);
-            assert_eq!(cx.global::<Config>().thumbnail_shape, ThumbnailShape::Square);
+            assert_eq!(f.grid_layout, GridLayout::Masonry);
+            assert_eq!(cx.global::<Config>().grid_layout, GridLayout::Masonry);
+            assert!(f.layout.is_masonry());
+        });
+        vcx.dispatch_action(LayoutSquare);
+        view.update(vcx, |f, cx| {
+            assert_eq!(f.grid_layout, GridLayout::Square);
+            assert_eq!(cx.global::<Config>().grid_layout, GridLayout::Square);
+            assert!(!f.layout.is_masonry());
         });
     }
 
     #[gpui::test]
-    fn thumbnail_shape_restores_from_config(cx: &mut TestAppContext) {
-        let _env = env(cx, 0, "Mock");
-        cx.update(|cx| cx.global_mut::<Config>().thumbnail_shape = ThumbnailShape::AspectRatio);
-        let (view, vcx) = cx.add_window_view(FeedView::new);
-        view.update(vcx, |f, _| assert_eq!(f.shape, ThumbnailShape::AspectRatio));
+    fn grid_layout_restores_from_config(cx: &mut TestAppContext) {
+        let _env = env(cx, 3, "Mock");
+        for layout in GridLayout::ALL {
+            cx.update(|cx| cx.global_mut::<Config>().grid_layout = layout);
+            let (view, vcx) = cx.add_window_view(FeedView::new);
+            view.update(vcx, |f, _| {
+                assert_eq!(f.grid_layout, layout);
+                assert_eq!(f.layout.is_masonry(), layout == GridLayout::Masonry);
+            });
+        }
+    }
+
+    /// The toolbar's Layout menu lists every layout, ticks the current one, and each row carries
+    /// the action the View menu item does.
+    #[test]
+    fn layout_menu_checks_the_current_layout() {
+        for current in GridLayout::ALL {
+            let entries = layout_menu_entries(current);
+            assert_eq!(entries.iter().map(|e| e.label.as_ref()).collect::<Vec<_>>(), ["Square", "Aspect Ratio", "Masonry"]);
+            assert!(entries.iter().all(|e| e.enabled));
+            let checked: Vec<&str> = entries.iter().filter(|e| e.checked).map(|e| e.label.as_ref()).collect();
+            assert_eq!(checked, [current.label()], "exactly the current layout is ticked");
+            for (entry, layout) in entries.iter().zip(GridLayout::ALL) {
+                let MenuEntryKind::Action(action) = &entry.kind else { panic!("{}: an action row", entry.label) };
+                let expected: Box<dyn gpui::Action> = match layout {
+                    GridLayout::Square => Box::new(LayoutSquare),
+                    GridLayout::AspectRatio => Box::new(LayoutAspectRatio),
+                    GridLayout::Masonry => Box::new(LayoutMasonry),
+                };
+                assert!(action.partial_eq(expected.as_ref()), "{}: dispatches {}", entry.label, expected.name());
+            }
+        }
     }
 
     /// Square cells crop every thumbnail to the full cell; aspect-ratio cells shrink the frame (and
@@ -2545,7 +2669,7 @@ mod tests {
         assert!(close(wide_cell.size.height, side), "square mode fills the cell");
         assert!(close(tall_cell.size.width, side) && close(tall_cell.size.height, side));
 
-        vcx.dispatch_action(ToggleThumbnailShape);
+        vcx.dispatch_action(LayoutAspectRatio);
         vcx.run_until_parked();
         let square_frame = frame(vcx, &square);
         assert!(close(square_frame.size.width, side) && close(square_frame.size.height, side), "a square image still fills the cell");
@@ -2558,9 +2682,262 @@ mod tests {
         assert!(close(tall_frame.origin.x, tall_cell.origin.x + side / 4.), "centred horizontally");
         assert!(close(tall_frame.origin.y, tall_cell.origin.y));
 
-        vcx.dispatch_action(ToggleThumbnailShape);
+        vcx.dispatch_action(LayoutSquare);
         vcx.run_until_parked();
         assert_eq!(frame(vcx, &wide), wide_cell, "back to the full cell");
+    }
+
+    /// Let every enter / move animation finish and draw the settled grid, so `cell_bounds` holds
+    /// the cells' resting boxes rather than a frame of the motion.
+    fn settle(view: &Entity<FeedView>, vcx: &mut gpui::VisualTestContext) {
+        vcx.background_executor.advance_clock(Duration::from_secs(1));
+        view.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        view.update(vcx, |f, cx| {
+            f.motion.tick(now(cx));
+            assert!(!f.motion.is_animating(), "settled");
+        });
+    }
+
+    /// Every masonry cell is a column wide and as tall as its picture, dropped into the column
+    /// that is shortest when its turn comes. Eight seeded images (64×64, 96×48, 48×96 in turn,
+    /// listed newest first: 2:1, 1:1, 1:2, …) across four 197.5 px columns: the fifth (1:1) goes
+    /// under the first (the shortest column; a tie with the fourth, leftmost wins), the sixth
+    /// (1:2) under the fourth, the eighth under the fifth.
+    #[gpui::test]
+    fn masonry_packs_cells_into_the_shortest_column_at_their_aspect(cx: &mut TestAppContext) {
+        let (view, vcx, _env) = feed_window!(cx, 8);
+        vcx.simulate_resize(gpui::size(px(800.), px(600.)));
+        vcx.dispatch_action(LayoutMasonry);
+        vcx.run_until_parked();
+        let close = |a: f32, b: f32| (a - b).abs() < 0.01;
+        let (ids, cell) = view.update(vcx, |f, _| {
+            assert_eq!(f.columns, 4);
+            assert_eq!(f.ratios, [2., 1., 0.5, 2., 1., 0.5, 2., 1.].map(Some), "the seeded shapes, newest first");
+            let cell = f32::from(f.cell_px);
+            assert!(close(cell, (796. - 3. * GAP) / 4.), "{cell}");
+            let slot = |index: usize| f.layout.slot(index).expect("laid out");
+            let expect = |index: usize, column: usize, y: f32, height: f32| {
+                let s = slot(index);
+                assert!(s.column == column && close(s.x, column as f32 * (cell + GAP)) && close(s.y, y) && close(s.width, cell) && close(s.height, height), "cell {index}: {s:?}, wanted column {column} at y {y} height {height}");
+            };
+            expect(0, 0, 0., cell / 2.);
+            expect(1, 1, 0., cell);
+            expect(2, 2, 0., 2. * cell);
+            expect(3, 3, 0., cell / 2.);
+            expect(4, 0, cell / 2. + GAP, cell);
+            expect(5, 3, cell / 2. + GAP, 2. * cell);
+            expect(6, 1, cell + GAP, cell / 2.);
+            expect(7, 0, 1.5 * cell + 2. * GAP, cell);
+            assert!(close(f.layout.height(), 2.5 * cell + 2. * GAP), "the first column is the lowest");
+            (f.ids.clone(), cell)
+        });
+        // What was drawn agrees once the cells have slid into their columns: the frames are the
+        // cells, laid out from the first cell's corner.
+        settle(&view, vcx);
+        let frame = |vcx: &mut gpui::VisualTestContext, index: usize| view.update(vcx, |f, _| f.cell_bounds(&ids[index]).expect("cell drawn"));
+        let origin = frame(vcx, 0).origin;
+        // Drawn boxes snap to device pixels.
+        let drawn_close = |a: Pixels, b: f32| (f32::from(a) - b).abs() < 1.;
+        for index in 0..8 {
+            let (drawn, slot) = (frame(vcx, index), view.update(vcx, |f, _| f.layout.slot(index).unwrap()));
+            assert!(drawn_close(drawn.origin.x - origin.x, slot.x) && drawn_close(drawn.origin.y - origin.y, slot.y), "cell {index} drawn at {:?}, laid out at ({}, {})", drawn.origin, slot.x, slot.y);
+            assert!(drawn_close(drawn.size.width, cell) && drawn_close(drawn.size.height, slot.height), "cell {index} drawn {:?}, laid out {} × {}", drawn.size, cell, slot.height);
+        }
+    }
+
+    /// Switching rows ↔ masonry and zooming inside masonry keep the cell at the scroll top there.
+    #[gpui::test]
+    fn masonry_keeps_the_top_item_across_a_layout_switch_and_zoom(cx: &mut TestAppContext) {
+        let (view, vcx, _env) = feed_window!(cx, 60);
+        vcx.simulate_resize(gpui::size(px(800.), px(600.)));
+        vcx.run_until_parked();
+        let over_grid = point(px(400.), px(300.));
+        vcx.simulate_mouse_move(over_grid, None, gpui::Modifiers::default());
+        let three_rows = view.update(vcx, |f, _| 3. * (f32::from(f.cell_px) + GAP));
+        vcx.simulate_event(ScrollWheelEvent { position: over_grid, delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-three_rows))), modifiers: gpui::Modifiers::default(), touch_phase: gpui::TouchPhase::Moved });
+        let top_item = view.update(vcx, |f, _| {
+            assert_eq!(f.top_index(), 3 * f.columns);
+            f.ids[f.top_index()].clone()
+        });
+        // Into masonry: that cell sits exactly at the top edge of the new layout.
+        let at_top = |f: &FeedView, id: &EntryId| {
+            let index = f.ids.iter().position(|i| i == id).expect("still listed");
+            let slot = f.layout.slot(index).expect("laid out");
+            assert!((slot.y + f32::from(f.scroll.offset().y)).abs() < 0.01, "{id} is at y {} while the grid is scrolled to {:?}", slot.y, -f.scroll.offset().y);
+        };
+        vcx.dispatch_action(LayoutMasonry);
+        vcx.run_until_parked();
+        let anchor = view.update(vcx, |f, _| {
+            assert!(f.layout.is_masonry());
+            at_top(f, &top_item);
+            assert!(f.ids.iter().all(|id| f.motion.is_moving(id)), "every cell slides and resizes into its column");
+            assert_eq!(f.motion.ghost_count(), 0);
+            f.ids[f.top_index()].clone()
+        });
+        // A zoom step in masonry keeps whichever cell led the viewport.
+        vcx.background_executor.advance_clock(Duration::from_millis(300));
+        vcx.dispatch_action(super::super::super::actions::ZoomIn);
+        vcx.run_until_parked();
+        let anchor = view.update(vcx, |f, _| {
+            assert_eq!((f.zoom, f.columns), (200, 3));
+            at_top(f, &anchor);
+            f.ids[f.top_index()].clone()
+        });
+        // And back to rows: the leading cell heads the top row.
+        vcx.background_executor.advance_clock(Duration::from_millis(300));
+        vcx.dispatch_action(LayoutSquare);
+        vcx.run_until_parked();
+        view.update(vcx, |f, _| {
+            assert!(!f.layout.is_masonry());
+            at_top(f, &anchor);
+            assert_eq!(f.ids[f.top_index()], anchor);
+        });
+    }
+
+    /// In masonry Up / Down walk the column the selection is in (the columns of
+    /// `masonry_packs_cells_into_the_shortest_column_at_their_aspect`: [0, 4, 7], [1, 6], [2],
+    /// [3, 5]); Left / Right still follow the index.
+    #[gpui::test]
+    fn masonry_arrow_keys_move_within_the_column(cx: &mut TestAppContext) {
+        use super::super::super::actions::{SelectDown, SelectLeft, SelectRight, SelectUp};
+        let (view, vcx, _env) = feed_window!(cx, 8);
+        vcx.simulate_resize(gpui::size(px(800.), px(600.)));
+        vcx.dispatch_action(LayoutMasonry);
+        vcx.run_until_parked();
+        let selected = |vcx: &mut gpui::VisualTestContext| view.update(vcx, |f, _| f.selection.last_index);
+        vcx.dispatch_action(SelectRight);
+        assert_eq!(selected(vcx), Some(0), "first arrow selects the first item");
+        vcx.dispatch_action(SelectDown);
+        assert_eq!(selected(vcx), Some(4), "down the first column");
+        vcx.dispatch_action(SelectDown);
+        assert_eq!(selected(vcx), Some(7));
+        vcx.dispatch_action(SelectDown);
+        assert_eq!(selected(vcx), Some(7), "the column's end");
+        vcx.dispatch_action(SelectUp);
+        vcx.dispatch_action(SelectUp);
+        assert_eq!(selected(vcx), Some(0));
+        vcx.dispatch_action(SelectRight);
+        assert_eq!(selected(vcx), Some(1), "index order, into the second column");
+        vcx.dispatch_action(SelectDown);
+        assert_eq!(selected(vcx), Some(6));
+        vcx.dispatch_action(SelectDown);
+        assert_eq!(selected(vcx), Some(6));
+        vcx.dispatch_action(SelectLeft);
+        assert_eq!(selected(vcx), Some(5), "index order, into the fourth column");
+        vcx.dispatch_action(SelectUp);
+        assert_eq!(selected(vcx), Some(3));
+        vcx.dispatch_action(SelectUp);
+        assert_eq!(selected(vcx), Some(3), "the column's top");
+        view.update(vcx, |f, _| assert_eq!(f.selection.single(), Some(&f.ids[3])));
+    }
+
+    #[gpui::test]
+    fn masonry_draws_only_the_cells_around_the_viewport(cx: &mut TestAppContext) {
+        let (view, vcx, _env) = feed_window!(cx, 400);
+        vcx.simulate_resize(gpui::size(px(800.), px(600.)));
+        vcx.dispatch_action(LayoutMasonry);
+        vcx.run_until_parked();
+        let (drawn, columns, first_drawn, last_drawn) = view.update(vcx, |f, _| {
+            assert!(f.layout.is_masonry() && f.layout.len() == 400);
+            (f.last_rendered.len(), f.columns, f.last_rendered.contains_key(&f.ids[0]), f.last_rendered.contains_key(&f.ids[399]))
+        });
+        assert!(drawn <= columns * 12, "a 600 px window draws a few cells per column plus overscan, not {drawn} cells");
+        assert!(first_drawn && !last_drawn, "top of the grid is what's drawn");
+        let over_grid = point(px(500.), px(300.));
+        vcx.simulate_mouse_move(over_grid, None, gpui::Modifiers::default());
+        vcx.simulate_event(ScrollWheelEvent { position: over_grid, delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-1_000_000.))), modifiers: gpui::Modifiers::default(), touch_phase: gpui::TouchPhase::Moved });
+        vcx.run_until_parked();
+        let (drawn, first_drawn, last_drawn) = view.update(vcx, |f, _| (f.last_rendered.len(), f.last_rendered.contains_key(&f.ids[0]), f.last_rendered.contains_key(&f.ids[399])));
+        assert!(drawn <= columns * 12, "{drawn}");
+        assert!(!first_drawn && last_drawn, "scrolled to the bottom, only the last cells are drawn ({drawn} cells)");
+    }
+
+    #[gpui::test]
+    fn masonry_land_on_scrolls_the_slot_into_view(cx: &mut TestAppContext) {
+        let (view, vcx, _env) = feed_window!(cx, 40);
+        vcx.simulate_resize(gpui::size(px(800.), px(600.)));
+        vcx.dispatch_action(LayoutMasonry);
+        vcx.run_until_parked();
+        view.update(vcx, |f, cx| {
+            let last = f.ids[39].clone();
+            f.cell_bounds.borrow_mut().clear();
+            assert_eq!(f.land_on(&last, cx), None, "not drawn → not on screen");
+            assert_eq!(f.selection.single(), Some(&last));
+            let slot = f.layout.slot(39).unwrap();
+            let viewport = f32::from(slot_size(&f.content_size).height);
+            // The handle clamps the offset to the content when it paints, not here.
+            let centred = (slot.y - (viewport - slot.height) / 2.).max(0.);
+            assert!((f32::from(-f.scroll.offset().y) - centred).abs() < 0.01, "scrolled to centre the cell: {:?} vs {centred}", f.scroll.offset().y);
+        });
+    }
+
+    /// A generation that finishes in masonry learns its shape: its cell grows from the square it
+    /// held while running, and the boxes handed to the detail follow.
+    #[gpui::test]
+    fn masonry_reflows_when_a_generation_learns_its_size(cx: &mut TestAppContext) {
+        let (view, vcx, env) = feed_window!(cx, 8);
+        let id = env.library.update(vcx, |m, _| m.lib.add_generating(MediaType::Image, None, None, None, None));
+        env.library.update(vcx, |_, cx| cx.notify());
+        vcx.simulate_resize(gpui::size(px(800.), px(600.)));
+        vcx.dispatch_action(LayoutMasonry);
+        vcx.run_until_parked();
+        // The new row popped in and every cell slid into its column; measure at rest.
+        settle(&view, vcx);
+        let entry = EntryId::Generation(id.clone());
+        let (index, cell, height_before) = view.update(vcx, |f, _| {
+            let index = f.ids.iter().position(|i| *i == entry).expect("listed while running");
+            let slot = f.layout.slot(index).unwrap();
+            assert_eq!(slot.height, slot.width, "square until its size is known");
+            (index, slot.width, f.layout.height())
+        });
+        let drawn = view.update(vcx, |f, _| f.cell_bounds(&entry).expect("drawn"));
+        assert!((f32::from(drawn.size.height) - cell).abs() < 1., "drawn {:?} for a {cell} px square cell at index {index}", drawn);
+
+        env.library.update(vcx, |m, cx| {
+            m.apply(majik_generation::Event::Completed { id: id.clone(), job: m.attempt(&id), bytes: majik_core::images::solid_png(48, 96, [9, 8, 7]), is_upscaled: false }, cx);
+        });
+        vcx.run_until_parked();
+        view.update(vcx, |f, _| {
+            assert_eq!(f.ids.iter().position(|i| *i == entry), Some(index), "same row, same place");
+            let slot = f.layout.slot(index).unwrap();
+            assert!((slot.height - 2. * cell).abs() < 0.01, "1:2 picture: twice the column width ({slot:?})");
+            assert!(f.layout.height() > height_before, "the column below it grew");
+        });
+        settle(&view, vcx);
+        let drawn = view.update(vcx, |f, _| f.cell_bounds(&entry).expect("drawn again"));
+        assert!((f32::from(drawn.size.height) - 2. * cell).abs() < 1., "the drawn box follows: {:?}", drawn.size);
+    }
+
+    /// Masonry cells draw their pictures at the column's width, so a portrait picture (whose
+    /// width is its short edge) outgrows the standard tier where a landscape one does not.
+    #[gpui::test]
+    fn masonry_decodes_at_the_column_width_and_wants_the_large_tier_for_portraits(cx: &mut TestAppContext) {
+        let (view, vcx, _env) = feed_window!(cx, 3);
+        vcx.simulate_resize(gpui::size(px(800.), px(600.)));
+        vcx.dispatch_action(LayoutMasonry);
+        vcx.run_until_parked();
+        view.update(vcx, |f, _| {
+            assert_eq!(f.fit(), Fit::Width);
+            assert!(f.may_want_large(), "a narrow picture can want the large tier at any column width");
+            assert_eq!(f.frame_fractions(Some(0.5)), (1., 1.), "the cell already has the picture's shape");
+            // Four 197.5 px columns on the 2x test window are 395 device px wide: the standard
+            // tier's 400 px long edge covers a landscape picture, but a 9:16 one is only 225 px wide.
+            assert_eq!((f.columns, f.scale_factor), (4, 2.));
+            assert_eq!(f.tier_for_cell(Some(90. / 160.)), thumbnails::THUMB_LARGE);
+            assert_eq!(f.tier_for_cell(Some(2.)), thumbnails::THUMB_MAX);
+            assert_eq!(f.tier_for_cell(None), thumbnails::THUMB_MAX, "unknown shapes count as square");
+        });
+        // Three 264 px columns (528 device px): nothing fits the standard tier any more.
+        for _ in 0..2 {
+            vcx.dispatch_action(super::super::super::actions::ZoomIn);
+        }
+        vcx.run_until_parked();
+        view.update(vcx, |f, _| {
+            assert_eq!((f.zoom, f.columns), (240, 3));
+            assert_eq!(f.tier_for_cell(Some(2.)), thumbnails::THUMB_LARGE);
+            assert_eq!(f.tier_for_cell(None), thumbnails::THUMB_LARGE);
+        });
     }
 
     #[gpui::test]
@@ -2703,10 +3080,10 @@ mod tests {
         });
 
         // Shown whole, the long edge spans the cell and the standard tier is enough again.
-        vcx.dispatch_action(ToggleThumbnailShape);
+        vcx.dispatch_action(LayoutAspectRatio);
         vcx.run_until_parked();
         view.update(vcx, |feed, cx| {
-            assert_eq!(feed.shape, ThumbnailShape::AspectRatio);
+            assert_eq!(feed.grid_layout, GridLayout::AspectRatio);
             assert_eq!(feed.thumbnail_for_cell(&portrait, Some(90. / 160.), cx), portrait);
         });
     }
