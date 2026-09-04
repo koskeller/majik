@@ -107,11 +107,29 @@ else
     echo "====== WARNING ======"
 fi
 
+# `codesign --timestamp` asks Apple's timestamp server for a countersignature, and on the CI
+# runners that request fails now and then ("A timestamp was expected but was not found");
+# the next try goes through. Retry rather than lose a release build to it.
+sign_with_retries() { # <codesign arguments…>
+    local attempt
+    for attempt in 1 2 3 4 5; do
+        if codesign "$@"; then
+            return 0
+        fi
+        if [[ "$attempt" = 5 ]]; then
+            echo "codesign failed ${attempt} times; giving up." >&2
+            return 1
+        fi
+        echo "codesign failed (attempt ${attempt}); retrying in a few seconds." >&2
+        sleep 5
+    done
+}
+
 if [[ "$can_code_sign" = true ]]; then
     echo "Signing the app with the hardened runtime"
     # No `--deep`: it is deprecated, and the bundle holds exactly one Mach-O (everything the app
     # needs — openh264, SQLite, rustls — is statically linked).
-    codesign --force --timestamp --options runtime \
+    sign_with_retries --force --timestamp --options runtime \
         --entitlements packaging/majik.entitlements \
         --sign "$APPLE_SIGNING_IDENTITY" "$app" --verbose
     codesign --verify --deep --strict --verbose=2 "$app"
@@ -144,7 +162,7 @@ rm -f "$dmg_dir/Applications"
 hdiutil verify "$dmg" > /dev/null
 
 if [[ "$can_code_sign" = true ]]; then
-    codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$dmg" --verbose
+    sign_with_retries --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$dmg" --verbose
 fi
 
 if [[ "$can_code_sign" = true ]] && have_macos_notarization; then
