@@ -94,9 +94,11 @@ impl MediaType {
         }
     }
 
+    /// What a set of these is called in the UI: the filter menu, empty states, messages about
+    /// several rows. "Audio" is already a mass noun, so it is its own plural.
     pub fn plural(self) -> &'static str {
         match self {
-            MediaType::Image => "Photos",
+            MediaType::Image => "Images",
             MediaType::Video => "Videos",
             MediaType::Audio => "Audio",
         }

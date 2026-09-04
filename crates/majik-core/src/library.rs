@@ -50,20 +50,28 @@ pub enum MediaFilter {
 impl MediaFilter {
     pub const ALL: [MediaFilter; 4] = [MediaFilter::All, MediaFilter::Image, MediaFilter::Video, MediaFilter::Audio];
 
-    pub fn label(self) -> &'static str {
+    /// The one media type this filter admits; `None` for [`MediaFilter::All`], which admits every
+    /// type.
+    pub fn media_type(self) -> Option<MediaType> {
         match self {
-            MediaFilter::All => "All Items",
-            MediaFilter::Image => "Photos",
-            MediaFilter::Video => "Videos",
-            MediaFilter::Audio => "Audio",
+            MediaFilter::All => None,
+            MediaFilter::Image => Some(MediaType::Image),
+            MediaFilter::Video => Some(MediaType::Video),
+            MediaFilter::Audio => Some(MediaType::Audio),
+        }
+    }
+
+    /// Named after the media itself ([`MediaType::plural`]), so the filter menu and the rest of the
+    /// UI call a kind of media the same thing.
+    pub fn label(self) -> &'static str {
+        match self.media_type() {
+            None => "All Items",
+            Some(media) => media.plural(),
         }
     }
 
     pub fn matches(self, t: MediaType) -> bool {
-        matches!(
-            (self, t),
-            (MediaFilter::All, _) | (MediaFilter::Image, MediaType::Image) | (MediaFilter::Video, MediaType::Video) | (MediaFilter::Audio, MediaType::Audio)
-        )
+        self.media_type().is_none_or(|media| media == t)
     }
 }
 
@@ -1706,5 +1714,22 @@ mod tests {
         assert!(MediaFilter::All.matches(MediaType::Video));
         assert!(MediaFilter::Video.matches(MediaType::Video));
         assert!(!MediaFilter::Image.matches(MediaType::Video));
+        for media in MediaType::ALL {
+            let filter = MediaFilter::ALL.into_iter().find(|f| f.media_type() == Some(media)).expect("every media type has a filter");
+            assert!(MediaType::ALL.into_iter().all(|other| filter.matches(other) == (other == media)));
+        }
+    }
+
+    /// The filter menu names a kind of media the way the rest of the app does. The image filter
+    /// used to read "Photos" while everything else — the composer tab, the info panel, the app
+    /// itself — said image.
+    #[test]
+    fn every_filter_is_named_after_its_media() {
+        assert_eq!(MediaFilter::Image.label(), "Images");
+        assert_eq!(MediaFilter::All.label(), "All Items");
+        for filter in MediaFilter::ALL {
+            let Some(media) = filter.media_type() else { continue };
+            assert_eq!(filter.label(), media.plural(), "{filter:?} is named after {media:?}");
+        }
     }
 }
