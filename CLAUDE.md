@@ -97,12 +97,13 @@ gh workflow run platforms.yml                   # on-demand 3-OS matrix + full m
   at 8 MB) in `config::logs_dir()`, which like `credentials_dir` is `None` in tests so nothing
   touches the real folder. `RUST_LOG=telemetry=trace` prints events as they are queued.
 - CI on push (`ci.yml`) only builds/tests/clippies the portable crates on Linux
-  (`core storage providers generation audio`); `majik-app`, `majik-video`, `majik-platform`,
+  (`core storage providers generation audio telemetry crashes`); `majik-app`, `majik-video`, `majik-platform`,
   `majik-dragout` are only checked by the manual `platforms.yml` run. Run the workspace clippy locally.
 
 ## Architecture
 
-Dependency direction (never reversed): `app → {generation, video, audio, platform, dragout} → providers → core → storage`.
+Dependency direction (never reversed): `app → {generation, video, audio, platform, dragout, crashes} → providers → core → storage`;
+`telemetry` sits under everything and depends on nothing of ours.
 
 **Vocabulary** (flarly's, kept the same in code, docs and tests):
 - **Asset** — a file the library holds (an output, an input, an import), content-addressed; carries no role.

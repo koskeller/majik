@@ -45,15 +45,19 @@ pub fn upload_previous_minidumps(telemetry: &Arc<Telemetry>, logs_dir: &Path, di
             remove_pair(&dump_path, &json_path);
             continue;
         }
-        let minidump = std::fs::read(&dump_path).unwrap_or_default();
+        let minidump = match std::fs::read(&dump_path) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::warn!(target: "majik", "reading {}: {e}", dump_path.display());
+                outcome.kept += 1;
+                continue;
+            }
+        };
         match telemetry.send_crash(metadata, minidump) {
             Ok(()) => {
-                majik_telemetry::event!(
-                    "Minidump Uploaded",
-                    panic_message = info.panic.as_ref().map(|panic| panic.message.clone()),
-                    crashed_version = info.init.app_version,
-                    commit_sha = info.init.commit_sha,
-                );
+                // The panic message stays in the crash report: a panic from `anyhow` context can
+                // name the library folder, and this is a usage event.
+                majik_telemetry::event!("Minidump Uploaded", panicked = info.panic.is_some(), crashed_version = info.init.app_version, commit_sha = info.init.commit_sha);
                 remove_pair(&dump_path, &json_path);
                 outcome.uploaded += 1;
             }
@@ -137,8 +141,9 @@ mod tests {
         cx.run_until_parked();
         let uploaded = e.events_named("Minidump Uploaded");
         assert_eq!(uploaded.len(), 1);
-        assert_eq!(uploaded[0].event_properties["panic_message"], "boom");
+        assert_eq!(uploaded[0].event_properties["panicked"], true);
         assert_eq!(uploaded[0].event_properties["commit_sha"], "abc123");
+        assert!(!serde_json::to_string(&uploaded[0]).unwrap().contains("boom"), "the panic message stays in the report");
     }
 
     #[gpui::test]

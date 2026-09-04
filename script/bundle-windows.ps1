@@ -34,6 +34,7 @@ Write-Host "Building Majik $Version ($ReleaseChannel) for $Target"
 # reports (see script/lib/release.sh); MAJIK_TELEMETRY_SEED comes from the workflow's environment.
 $env:MAJIK_CHANNEL = $ReleaseChannel
 $env:MAJIK_COMMIT_SHA = (git rev-parse HEAD).Trim()
+if (-not $env:MAJIK_COMMIT_SHA) { throw "FATAL: could not read the commit to stamp into the build." }
 if (-not $env:MAJIK_TELEMETRY_SEED) {
     Write-Warning "MAJIK_TELEMETRY_SEED is unset; this build's telemetry carries no checksum."
 }

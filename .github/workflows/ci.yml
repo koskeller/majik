@@ -47,8 +47,8 @@ jobs:
       - name: Install ALSA (for cpal/rodio in majik-audio)
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - name: Build
-        run: cargo build -p majik-core -p majik-storage -p majik-providers -p majik-generation -p majik-audio
+        run: cargo build -p majik-core -p majik-storage -p majik-providers -p majik-generation -p majik-audio -p majik-telemetry -p majik-crashes
       - name: Test
-        run: cargo test -p majik-core -p majik-storage -p majik-providers -p majik-generation -p majik-audio
+        run: cargo test -p majik-core -p majik-storage -p majik-providers -p majik-generation -p majik-audio -p majik-telemetry -p majik-crashes
       - name: Clippy
-        run: cargo clippy -p majik-core -p majik-storage -p majik-providers -p majik-generation -p majik-audio -- -D warnings
+        run: cargo clippy -p majik-core -p majik-storage -p majik-providers -p majik-generation -p majik-audio -p majik-telemetry -p majik-crashes -- -D warnings

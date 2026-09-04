@@ -33,7 +33,16 @@ crate_version() {
 # never spells it out, and a build without it ships telemetry the server may drop.
 stamp_channel() {
     export MAJIK_CHANNEL="$RELEASE_CHANNEL"
-    export MAJIK_COMMIT_SHA="$(git -C "$(repo_root)" rev-parse HEAD)"
+    # Assigned before it is exported so a failing `git rev-parse` is not masked by `export`'s
+    # own exit status; a bundle with no commit would have every crash report from it dropped
+    # unsent (`reliability.rs`), so it is an error here.
+    local commit
+    commit="$(git -C "$(repo_root)" rev-parse HEAD)"
+    if [[ -z "$commit" ]]; then
+        echo "FATAL: could not read the commit to stamp into the build." >&2
+        exit 1
+    fi
+    export MAJIK_COMMIT_SHA="$commit"
     if [[ -z "${MAJIK_TELEMETRY_SEED:-}" ]]; then
         echo "note: MAJIK_TELEMETRY_SEED is unset; this build's telemetry carries no checksum." >&2
     fi

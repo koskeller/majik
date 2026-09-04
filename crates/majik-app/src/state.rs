@@ -289,7 +289,10 @@ impl LibraryModel {
     /// row is updated, so the attempt is the one that just ended.
     fn report_finished(&self, id: &GenerationId, outcome: &'static str, error_kind: Option<&'static str>) {
         let Some(row) = self.lib.get(id) else { return };
-        let attempt = self.lib.active_job(id).map(|job| job.attempt);
+        let job = self.lib.active_job(id);
+        // From the attempt's own clock: a retry a day later is that attempt's seconds, not the
+        // row's age.
+        let since = job.as_ref().map(|job| job.started_at_ms.unwrap_or(job.created_at_ms)).unwrap_or(row.created_at_ms);
         majik_telemetry::event!(
             "Generation Finished",
             provider = row.provider.clone(),
@@ -298,8 +301,8 @@ impl LibraryModel {
             tool = row.tool.map(tool_name),
             outcome,
             error_kind,
-            attempt,
-            duration_ms = majik_core::now_ms().saturating_sub(row.created_at_ms),
+            attempt = job.map(|job| job.attempt),
+            duration_ms = majik_core::now_ms().saturating_sub(since),
         );
     }
 

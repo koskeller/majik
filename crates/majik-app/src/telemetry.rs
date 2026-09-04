@@ -60,18 +60,12 @@ impl HttpTransport {
         Self { base_url, seed }
     }
 
-    fn client() -> &'static reqwest::blocking::Client {
-        static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
-        CLIENT.get_or_init(|| {
-            reqwest::blocking::Client::builder()
-                .user_agent(concat!("majik/", env!("CARGO_PKG_VERSION")))
-                .timeout(Duration::from_secs(30))
-                .build()
-                .unwrap_or_else(|e| {
-                    tracing::warn!(target: "majik", "building the telemetry client: {e}");
-                    reqwest::blocking::Client::new()
-                })
-        })
+    fn client() -> anyhow::Result<&'static reqwest::blocking::Client> {
+        static CLIENT: std::sync::OnceLock<Result<reqwest::blocking::Client, String>> = std::sync::OnceLock::new();
+        CLIENT
+            .get_or_init(|| reqwest::blocking::Client::builder().user_agent(concat!("majik/", env!("CARGO_PKG_VERSION"))).timeout(Duration::from_secs(30)).build().map_err(|e| e.to_string()))
+            .as_ref()
+            .map_err(|e| anyhow::anyhow!("building the telemetry client: {e}"))
     }
 
     fn signed(&self, request: reqwest::blocking::RequestBuilder, body: &[u8]) -> reqwest::blocking::RequestBuilder {
@@ -86,14 +80,14 @@ impl Transport for HttpTransport {
     fn send(&self, request: TelemetryRequest) -> anyhow::Result<()> {
         let response = match request {
             TelemetryRequest::Events(body) => {
-                let request = Self::client().post(format!("{}/events", self.base_url)).header("Content-Type", "application/json");
+                let request = Self::client()?.post(format!("{}/events", self.base_url)).header("Content-Type", "application/json");
                 self.signed(request, &body).body(body).send()?
             }
             TelemetryRequest::Crash { metadata, minidump } => {
                 let form = reqwest::blocking::multipart::Form::new()
                     .part("metadata", reqwest::blocking::multipart::Part::bytes(metadata.clone()).mime_str("application/json")?)
                     .part("minidump", reqwest::blocking::multipart::Part::bytes(minidump).file_name("minidump.dmp").mime_str("application/octet-stream")?);
-                let request = Self::client().post(format!("{}/crashes", self.base_url));
+                let request = Self::client()?.post(format!("{}/crashes", self.base_url));
                 self.signed(request, &metadata).multipart(form).send()?
             }
         };
@@ -105,12 +99,17 @@ impl Transport for HttpTransport {
     }
 }
 
-/// A build with nowhere to send: events still reach the log, so the Telemetry page works the same.
+/// A build with nowhere to send: events still reach the log, so the Telemetry page works the
+/// same. A crash report is refused rather than swallowed, so it stays on disk instead of being
+/// deleted as "sent".
 pub struct NoTransport;
 
 impl Transport for NoTransport {
-    fn send(&self, _request: TelemetryRequest) -> anyhow::Result<()> {
-        Ok(())
+    fn send(&self, request: TelemetryRequest) -> anyhow::Result<()> {
+        match request {
+            TelemetryRequest::Events(_) => Ok(()),
+            TelemetryRequest::Crash { .. } => anyhow::bail!("this build has no telemetry endpoint"),
+        }
     }
 }
 
@@ -166,7 +165,7 @@ struct TelemetryState {
     first_event_at: Option<Instant>,
     flush_task: Option<Task<()>>,
     max_queue_len: usize,
-    /// `telemetry.log`, truncated at launch; every flushed event is appended.
+    /// `telemetry.log`, appended to; every flushed event is one line.
     log_file: Option<File>,
     log_path: Option<PathBuf>,
     /// The Telemetry page, while it is open.
@@ -191,14 +190,11 @@ impl Telemetry {
     /// written, in which case nothing is ever sent (the queue still fills the log).
     pub fn new(transport: Arc<dyn Transport>, installation_id: Option<String>, session_id: String, route: Route, cx: &mut App) -> Arc<Self> {
         let log_path = config::logs_dir().map(|dir| dir.join("telemetry.log"));
-        let log_file = log_path.as_ref().and_then(|path| {
-            path.parent().map(std::fs::create_dir_all);
-            match File::create(path) {
-                Ok(file) => Some(file),
-                Err(e) => {
-                    tracing::warn!(target: "majik", "creating {}: {e}", path.display());
-                    None
-                }
+        let log_file = log_path.as_ref().and_then(|path| match open_log(path) {
+            Ok(file) => Some(file),
+            Err(e) => {
+                tracing::warn!(target: "majik", "opening {}: {e}", path.display());
+                None
             }
         });
         let os_name = majik_platform::system::os_name();
@@ -397,6 +393,19 @@ impl Telemetry {
         }
         Ok(())
     }
+}
+
+/// Open `telemetry.log` for appending. Two instances of a channel (routine for Dev) share it, so
+/// it is never truncated, only moved aside as `telemetry.log.old` once it is past what the
+/// Telemetry page reads back.
+fn open_log(path: &std::path::Path) -> std::io::Result<File> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    if std::fs::metadata(path).map(|m| m.len() as usize >= MAX_LOG_READ).unwrap_or(false) {
+        std::fs::rename(path, path.with_extension("log.old"))?;
+    }
+    std::fs::OpenOptions::new().create(true).append(true).open(path)
 }
 
 /// The events in a `telemetry.log`, from its last [`MAX_LOG_READ`] bytes (whole lines only).
@@ -683,6 +692,13 @@ mod tests {
         let transport = HttpTransport::new(url, None);
         let error = transport.send(TelemetryRequest::Events(b"body".to_vec())).unwrap_err().to_string();
         assert!(error.contains("403") && error.contains("bad checksum"), "{error}");
+    }
+
+    #[test]
+    fn a_build_without_an_endpoint_logs_events_but_refuses_crash_reports() {
+        // Events have the log to land in; a crash report "sent" nowhere would be deleted.
+        assert!(NoTransport.send(TelemetryRequest::Events(b"{}".to_vec())).is_ok());
+        assert!(NoTransport.send(TelemetryRequest::Crash { metadata: vec![], minidump: vec![] }).is_err());
     }
 
     #[test]

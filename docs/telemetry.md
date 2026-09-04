@@ -50,8 +50,8 @@ Development builds (`cargo run`) send nothing unless pointed at a server with
 
 **Help → View Telemetry Log** (or Settings → Telemetry) lists every event this app has queued,
 newest first, with its properties. The same events are appended to `telemetry.log` in the logs
-folder (**Settings → About → Show Logs**), one JSON line each, exactly as they were sent. The log
-is truncated at every launch.
+folder (**Settings → About → Show Logs**), one JSON line each, exactly as they were sent; the page
+reads back its last few megabytes.
 
 ## The events
 
@@ -71,7 +71,7 @@ is truncated at every launch.
 | Layout Changed | `layout` |
 | Settings Changed | `setting` (`appearance`, `reduce_motion`, `library_root`), `value` for the first two |
 | Provider Key Added / Provider Key Removed | `provider` |
-| Minidump Uploaded | `panic_message`, `crashed_version`, `commit_sha` |
+| Minidump Uploaded | `panicked`, `crashed_version`, `commit_sha` (the panic message itself stays in the crash report) |
 
 Every event also carries `event_source: "majik"`.
 

@@ -28,6 +28,10 @@ fast_image_resize = { version = "5", features = ["image"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 sha2 = "0.10"
 directories = "6"
+# Crash reports: the minidump is zstd-compressed on disk and on the wire.
+zstd = "0.13"
+# Every crate with a Windows backend takes its features from this one version.
+windows = "0.61"
 infer = "0.19"
 thiserror = "2"
 bytes = "1"

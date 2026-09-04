@@ -64,6 +64,8 @@ fn main() {
                 std::process::exit(2);
             };
             config::set_config_dir(config::default_config_dir());
+            // The server shares the app's log: a report it could not write is otherwise lost twice.
+            init_logging();
             // `--crash-test` points the reports somewhere a test can look.
             let logs_dir = std::env::var_os("MAJIK_CRASH_LOGS_DIR").map(PathBuf::from).or_else(config::logs_dir).unwrap_or_else(|| PathBuf::from("."));
             if let Err(e) = majik_crashes::crash_server(std::path::Path::new(&socket), logs_dir) {
@@ -88,7 +90,8 @@ fn main() {
     config::set_config_dir(config::default_config_dir());
     init_logging();
     let mut config = Config::load();
-    let first_launch = config.ensure_installation_id();
+    // An install from before ids existed has finished onboarding; it is not a first launch.
+    let first_launch = config.ensure_installation_id() && !config.onboarding_completed;
     if std::env::var_os("MAJIK_COMPOSE").is_some() {
         config.compose_panel_open = true;
     }
@@ -101,6 +104,9 @@ fn main() {
 
     // A Stable build with somewhere to send reports gets the crash server; a dev build gets a
     // backtrace instead, unless it asks (`MAJIK_GENERATE_MINIDUMPS=1`) to exercise the real thing.
+    // The backtrace hook goes in first either way: the server takes a moment to come up, and a
+    // panic before then (the library failing to open) would otherwise have no hook at all.
+    majik_crashes::force_backtrace();
     let crash_handler = if should_install_crash_handler() {
         let executor = app.background_executor();
         let spawner = app.background_executor();
@@ -114,7 +120,6 @@ fn main() {
             },
         )))
     } else {
-        majik_crashes::force_backtrace();
         None
     };
 
@@ -248,16 +253,18 @@ fn crash_init(session_id: &str) -> majik_crashes::InitCrashHandler {
 }
 
 /// Upload what the last session's crash left behind (`reliability`), then tell the user in the
-/// Library window. Zed sends silently; a crash in a creative tool deserves a word.
+/// Library window. Zed sends silently; a crash in a creative tool deserves a word. A report that
+/// stays on disk (the switch is off, the network is down) says nothing: it would be repeated on
+/// every launch, and the Telemetry page and Show Logs are where it can be found.
 fn report_previous_crashes(telemetry: Arc<Telemetry>, cx: &mut App) {
     let Some(logs_dir) = config::logs_dir() else { return };
     let diagnostics = telemetry.settings().diagnostics;
     cx.spawn(async move |cx| {
         let outcome = cx.background_spawn(async move { reliability::upload_previous_minidumps(&telemetry, &logs_dir, diagnostics) }).await;
-        if outcome.uploaded + outcome.kept == 0 {
+        if outcome.uploaded == 0 {
             return;
         }
-        let message = if outcome.uploaded > 0 { "Majik crashed last time. A crash report was sent." } else { "Majik crashed last time. The crash report was saved with the logs." };
+        let message = "Majik crashed last time. A crash report was sent.";
         cx.update(|cx| {
             if let Some(handle) = cx.global::<windows::Windows>().library {
                 handle.update(cx, |_, window, cx| ui::toast(window, message, cx)).ok();

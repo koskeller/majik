@@ -49,4 +49,4 @@ chrono = "0.4"
 gpui = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 # `tests/crash.rs` checks the minidump the crash server wrote is what it says it is.
-zstd = "0.13"
+zstd.workspace = true
