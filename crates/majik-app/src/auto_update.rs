@@ -1232,6 +1232,19 @@ mod tests {
         assert_eq!(sha256_file(&path).unwrap(), "4efb65bc417a61cd876ee8416c9a12c8d54131282054a44438199456d49af75b");
     }
 
+    /// A handle to a directory whose modified time can be set. Windows refuses to open a
+    /// directory as a file unless asked for backup semantics.
+    fn open_dir(path: &Path) -> std::fs::File {
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+            std::fs::OpenOptions::new().write(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(path).unwrap()
+        }
+        #[cfg(not(windows))]
+        std::fs::File::open(path).unwrap()
+    }
+
     #[test]
     fn stale_download_folders_are_swept_and_fresh_ones_kept() {
         let temp = tempfile::tempdir().unwrap();
@@ -1242,8 +1255,8 @@ mod tests {
             std::fs::create_dir(dir).unwrap();
         }
         let long_ago = SystemTime::now() - Duration::from_secs(3 * 24 * 60 * 60);
-        std::fs::File::open(&stale).unwrap().set_modified(long_ago).unwrap();
-        std::fs::File::open(&other).unwrap().set_modified(long_ago).unwrap();
+        open_dir(&stale).set_modified(long_ago).unwrap();
+        open_dir(&other).set_modified(long_ago).unwrap();
         sweep_stale_temp_dirs(temp.path(), STALE_TEMP_DIR_AGE);
         assert!(!stale.exists());
         assert!(fresh.exists(), "may belong to an update in flight");
