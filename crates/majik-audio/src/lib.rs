@@ -18,6 +18,7 @@
 use std::fs::File;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Barrier, OnceLock};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
@@ -216,11 +217,48 @@ pub fn ensure_decodable(path: &Path) -> Result<()> {
     }
 }
 
+/// cpal caches its WASAPI device enumerator in the COM apartment of the first thread that touches
+/// it, and an apartment dies with its thread (RustAudio/cpal#1302, open at cpal 0.17.3). Once that
+/// thread has exited, every later device call reads a dangling pointer and the process dies with
+/// STATUS_ACCESS_VIOLATION rather than returning an error. The app touches audio from the UI
+/// thread, which outlives everything else, but each test is its own short-lived thread, so the
+/// second test in a binary to touch a device took the binary down. Making the first touch from a
+/// thread that never exits keeps the apartment alive for the life of the process, at the cost of
+/// one parked thread, on Windows only.
+fn keep_device_host_alive() {
+    static PINNED: OnceLock<()> = OnceLock::new();
+    PINNED.get_or_init(|| {
+        if !cfg!(windows) {
+            return;
+        }
+        let ready = Arc::new(Barrier::new(2));
+        let spawned = std::thread::Builder::new().name("majik-audio-device-host".into()).spawn({
+            let ready = ready.clone();
+            move || {
+                use rodio::cpal::traits::HostTrait;
+                // Any device call creates the enumerator; a missing device is the headless case.
+                let _probe = rodio::cpal::default_host().default_output_device();
+                ready.wait();
+                loop {
+                    std::thread::park();
+                }
+            }
+        });
+        match spawned {
+            Ok(_) => {
+                ready.wait();
+            }
+            Err(e) => tracing::warn!(target: "majik", "pinning the audio device host: {e:#}"),
+        }
+    });
+}
+
 /// Returns `true` if a default audio output device can be opened.
 ///
 /// Handy for tests and headless environments: opening a [`Player`] will fail
 /// with an error when this returns `false`.
 pub fn output_device_available() -> bool {
+    keep_device_host_alive();
     match DeviceSinkBuilder::open_default_sink() {
         Ok(mut sink) => {
             // Closing the probe sink again is the point; rodio would announce it on stderr.
@@ -286,6 +324,7 @@ impl Player {
         let info = probe(path)?;
         ensure_decodable(path)?;
 
+        keep_device_host_alive();
         let mut stream = DeviceSinkBuilder::open_default_sink()
             .map_err(|e| anyhow!("open default audio output: {e}"))?;
         // The stream closes with the player, on purpose; rodio would announce it on stderr.

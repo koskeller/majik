@@ -163,6 +163,18 @@ fn seeking_back_as_the_sound_ends_returns_and_restarts() {
     assert!(pos < 0.5, "restarted from the top: {pos}");
 }
 
+/// cpal caches its Windows device enumerator in the COM apartment of the first thread that touches
+/// it, and the apartment dies with that thread (RustAudio/cpal#1302). Every test is such a thread,
+/// so the second probe in a binary used to kill the process with STATUS_ACCESS_VIOLATION.
+#[test]
+fn a_device_probe_survives_the_thread_that_probed_first() {
+    for _ in 0..2 {
+        std::thread::spawn(output_device_available).join().expect("probe thread");
+    }
+    // And from this thread, after both of those have exited.
+    output_device_available();
+}
+
 /// Poll `read` every 5 ms for up to 2 s until `ok` accepts the value.
 fn wait_for<T>(mut read: impl FnMut() -> T, ok: impl Fn(&T) -> bool) -> T {
     let deadline = Instant::now() + Duration::from_secs(2);
