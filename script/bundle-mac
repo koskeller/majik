@@ -85,7 +85,9 @@ if have_macos_signing; then
     # shellcheck disable=SC2086
     security list-keychains -d user -s "$keychain" $previous_keychains
     echo "$MACOS_CERTIFICATE" | base64 --decode > "$certificate"
-    security import "$certificate" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+    # `-f pkcs12` because `security import` guesses the format from the file extension, and a
+    # mktemp file has none: without it the import fails with "Unknown format in import".
+    security import "$certificate" -f pkcs12 -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
     security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
 else
     echo "====== WARNING ======"
