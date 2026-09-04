@@ -34,6 +34,8 @@ zstd = "0.13"
 windows = "0.61"
 infer = "0.19"
 thiserror = "2"
+# The auto-updater compares the running version with the released one.
+semver = "1"
 bytes = "1"
 # In-process video: pure-Rust MP4 demux/mux plus the vendored-source H.264 codec (no system ffmpeg).
 re_mp4 = "0.5"

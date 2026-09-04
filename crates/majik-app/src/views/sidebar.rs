@@ -23,6 +23,8 @@ pub struct SidebarView {
     /// The row drawn as current; the window moves it with the feed (Library / Favorites / Assets).
     pub(crate) selected: FeedFilter,
     library: Entity<LibraryModel>,
+    /// The footer offers a restart once an update is installed.
+    updater: Option<Entity<crate::auto_update::AutoUpdater>>,
 }
 
 impl EventEmitter<SidebarEvent> for SidebarView {}
@@ -31,7 +33,16 @@ impl SidebarView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let library = state::library(cx);
         cx.observe(&library, |_, _, cx| cx.notify()).detach();
-        Self { selected: FeedFilter::Library, library }
+        let updater = crate::auto_update::updater(cx);
+        if let Some(updater) = &updater {
+            cx.observe(updater, |_, _, cx| cx.notify()).detach();
+        }
+        Self { selected: FeedFilter::Library, library, updater }
+    }
+
+    /// Whether an update is installed and waiting for a restart.
+    fn update_ready(&self, cx: &App) -> bool {
+        self.updater.as_ref().is_some_and(|updater| updater.read(cx).status().is_updated())
     }
 
     pub fn select(&mut self, filter: FeedFilter, cx: &mut Context<Self>) {
@@ -202,10 +213,24 @@ impl Render for SidebarView {
             )
             .child(SidebarGroup::new("Albums").child(album_menu))
             .footer(
-                SidebarMenuItem::new("Settings")
-                    .icon(icon("settings"))
-                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(SidebarEvent::OpenSettings)))
-                    .render("settings", window, cx),
+                gpui_component::v_flex()
+                    .gap_0p5()
+                    .when(self.update_ready(cx), |this| {
+                        this.child(
+                            gpui::div().debug_selector(|| "restart-to-update".into()).child(
+                                SidebarMenuItem::new("Restart to Update")
+                                    .icon(icon("download"))
+                                    .on_click(|_: &ClickEvent, window, cx| window.dispatch_action(Box::new(crate::actions::RestartToUpdate), cx))
+                                    .render("restart-to-update", window, cx),
+                            ),
+                        )
+                    })
+                    .child(
+                        SidebarMenuItem::new("Settings")
+                            .icon(icon("settings"))
+                            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(SidebarEvent::OpenSettings)))
+                            .render("settings", window, cx),
+                    ),
             )
     }
 }
@@ -308,6 +333,33 @@ mod tests {
         vcx.run_until_parked();
         let view = slot.borrow().clone().unwrap();
         (view, vcx)
+    }
+
+    #[gpui::test]
+    async fn the_footer_offers_a_restart_once_an_update_is_installed(cx: &mut TestAppContext) {
+        use crate::auto_update::test_support::{FakeFeed, FakeInstaller};
+        use crate::auto_update::{AutoUpdater, CheckType};
+        let _e = env(cx, 0, "Mock");
+        let installer = FakeInstaller::new();
+        let app_path = installer.app_path();
+        let feed = FakeFeed::offering("0.1.0");
+        let updater = cx.update(|cx| AutoUpdater::init(semver::Version::new(0, 1, 0), Some(feed.clone()), installer, Some(app_path), cx));
+        let (_view, vcx) = sidebar_window(cx);
+        let draw = |vcx: &mut VisualTestContext| {
+            vcx.run_until_parked();
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        draw(vcx);
+        assert!(vcx.debug_bounds("restart-to-update").is_none(), "nothing to restart into");
+        feed.offer("0.2.0");
+        updater.update(vcx, |updater, cx| updater.poll(CheckType::Manual, cx));
+        draw(vcx);
+        let bounds = vcx.debug_bounds("restart-to-update").expect("the footer offers the restart once the update is installed");
+        let will_restart = vcx.expect_restart();
+        vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let (path, _) = will_restart.await.expect("clicking it restarts the app");
+        assert_eq!(path, None, "into the same, now replaced, app");
     }
 
     #[gpui::test]

@@ -58,7 +58,8 @@ gh workflow run platforms.yml                   # on-demand 3-OS matrix + full m
   API keys in `development_credentials.json` — unsigned/ad-hoc binaries change identity
   every build, and a login-keychain item's ACL is bound to the creating binary's signature).
   `MAJIK_CHANNEL=stable` is a *build-time* stamp set by `script/lib/release.sh`, not a runtime switch;
-  an unknown value fails the build.
+  an unknown value fails the build. `MAJIK_UPDATE_URL=<base>` points the auto-updater at a
+  server of your own (a dev build checks nowhere without it).
   Mock prompt directives: `#delay:5`, `#fail:rateLimited`.
 - Performance work runs against a seeded library (`majik_generation::seed`): rows, attempts, assets
   and files written the way the library writes them, with locally rendered media, every status the
@@ -96,6 +97,20 @@ gh workflow run platforms.yml                   # on-demand 3-OS matrix + full m
   it), and the release attaches `dump_syms` output beside the installers. Logs: `majik.log` (rotated
   at 8 MB) in `config::logs_dir()`, which like `credentials_dir` is `None` in tests so nothing
   touches the real folder. `RUST_LOG=telemetry=trace` prints events as they are queued.
+- **Updates** (`docs/updates.md` is the public spec, including the server contract). Zed's
+  `auto_update`, ported to `majik-app/src/auto_update.rs`: a Stable build asks
+  `config::update_base_url()` (`https://trymajik.com/api/releases/stable/latest?os=&arch=`,
+  answered from the GitHub release by the trymajik.com server) every hour and on Check for
+  Updates…, downloads a newer version, verifies the `sha256` the feed gives, installs it over the
+  running app (rsync from the mounted DMG on macOS; the binary renamed into place on Linux; on
+  Windows the Inno installer is staged beside the exe and run with
+  `WINDOWS_INSTALLER_SWITCHES` when the app restarts or quits — `packaging/majik.iss` reads them),
+  and offers Restart to Update in the sidebar footer and on Settings → About, which also holds
+  the `Config.auto_update` switch. `Config.updated_from` makes the next launch say "Updated to".
+  The feed and the installer are traits (`ReleaseFeed`, `Installer`) so the state machine is
+  tested over fakes and the real installers run over fake packages (`hdiutil`, `tar`). Dev
+  builds have no feed unless `MAJIK_UPDATE_URL=<base>` is set, and a binary that isn't an
+  installed app refuses to install over itself.
 - CI on push (`ci.yml`) only builds/tests/clippies the portable crates on Linux
   (`core storage providers generation audio telemetry crashes`); `majik-app`, `majik-video`, `majik-platform`,
   `majik-dragout` are only checked by the manual `platforms.yml` run. Run the workspace clippy locally.

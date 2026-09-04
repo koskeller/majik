@@ -13,6 +13,7 @@
 
 mod actions;
 mod assets;
+mod auto_update;
 mod composer_state;
 mod config;
 mod credentials;
@@ -206,6 +207,7 @@ fn main() {
             .detach();
         }
         report_previous_crashes(telemetry, cx);
+        start_auto_update(cx);
         if let Ok(prompt) = std::env::var("MAJIK_GENERATE") {
             // Debug: dispatch a single mock image generation to exercise the pipeline end-to-end.
             let lib = crate::state::library(cx);
@@ -233,6 +235,30 @@ fn main() {
         .detach();
         cx.activate(true);
     });
+}
+
+/// The updater (`auto_update`): polling when the build has a feed and the setting is on, and the
+/// word that the last launch's update took. `app_path` is the `.app` on macOS and the exe
+/// elsewhere; a binary gpui can't place (`cargo run` outside a bundle) can check but not install.
+fn start_auto_update(cx: &mut App) {
+    let feed = config::update_base_url().map(|base_url| Arc::new(auto_update::HttpFeed::new(base_url)) as Arc<dyn auto_update::ReleaseFeed>);
+    let running_app = match cx.app_path() {
+        Ok(path) => Some(path),
+        Err(e) => {
+            tracing::info!(target: "majik", "not an installed app, so no self-update: {e:#}");
+            None
+        }
+    };
+    let version = match semver::Version::parse(env!("CARGO_PKG_VERSION")) {
+        Ok(version) => version,
+        Err(e) => {
+            tracing::warn!(target: "majik", "the crate version isn't a version; no self-update: {e}");
+            return;
+        }
+    };
+    auto_update::AutoUpdater::init(version, feed, Arc::new(auto_update::PlatformInstaller), running_app, cx);
+    auto_update::report_update_applied(cx);
+    cx.background_spawn(async { auto_update::sweep_stale_downloads() }).detach();
 }
 
 /// Whether this process runs the crash server: asked for outright, or a Stable build with

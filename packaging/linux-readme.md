@@ -29,6 +29,13 @@ A Vulkan-capable GPU driver is required; `mesa-vulkan-drivers` covers most integ
 
 Point the library elsewhere with `MAJIK_LIBRARY=/path/to/folder majik`, or in Settings.
 
+## Updates
+
+Majik checks for a new version every hour (Settings → About turns this off) and installs it by
+replacing `bin/majik` in place, so the binary and its folder must be writable by you, as they are
+after `./install.sh`. A copy in `/usr/local` or a package manager's folder can't update itself;
+Settings → About says so and links to the download. Restart when it says the new version is ready.
+
 ## Known limitations on Linux
 
 - **API keys need a Secret Service.** Keys are stored through the desktop's credential store over

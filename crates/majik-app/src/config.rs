@@ -88,6 +88,23 @@ pub fn telemetry_seed() -> Option<Vec<u8>> {
         .filter(|seed| !seed.is_empty())
 }
 
+/// Where the auto-updater asks for the latest release: `<base>/<channel>/latest?os=&arch=`
+/// (`docs/updates.md`). Stable asks trymajik.com; every channel honours `MAJIK_UPDATE_URL` at
+/// runtime so a build can be pointed at a local server, and without it a dev build never checks.
+pub fn update_base_url() -> Option<String> {
+    if let Ok(url) = std::env::var("MAJIK_UPDATE_URL") {
+        return Some(url.trim_end_matches('/').to_string());
+    }
+    match channel() {
+        Channel::Stable => Some("https://trymajik.com/api/releases".to_string()),
+        Channel::Dev => None,
+    }
+}
+
+/// Where to get a build by hand when the updater can't install one (the app folder isn't
+/// writable, say).
+pub const DOWNLOAD_PAGE_URL: &str = "https://github.com/koskeller/majik/releases/latest";
+
 impl Channel {
     /// The channel's name, as `MAJIK_CHANNEL` spells it.
     pub const fn name(self) -> &'static str {
@@ -278,6 +295,14 @@ pub struct Config {
     /// What leaves the machine; both on unless the user says otherwise, as in Zed.
     #[serde(default)]
     pub telemetry: TelemetrySettings,
+    /// Check for a newer release every hour and install it in the background (Zed's
+    /// `auto_update`). Check for Updates… in the menu works either way.
+    #[serde(default = "default_true")]
+    pub auto_update: bool,
+    /// The version that was running when an update was installed; the next launch, running the
+    /// new one, says "Updated to …" and clears it.
+    #[serde(default)]
+    pub updated_from: Option<String>,
 }
 
 /// Zed's `telemetry` settings: `diagnostics` gates crash reports, `metrics` gates usage events.
@@ -381,6 +406,8 @@ impl Default for Config {
             save_directory: None,
             installation_id: None,
             telemetry: TelemetrySettings::default(),
+            auto_update: true,
+            updated_from: None,
         }
     }
 }
@@ -651,6 +678,26 @@ mod tests {
     }
 
     #[test]
+    fn dev_builds_check_no_updates_unless_pointed_somewhere() {
+        // The same rule as telemetry: a `cargo run` must never poll the production feed, and
+        // certainly never try to rsync a release over its own target directory.
+        if std::env::var_os("MAJIK_UPDATE_URL").is_none() {
+            assert_eq!(update_base_url(), None);
+        }
+        assert!(DOWNLOAD_PAGE_URL.starts_with("https://"));
+    }
+
+    #[test]
+    fn auto_update_is_on_by_default_and_updated_from_is_empty() {
+        let config: Config = serde_json::from_str("{}").unwrap();
+        assert!(config.auto_update);
+        assert_eq!(config.updated_from, None);
+        let config: Config = serde_json::from_str(r#"{"auto_update":false,"updated_from":"0.1.0"}"#).unwrap();
+        assert!(!config.auto_update);
+        assert_eq!(config.updated_from.as_deref(), Some("0.1.0"));
+    }
+
+    #[test]
     fn telemetry_is_on_by_default_and_the_install_id_is_minted_once() {
         let mut config: Config = serde_json::from_str("{}").unwrap();
         assert_eq!(config.telemetry, TelemetrySettings { diagnostics: true, metrics: true });
@@ -759,6 +806,24 @@ mod tests {
         let iss = include_str!("../../../packaging/majik.iss");
         assert!(iss.contains("#define AppId \"{{92561171-E8BA-4C40-BC5E-9A8C3191D8D3}\""));
         assert!(iss.contains("OutputBaseFilename=MajikSetup-{#Arch}"));
+    }
+
+    #[test]
+    fn the_installer_takes_the_updaters_switches() {
+        // `auto_update::PlatformInstaller` runs the downloaded installer with these
+        // (`docs/updates.md`): silently, closing the running app, and relaunching it unless the
+        // app is quitting for good. Losing any of them strands a Windows user on the old build.
+        let iss = include_str!("../../../packaging/majik.iss");
+        assert!(iss.contains("CloseApplications=force"), "the installer must close the app it replaces");
+        assert!(iss.contains("Name: \"{app}\\updates\""), "the staged installer is removed on uninstall");
+        assert!(iss.contains("function IsUpdating(): Boolean;"));
+        assert!(iss.contains("function RelaunchAfterUpdate(): Boolean;"));
+        assert!(iss.contains("Check: RelaunchAfterUpdate"), "a silent update relaunches the app");
+        // The two custom parameters the app passes, spelled the same on both sides.
+        assert!(iss.contains("SwitchHasValue('update', 'true')"));
+        assert!(iss.contains("SwitchHasValue('relaunch', 'false')"));
+        assert!(crate::auto_update::WINDOWS_INSTALLER_SWITCHES.contains(&"/update=true"));
+        assert_eq!(crate::auto_update::WINDOWS_NO_RELAUNCH_SWITCH, "/relaunch=false");
     }
 
     #[test]

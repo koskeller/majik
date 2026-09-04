@@ -58,6 +58,8 @@ actions!(
         FocusFeed,
         ViewTelemetryLog,
         ShowLogs,
+        CheckForUpdates,
+        RestartToUpdate,
     ]
 );
 
@@ -222,6 +224,10 @@ pub fn init(cx: &mut App) {
     // The Help menu: what telemetry sent (Zed's Help → View Telemetry Log) and where the logs are.
     cx.on_action(|_: &ViewTelemetryLog, cx| crate::windows::open_settings(SettingsTarget { page: SettingsPage::Telemetry, ..Default::default() }, cx));
     cx.on_action(|_: &ShowLogs, cx| crate::views::settings::reveal_logs(cx));
+    // Both app-level: the check opens Settings → About, where its result shows, and the restart
+    // is offered from the sidebar and that page once an update is installed.
+    cx.on_action(|_: &CheckForUpdates, cx| crate::auto_update::check_for_updates(cx));
+    cx.on_action(|_: &RestartToUpdate, cx| crate::auto_update::restart_to_update(cx));
     cx.bind_keys(shortcuts().into_iter().flat_map(|shortcut| shortcut.bindings).collect::<Vec<_>>());
 
     // gpui only *stores* the menus off macOS; the Library window draws them from `GlobalState`.
@@ -369,7 +375,7 @@ pub fn menus(state: MenuState) -> Vec<Menu> {
 /// commands among them; Windows and Linux have neither, so off macOS it is About, Settings and Quit.
 fn app_menu_items() -> Vec<MenuItem> {
     let name = crate::config::app_name();
-    let mut items = vec![MenuItem::action(format!("About {name}"), About), MenuItem::separator(), MenuItem::action("Settings…", OpenSettings)];
+    let mut items = vec![MenuItem::action(format!("About {name}"), About), MenuItem::action("Check for Updates…", CheckForUpdates), MenuItem::separator(), MenuItem::action("Settings…", OpenSettings)];
     if cfg!(target_os = "macos") {
         items.push(MenuItem::separator());
         items.push(MenuItem::os_submenu("Services", SystemMenuType::Services));
@@ -492,7 +498,7 @@ mod tests {
         }
         let about = format!("About {}", crate::config::app_name());
         for menus in [&none, &menus(MenuState { library: true, ..Default::default() })] {
-            for name in ["Settings…", "Close Window", "Library", "Minimize", "Zoom", &about] {
+            for name in ["Settings…", "Check for Updates…", "Close Window", "Library", "Minimize", "Zoom", &about] {
                 assert!(!greyed(menus, name), "{name} always works");
             }
         }

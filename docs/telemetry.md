@@ -69,9 +69,11 @@ reads back its last few megabytes.
 | Media Saved / Media Copied / Media Dragged | `count` |
 | Album Created | — |
 | Layout Changed | `layout` |
-| Settings Changed | `setting` (`appearance`, `reduce_motion`, `library_root`), `value` for the first two |
+| Settings Changed | `setting` (`appearance`, `reduce_motion`, `library_root`, `auto_update`), `value` except for `library_root` |
 | Provider Key Added / Provider Key Removed | `provider` |
 | Minidump Uploaded | `panicked`, `crashed_version`, `commit_sha` (the panic message itself stays in the crash report) |
+| Update Applied | `from_version` (the first launch after the auto-updater installed a new version; see [updates.md](updates.md)) |
+| Update Failed | `stage` (`check` / `download` / `verify` / `install`), `check` (`automatic` / `manual`); never the error's text, which can name a path |
 
 Every event also carries `event_source: "majik"`.
 

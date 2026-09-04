@@ -48,6 +48,10 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 LicenseFile={#SourceDir}\LICENSE.txt
+; The auto-updater runs this installer silently while Majik is still shutting down
+; (`auto_update::WINDOWS_INSTALLER_SWITCHES`); Restart Manager closes whatever is left of it so
+; Majik.exe can be replaced.
+CloseApplications=force
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -65,5 +69,29 @@ Source: "{#SourceDir}\NOTICE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{autoprograms}\Majik"; Filename: "{app}\Majik.exe"; IconFilename: "{app}\majik.ico"
 Name: "{autodesktop}\Majik"; Filename: "{app}\Majik.exe"; IconFilename: "{app}\majik.ico"; Tasks: desktopicon
 
+[UninstallDelete]
+; The installer the auto-updater staged for a restart (see below).
+Type: filesandordirs; Name: "{app}\updates"
+
 [Run]
 Filename: "{app}\Majik.exe"; Description: "Launch Majik"; Flags: nowait postinstall skipifsilent
+; A silent update relaunches Majik itself, unless the app was quitting for good.
+Filename: "{app}\Majik.exe"; Flags: nowait; Check: RelaunchAfterUpdate
+
+[Code]
+// The auto-updater's custom switches: `/update=true` marks a silent re-install started by the
+// running app, `/relaunch=false` one started as the app quit (docs/updates.md).
+function SwitchHasValue(Name: string; Value: string): Boolean;
+begin
+  Result := CompareText(ExpandConstant('{param:' + Name + '}'), Value) = 0;
+end;
+
+function IsUpdating(): Boolean;
+begin
+  Result := SwitchHasValue('update', 'true') and WizardSilent();
+end;
+
+function RelaunchAfterUpdate(): Boolean;
+begin
+  Result := IsUpdating() and not SwitchHasValue('relaunch', 'false');
+end;

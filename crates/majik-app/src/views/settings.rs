@@ -15,7 +15,7 @@ use gpui_component::kbd::Kbd;
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::sidebar::{Sidebar, SidebarCollapsible, SidebarMenu, SidebarMenuItem};
 use gpui_component::switch::Switch;
-use gpui_component::{h_flex, v_flex, ActiveTheme as _, Root, Side, Sizable as _, Theme, ThemeMode, TitleBar};
+use gpui_component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Root, Side, Sizable as _, Theme, ThemeMode, TitleBar};
 use majik_providers::{ProviderId, ProviderRegistry};
 
 use crate::actions::{CloseWindow, SelectDown, SelectUp, Shortcut};
@@ -169,6 +169,10 @@ impl SettingsWindow {
             .collect();
         window.set_window_title("Settings");
         crate::windows::track_frame(crate::windows::Singleton::Settings, window, cx);
+        // The About page draws the updater's status as it changes.
+        if let Some(updater) = crate::auto_update::updater(cx) {
+            cx.observe(&updater, |_, _, cx| cx.notify()).detach();
+        }
         let mut this = Self {
             page: target.page,
             focus: cx.focus_handle(),
@@ -521,6 +525,8 @@ impl SettingsWindow {
         v_flex()
             .child(section(crate::config::app_name(), cx))
             .child(row("version", "Version", Some("Made with ❤️ in Warsaw"), version, cx))
+            .child(section("Updates", cx))
+            .children(self.render_updates(cx))
             .child(section("Help", cx))
             .child(row(
                 "show-logs",
@@ -543,6 +549,73 @@ impl SettingsWindow {
                 button("share-feedback").label("Email Feedback").icon(icon("external-link")).ghost().small().on_click(|_, _, cx| send_email("Majik Feedback", cx)),
                 cx,
             ))
+    }
+}
+
+/// What the Updates row offers beside its text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UpdateControl {
+    CheckNow,
+    /// A check, download or install is running.
+    Busy,
+    RestartToUpdate,
+    /// After a failed install: check again, or fetch the build by hand.
+    CheckOrDownload,
+}
+
+/// The Updates row's description and control for the updater's state.
+fn update_row_copy(status: &crate::auto_update::UpdateStatus, checked: bool) -> (SharedString, UpdateControl) {
+    use crate::auto_update::{Stage, UpdateStatus};
+    let app = crate::config::app_name();
+    match status {
+        UpdateStatus::Idle if checked => (format!("{app} is up to date.").into(), UpdateControl::CheckNow),
+        UpdateStatus::Idle => (format!("{app} looks for a new version every hour.").into(), UpdateControl::CheckNow),
+        UpdateStatus::Checking => ("Checking for updates…".into(), UpdateControl::Busy),
+        UpdateStatus::Downloading { version, progress } => {
+            let percent = progress.map(|fraction| format!(" · {:.0}%", fraction * 100.)).unwrap_or_default();
+            (format!("Downloading {app} {version}{percent}").into(), UpdateControl::Busy)
+        }
+        UpdateStatus::Installing { version } => (format!("Installing {app} {version}…").into(), UpdateControl::Busy),
+        UpdateStatus::Updated { version } => (format!("{app} {version} is ready.").into(), UpdateControl::RestartToUpdate),
+        UpdateStatus::Errored { stage: Stage::Install, message } => (message.clone(), UpdateControl::CheckOrDownload),
+        UpdateStatus::Errored { message, .. } => (message.clone(), UpdateControl::CheckNow),
+    }
+}
+
+impl SettingsWindow {
+    /// The updater's status and the switch behind it. A build with nowhere to ask (a dev build
+    /// without `MAJIK_UPDATE_URL`) says so and offers neither.
+    fn render_updates(&self, cx: &mut Context<Self>) -> Vec<gpui::Stateful<gpui::Div>> {
+        use crate::auto_update;
+        let Some(updater) = auto_update::updater(cx).filter(|updater| updater.read(cx).has_feed()) else {
+            return vec![row("update-status", "Updates", Some("This build doesn't update itself."), gpui::div(), cx)];
+        };
+        let (description, control) = {
+            let updater = updater.read(cx);
+            update_row_copy(&updater.status(), updater.has_checked())
+        };
+        let check_now = |busy: bool, cx: &mut Context<Self>| {
+            let updater = updater.clone();
+            button("check-updates").label("Check Now").outline().small().disabled(busy).loading(busy).on_click(cx.listener(move |_, _, _, cx| {
+                updater.update(cx, |updater, cx| updater.poll(auto_update::CheckType::Manual, cx));
+            }))
+        };
+        let control: gpui::AnyElement = match control {
+            UpdateControl::CheckNow => check_now(false, cx).into_any_element(),
+            UpdateControl::Busy => check_now(true, cx).into_any_element(),
+            UpdateControl::RestartToUpdate => button("restart-to-update").label("Restart to Update").primary().small().on_click(|_, _, cx| auto_update::restart_to_update(cx)).into_any_element(),
+            UpdateControl::CheckOrDownload => h_flex()
+                .gap_2()
+                .child(check_now(false, cx))
+                .child(button("download-update").label("Download").icon(icon("external-link")).ghost().small().on_click(|_, _, cx| cx.open_url(crate::config::DOWNLOAD_PAGE_URL)))
+                .into_any_element(),
+        };
+        let auto = cx.global::<Config>().auto_update;
+        let switch = Switch::new("auto-update").cursor_pointer().checked(auto).on_click(|on: &bool, _, cx| auto_update::set_auto_update(*on, cx));
+        vec![
+            row("update-status", "Updates", Some(description), control, cx),
+            row("auto-update-row", "Check automatically", Some("Look for a new version every hour and install it in the background. You choose when to restart."), switch, cx),
+        ]
     }
 }
 
@@ -1131,6 +1204,68 @@ mod tests {
         majik_telemetry::event!("Gamma Fired");
         vcx.run_until_parked();
         assert_eq!(log.read_with(vcx, |log, cx| log.shown(cx)), ["Gamma Fired"], "still live after a clear");
+    }
+
+    #[test]
+    fn the_updates_row_says_what_the_updater_is_doing() {
+        use crate::auto_update::{Stage, UpdateStatus};
+        let version = semver::Version::new(0, 2, 0);
+        assert_eq!(update_row_copy(&UpdateStatus::Idle, false), ("Majik Dev looks for a new version every hour.".into(), UpdateControl::CheckNow));
+        assert_eq!(update_row_copy(&UpdateStatus::Idle, true), ("Majik Dev is up to date.".into(), UpdateControl::CheckNow));
+        assert_eq!(update_row_copy(&UpdateStatus::Checking, true), ("Checking for updates…".into(), UpdateControl::Busy));
+        assert_eq!(update_row_copy(&UpdateStatus::Downloading { version: version.clone(), progress: None }, true), ("Downloading Majik Dev 0.2.0".into(), UpdateControl::Busy));
+        assert_eq!(update_row_copy(&UpdateStatus::Downloading { version: version.clone(), progress: Some(0.426) }, true).0, "Downloading Majik Dev 0.2.0 · 43%");
+        assert_eq!(update_row_copy(&UpdateStatus::Installing { version: version.clone() }, true), ("Installing Majik Dev 0.2.0…".into(), UpdateControl::Busy));
+        assert_eq!(update_row_copy(&UpdateStatus::Updated { version }, true), ("Majik Dev 0.2.0 is ready.".into(), UpdateControl::RestartToUpdate));
+        assert_eq!(update_row_copy(&UpdateStatus::Errored { stage: Stage::Check, message: "the update server answered 503".into() }, true), ("the update server answered 503".into(), UpdateControl::CheckNow));
+        assert_eq!(update_row_copy(&UpdateStatus::Errored { stage: Stage::Install, message: "not writable".into() }, true), ("not writable".into(), UpdateControl::CheckOrDownload), "a build that can't be installed can be fetched by hand");
+    }
+
+    #[gpui::test]
+    fn the_about_page_shows_the_updates_rows_only_with_a_feed(cx: &mut TestAppContext) {
+        use crate::auto_update::test_support::{FakeFeed, FakeInstaller};
+        let _e = env(cx, 0, "Mock");
+        let (view, vcx) = open(cx, SettingsTarget { page: SettingsPage::About, ..Default::default() });
+        draw(vcx);
+        assert!(vcx.debug_bounds("update-status").is_some(), "the row is there even with no updater");
+        assert!(vcx.debug_bounds("auto-update-row").is_none(), "nothing to switch on without a feed");
+        view.update(vcx, |s, cx| s.select_page(SettingsPage::General, cx));
+        draw(vcx);
+        assert!(vcx.debug_bounds("update-status").is_none(), "the rows live on About only");
+
+        let installer = FakeInstaller::new();
+        let app_path = installer.app_path();
+        vcx.update(|_, cx| {
+            crate::auto_update::AutoUpdater::init(semver::Version::new(0, 1, 0), Some(FakeFeed::offering("0.2.0")), installer, Some(app_path), cx);
+        });
+        // A window opened after the updater observes it; this one opened before, so reopen.
+        let (view, vcx) = open(cx, SettingsTarget { page: SettingsPage::About, ..Default::default() });
+        draw(vcx);
+        assert!(vcx.debug_bounds("auto-update-row").is_some(), "with a feed, the switch is offered");
+        vcx.update(|_, cx| crate::auto_update::set_auto_update(false, cx));
+        assert!(!vcx.update(|_, cx| cx.global::<Config>().auto_update));
+        let _ = view;
+    }
+
+    #[gpui::test]
+    fn check_for_updates_opens_about_and_checks(cx: &mut TestAppContext) {
+        use crate::auto_update::test_support::{FakeFeed, FakeInstaller};
+        let _e = env(cx, 0, "Mock");
+        cx.update(|cx| cx.global_mut::<Config>().onboarding_completed = true);
+        let installer = FakeInstaller::new();
+        let app_path = installer.app_path();
+        let feed = FakeFeed::offering("0.1.0");
+        let updater = cx.update(|cx| crate::auto_update::AutoUpdater::init(semver::Version::new(0, 1, 0), Some(feed.clone()), installer, Some(app_path), cx));
+        let (_library, vcx) = cx.add_window_view(LibraryWindow::new);
+        draw(vcx);
+        vcx.dispatch_action(crate::actions::CheckForUpdates);
+        vcx.run_until_parked();
+        let handle = vcx.update(|_, cx| cx.global::<Windows>().settings.expect("settings window opened"));
+        let root_view = vcx.update(|_, cx| handle.update(cx, |root, _, _| root.view().clone()).unwrap());
+        let view = root_view.downcast::<SettingsWindow>().expect("a SettingsWindow");
+        assert_eq!(vcx.update(|_, cx| view.read(cx).page), SettingsPage::About);
+        assert_eq!(feed.asked.lock().unwrap().len(), 1, "checked at once, as a manual check");
+        assert!(vcx.update(|_, cx| updater.read(cx).has_checked()));
     }
 
     #[gpui::test]
