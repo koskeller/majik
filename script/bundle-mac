@@ -124,7 +124,20 @@ rm -rf "$dmg_dir" "$dmg"
 mkdir -p "$dmg_dir"
 cp -R "$app" "$dmg_dir/"
 ln -s /Applications "$dmg_dir/Applications"
-hdiutil create -volname "Majik ${version}" -srcfolder "$dmg_dir" -ov -format UDZO "$dmg" > /dev/null
+# `hdiutil create` fails with "Resource busy" now and then on the CI runners, right after codesign
+# while something still has the bundle open; a moment later it goes through. Retry as create-dmg
+# does rather than lose a release build to it.
+for attempt in 1 2 3 4 5; do
+    if hdiutil create -volname "Majik ${version}" -srcfolder "$dmg_dir" -ov -format UDZO "$dmg" > /dev/null; then
+        break
+    fi
+    if [[ "$attempt" = 5 ]]; then
+        echo "hdiutil create failed ${attempt} times; giving up." >&2
+        exit 1
+    fi
+    echo "hdiutil create failed (attempt ${attempt}); retrying in a few seconds." >&2
+    sleep 5
+done
 # The symlink confuses anything that walks the target directory afterwards, including this repo's
 # own file watching when Majik has the repo open.
 rm -f "$dmg_dir/Applications"
