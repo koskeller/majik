@@ -2865,12 +2865,60 @@ mod tests {
             assert_eq!(f.columns, 6);
             let viewport = f32::from(slot_size(&f.content_size).height);
             assert!(f.layout.height() < viewport, "{} px of cells in a {viewport} px window", f.layout.height());
-            let missing: Vec<usize> = (0..19).filter(|ix| !f.last_rendered.contains_key(&f.ids[*ix])).collect();
-            assert!(missing.is_empty(), "cells not drawn: {missing:?} of {:?}", f.layout);
-            for ix in 0..19 {
-                assert!(f.cell_bounds(&f.ids[ix]).is_some(), "cell {ix} has no box");
-            }
+            let missing: Vec<usize> = (0..19).filter(|ix| f.cell_bounds(&f.ids[*ix]).is_none()).collect();
+            assert!(missing.is_empty(), "cells not painted: {missing:?} of {:?}", f.layout);
         });
+    }
+
+    /// Scrolled into a masonry of near-tie portraits, the cell that started above the viewport in
+    /// the column that ended lower is still drawn: the search runs on the floors, not on `y`,
+    /// which the tie leaves unsorted.
+    #[gpui::test]
+    fn masonry_draws_the_cell_straddling_the_top_of_a_scrolled_near_tie_grid(cx: &mut TestAppContext) {
+        let (view, vcx, env) = feed_window!(cx, 0);
+        // Portraits of two nearly equal shapes, two columns wide: every row's left cell is a hair
+        // taller, so the tie keeps the reading order and the right column's cells sit above
+        // their floors.
+        for i in 0..40 {
+            let (w, h) = if i % 2 == 0 { (90, 160) } else { (90, 161) };
+            env.library.update(vcx, |m, cx| {
+                let id = m.lib.add_generating(MediaType::Image, None, None, None, None);
+                m.apply(majik_generation::Event::Completed { id: id.clone(), job: m.attempt(&id), bytes: majik_core::images::solid_png(w, h, [9, 8, 7]), is_upscaled: false }, cx);
+            });
+        }
+        vcx.run_until_parked();
+        vcx.simulate_resize(gpui::size(px(340.), px(400.)));
+        vcx.dispatch_action(LayoutMasonry);
+        vcx.run_until_parked();
+        settle(&view, vcx);
+        let (columns, unsorted) = view.update(vcx, |f, _| {
+            let ys: Vec<f32> = (0..40).map(|ix| f.layout.slot(ix).unwrap().y).collect();
+            (f.columns, ys.windows(2).any(|pair| pair[1] < pair[0]))
+        });
+        assert_eq!(columns, 2);
+        assert!(unsorted, "the tie put a later cell above an earlier one somewhere");
+        // Scroll a few rows down and check every cell overlapping the viewport was painted.
+        let over_grid = point(px(170.), px(200.));
+        vcx.simulate_mouse_move(over_grid, None, gpui::Modifiers::default());
+        for rows in [3., 4., 5., 7.] {
+            let offset = view.update(vcx, |f, _| rows * (f32::from(f.cell_px) / (90. / 160.) + GAP));
+            view.update(vcx, |f, cx| {
+                f.scroll.set_offset(point(px(0.), px(-offset)));
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            view.update(vcx, |f, _| {
+                let top = -f32::from(f.scroll.offset().y);
+                let viewport = f32::from(slot_size(&f.content_size).height);
+                let missing: Vec<usize> = (0..40)
+                    .filter(|ix| {
+                        let slot = f.layout.slot(*ix).unwrap();
+                        slot.bottom() > top && slot.y < top + viewport && !f.last_rendered.contains_key(&f.ids[*ix])
+                    })
+                    .collect();
+                assert!(missing.is_empty(), "scrolled to {top}: cells {missing:?} overlap the viewport but were not drawn");
+            });
+        }
     }
 
     #[gpui::test]

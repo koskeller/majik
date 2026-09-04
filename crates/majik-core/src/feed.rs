@@ -81,10 +81,12 @@ pub fn masonry_ratio(ratio: Option<f32>) -> f32 {
 
 /// Columns whose bottoms are within this fraction of the cell width of the shortest one count as
 /// equally short, and the leftmost of them takes the next cell. Portraits of nearly the same
-/// shape (9:16 next to 0.558) then keep their reading order instead of skipping a column that
-/// ended a few pixels lower; a real difference — a landscape next to a portrait — is still a
-/// third of a cell or more, so the shortest column wins as before.
-pub const MASONRY_TIE: f32 = 0.25;
+/// shape (9:16 next to 0.558, a hundredth of a cell apart) then keep their reading order instead
+/// of skipping a column that ended a few pixels lower, and so do the closest catalog shapes (4:5
+/// beside 3:4, 3:2 beside 16:9, a tenth of a cell); from 2:3 beside 3:4 (a sixth) the shortest
+/// column wins. The figure sits between those two groups, away from any catalog pair, so a
+/// pair's verdict can't flip with the rounding of the cell width as the window is dragged.
+pub const MASONRY_TIE: f32 = 0.12;
 
 /// A cell's box in the grid content, in pixels, and the column it sits in.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -105,21 +107,22 @@ impl Slot {
 /// Where every cell of the feed is drawn, for one width and column count: either rows of square
 /// cells, or masonry — cells at their picture's shape, each dropped into the column that is
 /// shortest at its turn (or a column to its left that is nearly as short, see [`MASONRY_TIE`]).
-/// A cell's `y` is not sorted along the index, but each cell's `floor` — the shortest column's
-/// bottom when it was placed, which only ever rises — is, and `y` sits within the tie of it, so
-/// the cells at a scroll offset are found by binary search on the floors; what a scroll can't see
-/// by `y` alone is a tall cell that started above it, which is why the tallest cell's height is
-/// kept.
+/// A masonry cell's `y` is not sorted along the index, but each cell's *floor* — the shortest
+/// column's bottom when it was placed, which only ever rises — is, so the cells at a scroll
+/// offset are found by binary search on the floors, widened by the farthest any cell reaches
+/// below its floor (in rows, a floor is the cell's own `y` and the reach is the cell).
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Layout {
     slots: Vec<Slot>,
-    /// Per slot: the lowest column bottom (plus the gap) when it was placed; non-decreasing.
+    /// Masonry only: per slot, the lowest column bottom (plus the gap) when it was placed;
+    /// non-decreasing. Rows search their slots' `y`, which is sorted as it is.
     floors: Vec<f32>,
     columns: usize,
     height: f32,
-    max_height: f32,
-    /// How far above its floor a cell can sit: [`MASONRY_TIE`] of the cell width, 0 in rows.
-    tie: f32,
+    /// The farthest a cell's bottom lies below its floor: how far above a scroll offset a cell
+    /// can be placed and still reach it. Measured, so it holds whatever the tie and the shape
+    /// range are.
+    reach: f32,
     masonry: bool,
 }
 
@@ -129,10 +132,9 @@ impl Layout {
         let columns = columns.max(1);
         let pitch = cell + gap;
         let slots: Vec<Slot> = (0..count).map(|index| Slot { x: (index % columns) as f32 * pitch, y: (index / columns) as f32 * pitch, width: cell, height: cell, column: index % columns }).collect();
-        let floors = slots.iter().map(|slot| slot.y).collect();
         let rows = count.div_ceil(columns);
         let height = if rows == 0 { 0. } else { rows as f32 * pitch - gap };
-        Self { slots, floors, columns, height, max_height: if count == 0 { 0. } else { cell }, tie: 0., masonry: false }
+        Self { slots, floors: Vec::new(), columns, height, reach: if count == 0 { 0. } else { cell }, masonry: false }
     }
 
     /// Cells `cell` wide at their pictures' shapes (see [`masonry_ratio`]) in `columns` columns
@@ -141,23 +143,48 @@ impl Layout {
     pub fn masonry(ratios: impl IntoIterator<Item = Option<f32>>, columns: usize, cell: f32, gap: f32) -> Self {
         let columns = columns.max(1);
         let tie = cell * MASONRY_TIE;
+        let ratios = ratios.into_iter();
         let mut bottoms = vec![0.0f32; columns];
-        let mut slots = Vec::new();
-        let mut floors = Vec::new();
-        let mut max_height = 0.0f32;
+        let mut slots = Vec::with_capacity(ratios.size_hint().0);
+        let mut floors = Vec::with_capacity(ratios.size_hint().0);
+        let mut reach = 0.0f32;
         for ratio in ratios {
             let shortest = bottoms.iter().copied().fold(f32::INFINITY, f32::min);
             let column = bottoms.iter().position(|bottom| *bottom <= shortest + tie).unwrap_or(0);
             let below = |bottom: f32| if bottom > 0. { bottom + gap } else { 0. };
-            let y = below(bottoms[column]);
+            let (y, floor) = (below(bottoms[column]), below(shortest));
             let height = cell / masonry_ratio(ratio);
             slots.push(Slot { x: column as f32 * (cell + gap), y, width: cell, height, column });
-            floors.push(below(shortest));
+            floors.push(floor);
             bottoms[column] = y + height;
-            max_height = max_height.max(height);
+            reach = reach.max(y + height - floor);
         }
         let height = bottoms.iter().copied().fold(0.0f32, f32::max);
-        Self { slots, floors, columns, height, max_height, tie, masonry: true }
+        Self { slots, floors, columns, height, reach, masonry: true }
+    }
+
+    /// The floor of the cell at `index` (see [`Layout`]).
+    fn floor(&self, index: usize) -> f32 {
+        if self.masonry {
+            self.floors[index]
+        } else {
+            self.slots[index].y
+        }
+    }
+
+    /// The first index whose floor fails `below`, which must hold for a prefix of the floors —
+    /// they never decrease, so any `floor < y` / `floor + c <= y` does.
+    fn floor_partition(&self, below: impl Fn(f32) -> bool) -> usize {
+        let (mut low, mut high) = (0, self.slots.len());
+        while low < high {
+            let middle = low + (high - low) / 2;
+            if below(self.floor(middle)) {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        low
     }
 
     pub fn len(&self) -> usize {
@@ -177,9 +204,9 @@ impl Layout {
         self.height
     }
 
-    /// The tallest cell: how far above a scroll offset a cell can start and still reach it.
-    pub fn max_height(&self) -> f32 {
-        self.max_height
+    /// How far above a scroll offset a cell can be placed (its floor) and still reach it.
+    pub fn reach(&self) -> f32 {
+        self.reach
     }
 
     pub fn is_masonry(&self) -> bool {
@@ -190,19 +217,21 @@ impl Layout {
         self.slots.get(index).copied()
     }
 
-    /// The first cell placed once the shortest column reached `y`: in rows, the first cell of the
-    /// row starting at or below `y`; in masonry, a cell whose top is within the tie of `y` or
-    /// below it (the last cell when every one starts above).
+    /// The first cell placed once the shortest column had reached `y` (the last cell when every
+    /// one was placed before that). In rows that is the first cell of the row starting at or
+    /// below `y`. In masonry its top is at or below `y` too, but so may be the tops of a few
+    /// cells before it, placed into a nearly-as-short column that ended lower; it is an anchor
+    /// near `y`, not the topmost cell there.
     pub fn first_index_at(&self, y: f32) -> usize {
-        self.floors.partition_point(|floor| *floor < y).min(self.slots.len().saturating_sub(1))
+        self.floor_partition(|floor| floor < y).min(self.slots.len().saturating_sub(1))
     }
 
     /// The indices of every cell that overlaps `top..bottom`, plus any cell in between that
     /// doesn't (the range is contiguous, so a caller iterating it still has to check each cell).
     pub fn visible_range(&self, top: f32, bottom: f32) -> Range<usize> {
-        // A cell sits at most `tie` below its floor and is at most `max_height` tall.
-        let first = self.floors.partition_point(|floor| floor + self.tie + self.max_height <= top);
-        let last = self.floors.partition_point(|floor| *floor < bottom);
+        // A cell's bottom is at most `reach` below its floor, and its top is never above it.
+        let first = self.floor_partition(|floor| floor + self.reach <= top);
+        let last = self.floor_partition(|floor| floor < bottom);
         first..last.max(first)
     }
 
@@ -337,7 +366,7 @@ mod tests {
         assert_eq!(layout.slot(6).map(|s| s.column), Some(0));
         assert_eq!(layout.slot(7), None);
         assert_eq!(layout.height(), 3. * CELL + 2. * GAP, "three rows, two gutters");
-        assert_eq!(layout.max_height(), CELL);
+        assert_eq!(layout.reach(), CELL);
         assert_eq!(Layout::uniform(0, 3, CELL, GAP), Layout { columns: 3, ..Default::default() });
     }
 
@@ -351,29 +380,36 @@ mod tests {
         assert_eq!(layout.slot(2), Some(Slot { x: 0., y: CELL / 2. + GAP, width: CELL, height: CELL, column: 0 }));
         assert_eq!(layout.slot(3), Some(Slot { x: 0., y: 1.5 * CELL + 2. * GAP, width: CELL, height: CELL, column: 0 }), "column 0 is still shorter than the portrait");
         assert_eq!(layout.height(), 2.5 * CELL + 2. * GAP, "the lowest bottom");
-        assert_eq!(layout.max_height(), 2. * CELL);
+        assert_eq!(layout.reach(), 2. * CELL, "nothing was placed above its floor");
     }
 
     /// Two columns of portraits a few pixels apart in height read row by row: the third cell
     /// goes under the first even though the second column ended a hair lower.
     #[test]
     fn masonry_near_ties_keep_the_reading_order() {
-        let (a, b) = (Some(0.5625), Some(0.5581));
-        let layout = Layout::masonry([b, a, a, a, b, a], 2, CELL, GAP);
+        let (nominal, probed) = (Some(9. / 16.), Some(0.5581));
+        let layout = Layout::masonry([probed, nominal, nominal, nominal, probed, nominal], 2, CELL, GAP);
         assert_eq!((0..6).map(|i| layout.slot(i).unwrap().column).collect::<Vec<_>>(), [0, 1, 0, 1, 0, 1]);
         let taller = CELL / 0.5581;
         assert_eq!(layout.slot(2).unwrap().y, taller + GAP, "under the first, which is the taller");
-        assert_eq!(layout.slot(3).unwrap().y, CELL / 0.5625 + GAP);
-        // A difference of a quarter of the cell width is where the shortest column takes over.
-        let just_shorter = Some(CELL / (CELL / 1. - CELL * MASONRY_TIE + 0.5));
-        let layout = Layout::masonry([Some(1.), just_shorter, Some(1.)], 2, CELL, GAP);
+        assert_eq!(layout.slot(3).unwrap().y, CELL / (9. / 16.) + GAP);
+        assert!(layout.reach() > taller, "cell 4 sits below its floor (column 1's bottom) and reaches further than any cell is tall");
+        // The tie is where the shortest column takes over: a second cell shorter than the first
+        // by half a pixel less than the tie still reads on, by half a pixel more it doesn't.
+        let tie = CELL * MASONRY_TIE;
+        let ratio_for_height = |height: f32| Some(CELL / height);
+        let layout = Layout::masonry([Some(1.), ratio_for_height(CELL - tie + 0.5), Some(1.)], 2, CELL, GAP);
         assert_eq!(layout.slot(2).unwrap().column, 0, "within the tie: leftmost");
-        let clearly_shorter = Some(CELL / (CELL - CELL * MASONRY_TIE - 0.5));
-        let layout = Layout::masonry([Some(1.), clearly_shorter, Some(1.)], 2, CELL, GAP);
+        let layout = Layout::masonry([Some(1.), ratio_for_height(CELL - tie - 0.5), Some(1.)], 2, CELL, GAP);
         assert_eq!(layout.slot(2).unwrap().column, 1, "beyond the tie: the shortest");
-        // A landscape next to a portrait is never a tie.
-        let layout = Layout::masonry([Some(0.5), Some(2.), Some(1.)], 2, CELL, GAP);
-        assert_eq!(layout.slot(2).unwrap().column, 1);
+        // The closest catalog shapes tie; the next step apart doesn't; a landscape next to a
+        // portrait never does.
+        for (tied, first, second) in [(true, 4. / 5., 3. / 4.), (true, 3. / 2., 16. / 9.), (false, 2. / 3., 3. / 4.), (false, 4. / 3., 16. / 9.), (false, 1., 4. / 3.), (false, 0.5, 2.)] {
+            let taller_first = first > second; // a wider shape is the shorter cell
+            let layout = Layout::masonry([Some(first), Some(second), Some(1.)], 2, CELL, GAP);
+            let expected = if tied || taller_first { 0 } else { 1 };
+            assert_eq!(layout.slot(2).unwrap().column, expected, "{first} beside {second}");
+        }
     }
 
     #[test]
@@ -391,10 +427,11 @@ mod tests {
             let mut last_floor = 0.;
             for index in 0..500 {
                 let slot = layout.slot(index).unwrap();
-                let floor = layout.floors[index];
+                let floor = layout.floor(index);
                 assert!(floor >= last_floor, "{columns} columns: cell {index}'s floor is above cell {}'s", index - 1);
                 last_floor = floor;
                 assert!(slot.y >= floor && slot.y <= floor + CELL * MASONRY_TIE + GAP, "{columns} columns: cell {index} at {} is not within the tie of its floor {floor}", slot.y);
+                assert!(slot.bottom() - floor <= layout.reach(), "{columns} columns: cell {index} reaches past the layout's reach");
                 assert!(slot.y >= bottoms[slot.column], "{columns} columns: cell {index} overlaps the one above");
                 bottoms[slot.column] = slot.bottom();
                 assert_eq!(slot.x, slot.column as f32 * (CELL + GAP));
@@ -429,11 +466,16 @@ mod tests {
                 let overlaps = slot.bottom() > top && slot.y < bottom;
                 assert!(!overlaps || range.contains(&index), "cell {index} ({slot:?}) overlaps {top}..{bottom} but {range:?} misses it");
             }
-            // Tight at the bottom, and at the top no wider than the tallest cell.
+            // Tight at the bottom, and at the top no wider than the reach.
             assert!(range.end == layout.len() || layout.slot(range.end).unwrap().y >= bottom);
-            assert!(range.start == 0 || layout.slot(range.start - 1).unwrap().y + layout.max_height() <= top);
+            assert!(range.start == 0 || layout.floor(range.start - 1) + layout.reach() <= top);
         }
         assert_eq!(Layout::default().visible_range(0., 100.), 0..0);
+        // Rows: the same guarantee off their own `y`.
+        let layout = Layout::uniform(30, 4, CELL, GAP);
+        assert_eq!(layout.visible_range(CELL + GAP, 2. * CELL + GAP), 4..8, "exactly the second row");
+        assert_eq!(layout.visible_range(CELL, 3. * CELL), 4..12, "a top edge at the first row's bottom doesn't overlap it");
+        assert_eq!(layout.visible_range(CELL - 1., 3. * CELL), 0..12, "a pixel into the first row keeps it");
     }
 
     #[test]
