@@ -41,7 +41,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-14, windows-latest]
+        # macos-14 is retired on 2026-11-02 (with brownouts through October); macOS 26 is also the
+        # image the bundles need, so every macOS job uses the one image.
+        os: [ubuntu-latest, macos-26, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -68,7 +70,7 @@ jobs:
   macos-app:
     name: macOS app (full)
     if: ${{ inputs.app }}
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

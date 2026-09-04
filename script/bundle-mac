@@ -56,6 +56,12 @@ icon_build="$(mktemp -d)"
 # actool also writes a Majik.icns here, but it stops at 256 px; the one copied above has every size.
 "$actool" packaging/Majik.icon --compile "$icon_build" --app-icon Majik --platform macosx \
     --minimum-deployment-target 11.0 --output-partial-info-plist "$icon_build/icon.plist" > /dev/null
+# An older actool accepts the .icon package and exits 0 without writing anything, so the failure
+# would otherwise surface as an unexplained `cp` error.
+if [[ ! -f "$icon_build/Assets.car" ]]; then
+    echo "actool produced no Assets.car from packaging/Majik.icon: compiling an Icon Composer package needs Xcode 26 or later ($(xcodebuild -version | head -1) is selected)." >&2
+    exit 1
+fi
 cp "$icon_build/Assets.car" "$app/Contents/Resources/Assets.car"
 # GPL-3 asks that the licence travel with every binary we hand out.
 cp LICENSE NOTICE "$app/Contents/Resources/"
