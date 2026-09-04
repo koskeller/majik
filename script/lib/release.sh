@@ -26,9 +26,17 @@ crate_version() {
         jq --raw-output '.packages[] | select(.name == "majik-app") | .version'
 }
 
-# Every `cargo build` that produces a shippable binary must run after this.
+# Every `cargo build` that produces a shippable binary must run after this. Besides the channel it
+# stamps the commit, which crash reports carry so a minidump can be matched to its symbols
+# (`config::commit_sha`). The telemetry checksum seed (`MAJIK_TELEMETRY_SEED`) is read by the build
+# straight from the environment the workflow hands the bundle step; it is a secret, so this file
+# never spells it out, and a build without it ships telemetry the server may drop.
 stamp_channel() {
     export MAJIK_CHANNEL="$RELEASE_CHANNEL"
+    export MAJIK_COMMIT_SHA="$(git -C "$(repo_root)" rev-parse HEAD)"
+    if [[ -z "${MAJIK_TELEMETRY_SEED:-}" ]]; then
+        echo "note: MAJIK_TELEMETRY_SEED is unset; this build's telemetry carries no checksum." >&2
+    fi
 }
 
 # Prove the binary we are about to ship was built with the stamp. Grepping the bytes rather than
@@ -41,6 +49,20 @@ require_channel_marker() { # <binary> <channel>
         echo "       Every build that produces a shippable binary must call stamp_channel first." >&2
         exit 1
     fi
+}
+
+# Write the Breakpad symbols of an unstripped binary next to the bundle, so a crash report's
+# minidump can be read (`minidump-stackwalk --symbols-path`, see docs/telemetry.md). `dump_syms` is
+# Mozilla's (`cargo install dump_syms`); a machine without it skips the file with a note, since a
+# local bundle is still a bundle. Run this before stripping.
+write_symbols() { # <binary> <output .sym>
+    local binary="$1" output="$2"
+    if ! command -v dump_syms > /dev/null; then
+        echo "note: dump_syms not installed; no symbols written for ${binary}." >&2
+        return 0
+    fi
+    dump_syms "$binary" > "$output"
+    echo "symbols: $output"
 }
 
 # Signing is all-or-nothing: a partial set of secrets would produce a bundle that looks signed and

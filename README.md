@@ -33,6 +33,10 @@ persist between launches.
 On first launch Majik asks for an API key and where to keep your library. Keys go into the
 platform's credential store, never into the library folder or a config file.
 
+Majik sends anonymous usage events and crash reports to trymajik.com, never a prompt or an image;
+both switches are on the first-launch screen and in Settings → Telemetry. [docs/telemetry.md](docs/telemetry.md)
+lists every event.
+
 ## Build from source
 
 Needs a stable Rust toolchain (1.98 or later). There is no ffmpeg or other system media dependency —

@@ -9,6 +9,7 @@ use majik_generation::engine::{stale_timeout, stale_timeout_for, JobRunner};
 use majik_generation::engine::InertRunner;
 use majik_generation::{validation, AssetInput, Engine, Event, ImproveReceiver, Job, Request, TextRequest};
 use crate::credentials::ApiKeys;
+use crate::telemetry::Telemetry;
 use majik_providers::{AssetRole, JobHandle, ProviderDescriptor, ProviderId, ProviderRegistry, ToolSettings};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -18,6 +19,7 @@ use std::time::Duration;
 pub struct AppState {
     pub library: Entity<LibraryModel>,
     pub keys: Arc<ApiKeys>,
+    pub telemetry: Arc<Telemetry>,
 }
 
 impl Global for AppState {}
@@ -28,6 +30,10 @@ pub fn library(cx: &App) -> Entity<LibraryModel> {
 
 pub fn keys(cx: &App) -> Arc<ApiKeys> {
     cx.global::<AppState>().keys.clone()
+}
+
+pub fn telemetry(cx: &App) -> Arc<Telemetry> {
+    cx.global::<AppState>().telemetry.clone()
 }
 
 #[derive(Clone, Debug)]
@@ -57,6 +63,22 @@ pub struct LibraryModel {
 }
 
 impl EventEmitter<LibraryEvent> for LibraryModel {}
+
+/// The names telemetry uses for a row's kind; stable, unlike `Debug` output.
+fn media_type_name(media_type: MediaType) -> &'static str {
+    match media_type {
+        MediaType::Image => "image",
+        MediaType::Video => "video",
+        MediaType::Audio => "audio",
+    }
+}
+
+fn tool_name(tool: ToolId) -> &'static str {
+    match tool {
+        ToolId::Upscale => "upscale",
+        ToolId::RemoveBackground => "remove_background",
+    }
+}
 
 /// What the feed/detail hand to the composer panel. The target album isn't part of it: the composer
 /// follows the sidebar's selection live.
@@ -214,6 +236,15 @@ impl LibraryModel {
             tracing::debug!(target: "majik", "{id}: dropping an event of attempt {} (open attempt: {active:?})", event.job());
             return;
         }
+        let outcome = match &event {
+            Event::Completed { .. } => Some(("completed", None)),
+            Event::Failed { error, .. } => Some(("failed", Some(error.kind()))),
+            Event::Cancelled { .. } => Some(("cancelled", None)),
+            Event::Accepted { .. } | Event::Trace { .. } => None,
+        };
+        if let Some((outcome, error_kind)) = outcome {
+            self.report_finished(&id, outcome, error_kind);
+        }
         let finished = match event {
             Event::Accepted { id, external_id, poll_url, .. } => {
                 self.lib.mark_running(&id, external_id, poll_url);
@@ -252,6 +283,24 @@ impl LibraryModel {
         if let Some(ok) = finished {
             cx.emit(LibraryEvent::GenerationFinished { ok });
         }
+    }
+
+    /// "Generation Finished": what kind of row ended how, never what it was of. Read before the
+    /// row is updated, so the attempt is the one that just ended.
+    fn report_finished(&self, id: &GenerationId, outcome: &'static str, error_kind: Option<&'static str>) {
+        let Some(row) = self.lib.get(id) else { return };
+        let attempt = self.lib.active_job(id).map(|job| job.attempt);
+        majik_telemetry::event!(
+            "Generation Finished",
+            provider = row.provider.clone(),
+            model = row.model_name.clone(),
+            media_type = media_type_name(row.media_type),
+            tool = row.tool.map(tool_name),
+            outcome,
+            error_kind,
+            attempt,
+            duration_ms = majik_core::now_ms().saturating_sub(row.created_at_ms),
+        );
     }
 
     // ----- thumbnails ------------------------------------------------------------
@@ -450,6 +499,7 @@ impl LibraryModel {
                 Err(e) => failures.push(format!("{name}: {e:#}")),
             }
         }
+        majik_telemetry::event!("Files Imported", count = ids.len(), failed = failures.len());
         (ids, failures)
     }
 
@@ -494,6 +544,7 @@ impl LibraryModel {
 
     pub fn create_album(&mut self, name: String, cx: &mut Context<Self>) -> AlbumId {
         let id = self.lib.create_album(name);
+        majik_telemetry::event!("Album Created");
         self.changed(cx);
         id
     }
@@ -525,6 +576,18 @@ impl LibraryModel {
     /// copied.
     pub fn generate(&mut self, requests: Vec<Request>, inputs: &[(AssetId, AssetRole)], album: Option<AlbumId>, cx: &mut Context<Self>) -> Vec<GenerationId> {
         let links: Vec<(AssetId, &str)> = inputs.iter().map(|(asset, role)| (asset.clone(), role.raw())).collect();
+        let batch = requests.len();
+        for request in &requests {
+            majik_telemetry::event!(
+                "Generation Requested",
+                provider = request.provider.to_string(),
+                model = request.generation_type.model_name(),
+                media_type = media_type_name(request.media_type()),
+                tool = request.generation_type.tool().map(tool_name),
+                input_count = request.assets.len(),
+                batch,
+            );
+        }
         let ids = requests.into_iter().map(|request| self.queue_request(request, &links, album.as_ref())).collect();
         self.changed(cx);
         ids
@@ -557,6 +620,7 @@ impl LibraryModel {
     /// Re-run failed rows from their stored request and assets; a tool row replays its request
     /// over its stored input.
     pub fn retry(&mut self, ids: &[GenerationId], cx: &mut Context<Self>) {
+        let mut retried = 0;
         for id in ids {
             let Some(item) = self.lib.get(id).cloned() else { continue };
             // A missing file is regenerated in place: the new file is written under the same id.
@@ -579,12 +643,18 @@ impl LibraryModel {
                 continue;
             }
             match self.lib.start_attempt(id) {
-                Ok(job) => self.engine.submit(Job::Generate { id: id.clone(), job, request: Box::new(request) }),
+                Ok(job) => {
+                    self.engine.submit(Job::Generate { id: id.clone(), job, request: Box::new(request) });
+                    retried += 1;
+                }
                 Err(e) => {
                     tracing::warn!(target: "majik", "retrying {id}: {e:#}");
                     cx.emit(LibraryEvent::Error { message: format!("Couldn't retry: {e:#}") });
                 }
             }
+        }
+        if retried > 0 {
+            majik_telemetry::event!("Generation Retried", count = retried);
         }
         self.changed(cx);
     }
@@ -1555,6 +1625,92 @@ mod tests {
             assert_eq!(it.job_id.as_deref(), Some("mock-image-9"));
         });
     }
+    // ----- telemetry ---------------------------------------------------------------
+
+    /// Every event's JSON, so a test can assert that nothing the user typed is in any of them.
+    fn events_json(e: &crate::test_support::TestEnv) -> String {
+        e.events().iter().map(|event| serde_json::to_string(event).unwrap()).collect::<Vec<_>>().join("\n")
+    }
+
+    #[gpui::test]
+    fn a_generation_is_reported_when_requested_and_when_it_ends_without_its_prompt(cx: &mut TestAppContext) {
+        let e = env(cx, 0, "Mock");
+        let ids = e.library.update(cx, |m, cx| m.generate(vec![image_request("a secret prompt"), image_request("another secret")], &[], None, cx));
+        cx.run_until_parked();
+        let requested = e.events_named("Generation Requested");
+        assert_eq!(requested.len(), 2, "one per request");
+        assert_eq!(requested[0].event_properties["provider"], "Mock");
+        assert_eq!(requested[0].event_properties["model"], catalog::image::ALL[0].name);
+        assert_eq!(requested[0].event_properties["media_type"], "image");
+        assert_eq!(requested[0].event_properties["tool"], serde_json::Value::Null);
+        assert_eq!(requested[0].event_properties["input_count"], 0);
+        assert_eq!(requested[0].event_properties["batch"], 2);
+
+        e.library.update(cx, |m, cx| {
+            m.apply(Event::Completed { id: ids[0].clone(), job: m.attempt(&ids[0]), bytes: majik_core::images::solid_png(4, 4, [1, 2, 3]), is_upscaled: false }, cx);
+            m.apply(Event::Failed { id: ids[1].clone(), job: m.attempt(&ids[1]), error: Box::new(majik_providers::GenerationError::Timeout) }, cx);
+        });
+        cx.run_until_parked();
+        let finished = e.events_named("Generation Finished");
+        assert_eq!(finished.len(), 2);
+        assert_eq!(finished[0].event_properties["outcome"], "completed");
+        assert_eq!(finished[0].event_properties["error_kind"], serde_json::Value::Null);
+        assert_eq!(finished[0].event_properties["attempt"], 1);
+        assert_eq!(finished[0].event_properties["provider"], "Mock");
+        assert!(finished[0].event_properties["duration_ms"].is_u64());
+        assert_eq!(finished[1].event_properties["outcome"], "failed");
+        assert_eq!(finished[1].event_properties["error_kind"], majik_providers::GenerationError::Timeout.kind());
+        let json = events_json(&e);
+        assert!(!json.contains("secret"), "a prompt reached telemetry: {json}");
+        assert!(!json.contains(&ids[0].to_string()), "a generation id reached telemetry: {json}");
+    }
+
+    #[gpui::test]
+    fn a_cancelled_generation_and_a_retry_are_reported(cx: &mut TestAppContext) {
+        let e = env(cx, 0, "Mock");
+        let id = e.library.update(cx, |m, cx| m.generate(vec![image_request("p")], &[], None, cx).remove(0));
+        e.library.update(cx, |m, cx| m.apply(Event::Cancelled { id: id.clone(), job: m.attempt(&id) }, cx));
+        cx.run_until_parked();
+        let finished = e.events_named("Generation Finished");
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0].event_properties["outcome"], "cancelled");
+
+        let failed = e.library.update(cx, |m, cx| m.generate(vec![image_request("p")], &[], None, cx).remove(0));
+        e.library.update(cx, |m, cx| m.apply(Event::Failed { id: failed.clone(), job: m.attempt(&failed), error: Box::new(majik_providers::GenerationError::Timeout) }, cx));
+        e.library.update(cx, |m, cx| m.retry(std::slice::from_ref(&failed), cx));
+        cx.run_until_parked();
+        let retried = e.events_named("Generation Retried");
+        assert_eq!(retried.len(), 1);
+        assert_eq!(retried[0].event_properties["count"], 1);
+        // A retry that could not start (the row is not failed) reports nothing.
+        let done = e.library.update(cx, |m, cx| m.generate(vec![image_request("p")], &[], None, cx).remove(0));
+        e.library.update(cx, |m, cx| m.apply(Event::Completed { id: done.clone(), job: m.attempt(&done), bytes: majik_core::images::solid_png(4, 4, [1, 2, 3]), is_upscaled: false }, cx));
+        e.library.update(cx, |m, cx| m.retry(std::slice::from_ref(&done), cx));
+        cx.run_until_parked();
+        assert_eq!(e.events_named("Generation Retried").len(), 1);
+    }
+
+    #[gpui::test]
+    fn imports_are_reported_as_counts_never_names(cx: &mut TestAppContext) {
+        let e = env(cx, 0, "Mock");
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("my-private-photo.png");
+        std::fs::write(&png, majik_core::images::solid_png(4, 4, [9, 9, 9])).unwrap();
+        let text = dir.path().join("notes.txt");
+        std::fs::write(&text, b"hello").unwrap();
+        e.library.update(cx, |m, cx| m.import_files(&[png, text], cx));
+        cx.run_until_parked();
+        let imported = e.events_named("Files Imported");
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].event_properties["count"], 1);
+        assert_eq!(imported[0].event_properties["failed"], 1);
+        let json = events_json(&e);
+        assert!(!json.contains("my-private-photo") && !json.contains("notes.txt"), "a file name reached telemetry: {json}");
+        e.library.update(cx, |m, cx| m.create_album("Holiday".into(), cx));
+        cx.run_until_parked();
+        assert_eq!(e.events_named("Album Created").len(), 1);
+        assert!(!events_json(&e).contains("Holiday"), "an album name reached telemetry");
+    }
 }
 
 #[cfg(test)]
@@ -1620,4 +1776,5 @@ mod album_tests {
             assert_eq!(feed.iter().filter(|id| m.lib.get(id).unwrap().tool == Some(ToolId::Upscale)).count(), 2);
         });
     }
+
 }

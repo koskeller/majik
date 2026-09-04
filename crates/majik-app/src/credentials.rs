@@ -114,12 +114,15 @@ impl ApiKeys {
         }
         let previous = self.cache().insert(provider.to_string(), key.to_string());
         self.note_edit(provider);
+        // The provider, never the key.
+        majik_telemetry::event!("Provider Key Added", provider);
         self.persist(provider, previous, cx)
     }
 
     pub fn delete(self: &Arc<Self>, provider: &str, cx: &mut App) -> Task<Result<()>> {
         let previous = self.cache().remove(provider);
         self.note_edit(provider);
+        majik_telemetry::event!("Provider Key Removed", provider);
         self.persist(provider, previous, cx)
     }
 

@@ -58,6 +58,36 @@ pub fn version_line() -> String {
     format!("majik {} ({})", env!("CARGO_PKG_VERSION"), channel().name())
 }
 
+/// The commit this binary was built from, stamped by `script/lib/release.sh` alongside the
+/// channel. A crash report without it can't be symbolicated, so [`crate::reliability`] skips
+/// uploading when it is absent, as Zed does for "no sha".
+pub fn commit_sha() -> Option<&'static str> {
+    option_env!("MAJIK_COMMIT_SHA").filter(|sha| !sha.is_empty())
+}
+
+/// Where telemetry goes: `<base>/events` and `<base>/crashes`. Stable builds post to trymajik.com;
+/// every channel honours `MAJIK_TELEMETRY_URL` at runtime so a dev build can be pointed at a local
+/// server, and without it a dev build sends nothing.
+pub fn telemetry_base_url() -> Option<String> {
+    if let Ok(url) = std::env::var("MAJIK_TELEMETRY_URL") {
+        return Some(url.trim_end_matches('/').to_string());
+    }
+    match channel() {
+        Channel::Stable => Some("https://trymajik.com/api/telemetry".to_string()),
+        Channel::Dev => None,
+    }
+}
+
+/// The secret the checksum header is keyed with (Zed's `ZED_CLIENT_CHECKSUM_SEED`): baked in by
+/// the release scripts, or set at runtime for a dev build talking to a local server. Without it
+/// requests carry no checksum and the server may drop them.
+pub fn telemetry_seed() -> Option<Vec<u8>> {
+    option_env!("MAJIK_TELEMETRY_SEED")
+        .map(|seed| seed.as_bytes().to_vec())
+        .or_else(|| std::env::var("MAJIK_TELEMETRY_SEED").ok().map(String::into_bytes))
+        .filter(|seed| !seed.is_empty())
+}
+
 impl Channel {
     /// The channel's name, as `MAJIK_CHANNEL` spells it.
     pub const fn name(self) -> &'static str {
@@ -133,33 +163,41 @@ pub struct AppDirs {
     pub data: PathBuf,
     /// Regenerable downloads (voice previews); safe to delete at any time.
     pub cache: PathBuf,
+    /// `majik.log`, `telemetry.log` and the crash reports (`<session>.dmp` + `.json`) waiting to
+    /// be uploaded.
+    pub logs: PathBuf,
 }
 
 /// Stable's paths, with Dev's folder name in brackets:
 /// - macOS: one `~/Library/Application Support/com.app.majik[-dev]` folder for config and data,
-///   `~/Library/Caches/com.app.majik[-dev]` for the cache.
-/// - Windows: `%APPDATA%\Majik[ Dev]` for config, `%LOCALAPPDATA%\Majik[ Dev]` for data and cache.
-/// - Linux (XDG): `~/.config/majik[-dev]`, `~/.local/share/majik[-dev]`, `~/.cache/majik[-dev]`.
+///   `~/Library/Caches/com.app.majik[-dev]` for the cache, `~/Library/Logs/com.app.majik[-dev]`
+///   for the logs (where Console.app looks, as Zed does).
+/// - Windows: `%APPDATA%\Majik[ Dev]` for config, `%LOCALAPPDATA%\Majik[ Dev]` for data, cache
+///   and logs.
+/// - Linux (XDG): `~/.config/majik[-dev]`, `~/.local/share/majik[-dev]` (with `logs` inside),
+///   `~/.cache/majik[-dev]`.
 pub fn app_dirs() -> Option<AppDirs> {
     app_dirs_for(channel())
 }
 
 fn app_dirs_for(channel: Channel) -> Option<AppDirs> {
     let base = directories::BaseDirs::new()?;
-    Some(app_dirs_in(base.config_dir(), base.data_local_dir(), base.cache_dir(), channel))
+    Some(app_dirs_in(base.home_dir(), base.config_dir(), base.data_local_dir(), base.cache_dir(), channel))
 }
 
-fn app_dirs_in(config_base: &Path, data_local_base: &Path, cache_base: &Path, channel: Channel) -> AppDirs {
+fn app_dirs_in(home: &Path, config_base: &Path, data_local_base: &Path, cache_base: &Path, channel: Channel) -> AppDirs {
     let name = channel.dir_name();
     if cfg!(target_os = "macos") {
         let dir = data_local_base.join(name);
-        AppDirs { config: dir.clone(), data: dir, cache: cache_base.join(name) }
+        AppDirs { config: dir.clone(), data: dir, cache: cache_base.join(name), logs: home.join("Library/Logs").join(name) }
     } else if cfg!(target_os = "windows") {
         // `BaseDirs::cache_dir` is `%LOCALAPPDATA%` on Windows, i.e. the data root, so the cache
         // gets its own subfolder rather than sitting beside the library.
-        AppDirs { config: config_base.join(name), data: data_local_base.join(name), cache: data_local_base.join(name).join("cache") }
+        let data = data_local_base.join(name);
+        AppDirs { config: config_base.join(name), data: data.clone(), cache: data.join("cache"), logs: data.join("logs") }
     } else {
-        AppDirs { config: config_base.join(name), data: data_local_base.join(name), cache: cache_base.join(name) }
+        let data = data_local_base.join(name);
+        AppDirs { config: config_base.join(name), data: data.clone(), cache: cache_base.join(name), logs: data.join("logs") }
     }
 }
 
@@ -233,6 +271,28 @@ pub struct Config {
     /// home folder while unset or once the folder is gone).
     #[serde(default)]
     pub save_directory: Option<PathBuf>,
+    /// A random id for this install, minted on first launch (see [`Config::ensure_installation_id`]).
+    /// Per channel for free, since the config file is. It is the only identity telemetry carries.
+    #[serde(default)]
+    pub installation_id: Option<String>,
+    /// What leaves the machine; both on unless the user says otherwise, as in Zed.
+    #[serde(default)]
+    pub telemetry: TelemetrySettings,
+}
+
+/// Zed's `telemetry` settings: `diagnostics` gates crash reports, `metrics` gates usage events.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TelemetrySettings {
+    #[serde(default = "default_true")]
+    pub diagnostics: bool,
+    #[serde(default = "default_true")]
+    pub metrics: bool,
+}
+
+impl Default for TelemetrySettings {
+    fn default() -> Self {
+        Self { diagnostics: true, metrics: true }
+    }
 }
 
 /// How the feed lays out its cells. The first two are Photos' "Square / Aspect Ratio": square
@@ -319,6 +379,8 @@ impl Default for Config {
             compose_panel_width: None,
             screen: FeedFilter::Library,
             save_directory: None,
+            installation_id: None,
+            telemetry: TelemetrySettings::default(),
         }
     }
 }
@@ -443,9 +505,26 @@ pub fn cache_dir() -> Option<PathBuf> {
     app_dirs().map(|d| d.cache)
 }
 
+/// This channel's logs folder (`majik.log`, `telemetry.log`, crash reports). `None` until `main`
+/// sets the config dir, so tests write no logs and read no crash reports.
+pub fn logs_dir() -> Option<PathBuf> {
+    config_dir().and_then(|_| app_dirs().map(|d| d.logs))
+}
+
 impl Config {
     pub fn load() -> Self {
         config_path().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    }
+
+    /// Mint the install id on first launch and persist it at once. Returns whether it was new,
+    /// which is what tells "App First Opened" from "App Opened".
+    pub fn ensure_installation_id(&mut self) -> bool {
+        if self.installation_id.as_deref().is_some_and(|id| !id.is_empty()) {
+            return false;
+        }
+        self.installation_id = Some(uuid::Uuid::new_v4().to_string());
+        self.save();
+        true
     }
 
     pub fn save(&self) {
@@ -477,7 +556,7 @@ mod tests {
     use super::*;
 
     fn dirs(channel: Channel) -> AppDirs {
-        app_dirs_in(Path::new("/cfg"), Path::new("/data"), Path::new("/cache"), channel)
+        app_dirs_in(Path::new("/home"), Path::new("/cfg"), Path::new("/data"), Path::new("/cache"), channel)
     }
 
     #[test]
@@ -527,16 +606,24 @@ mod tests {
         let stable = dirs(Channel::Stable);
         if cfg!(target_os = "macos") {
             let dir = PathBuf::from("/data/com.app.majik");
-            assert_eq!(stable, AppDirs { config: dir.clone(), data: dir, cache: PathBuf::from("/cache/com.app.majik") });
+            assert_eq!(
+                stable,
+                AppDirs { config: dir.clone(), data: dir, cache: PathBuf::from("/cache/com.app.majik"), logs: PathBuf::from("/home/Library/Logs/com.app.majik") }
+            );
         } else if cfg!(target_os = "windows") {
             assert_eq!(
                 stable,
-                AppDirs { config: PathBuf::from("/cfg/Majik"), data: PathBuf::from("/data/Majik"), cache: PathBuf::from("/data/Majik/cache") }
+                AppDirs {
+                    config: PathBuf::from("/cfg/Majik"),
+                    data: PathBuf::from("/data/Majik"),
+                    cache: PathBuf::from("/data/Majik/cache"),
+                    logs: PathBuf::from("/data/Majik/logs"),
+                }
             );
         } else {
             assert_eq!(
                 stable,
-                AppDirs { config: PathBuf::from("/cfg/majik"), data: PathBuf::from("/data/majik"), cache: PathBuf::from("/cache/majik") }
+                AppDirs { config: PathBuf::from("/cfg/majik"), data: PathBuf::from("/data/majik"), cache: PathBuf::from("/cache/majik"), logs: PathBuf::from("/data/majik/logs") }
             );
         }
         assert_eq!(Channel::Stable.bundle_id(), "com.app.majik");
@@ -544,9 +631,44 @@ mod tests {
     }
 
     #[test]
+    fn logs_stay_off_disk_in_tests() {
+        // Like the credentials: nothing sets the config dir under `cargo test`, so no test can
+        // write a log or read a real crash report.
+        assert!(logs_dir().is_none());
+    }
+
+    #[test]
+    fn dev_builds_send_no_telemetry_unless_pointed_somewhere() {
+        // A dev build must never post to the production endpoint by accident; only the env var
+        // opts it in, and only `script/lib/release.sh` stamps a seed.
+        if std::env::var_os("MAJIK_TELEMETRY_URL").is_none() {
+            assert_eq!(telemetry_base_url(), None);
+        }
+        if std::env::var_os("MAJIK_TELEMETRY_SEED").is_none() {
+            assert_eq!(telemetry_seed(), None);
+        }
+        assert_eq!(commit_sha(), None, "no commit is stamped for cargo test");
+    }
+
+    #[test]
+    fn telemetry_is_on_by_default_and_the_install_id_is_minted_once() {
+        let mut config: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(config.telemetry, TelemetrySettings { diagnostics: true, metrics: true });
+        assert_eq!(config.installation_id, None);
+        assert!(config.ensure_installation_id(), "the first launch mints one");
+        let id = config.installation_id.clone().expect("an id");
+        assert_eq!(id.len(), 36, "a UUID: {id}");
+        assert!(!config.ensure_installation_id(), "every later launch keeps it");
+        assert_eq!(config.installation_id.as_deref(), Some(id.as_str()));
+        // A half-written setting keeps the other's default.
+        let config: Config = serde_json::from_str(r#"{"telemetry":{"metrics":false}}"#).unwrap();
+        assert_eq!(config.telemetry, TelemetrySettings { diagnostics: true, metrics: false });
+    }
+
+    #[test]
     fn dev_dirs_never_overlap_the_stable_ones() {
         let (dev, stable) = (dirs(Channel::Dev), dirs(Channel::Stable));
-        for (dev, stable) in [(&dev.config, &stable.config), (&dev.data, &stable.data), (&dev.cache, &stable.cache)] {
+        for (dev, stable) in [(&dev.config, &stable.config), (&dev.data, &stable.data), (&dev.cache, &stable.cache), (&dev.logs, &stable.logs)] {
             assert_ne!(dev, stable);
             // Nesting either way would make `rm -rf <dev folder>` reach into the shipped app's files.
             assert!(!dev.starts_with(stable) && !stable.starts_with(dev), "{} / {}", dev.display(), stable.display());

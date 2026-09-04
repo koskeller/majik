@@ -530,6 +530,7 @@ impl ComposeView {
         };
         let roles: Vec<AssetRole> = self.state.accepted_assets().iter().map(|a| a.role).collect();
         let request = improve::text_request(&prompt, &generation_type, self.state.provider, &roles);
+        majik_telemetry::event!("Prompt Improved", provider = self.state.provider.id.to_string(), media_type = generation_type.media_type().label().to_lowercase());
         let receiver = self.library.read(cx).improve_prompt(request);
         self.improving = Some(cx.spawn_in(window, async move |this, cx| {
             let outcome = receiver.recv().await;

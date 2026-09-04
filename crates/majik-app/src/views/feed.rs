@@ -681,6 +681,7 @@ impl FeedView {
         }
         self.grid_layout = layout;
         update_config(cx, |c| c.grid_layout = layout);
+        majik_telemetry::event!("Layout Changed", layout = layout.label());
         match self.relayout(self.columns) {
             Some(old) => self.refresh_with(Change::Layout, Some(old), cx),
             None => {
@@ -1086,6 +1087,7 @@ impl FeedView {
                 let preview = drag_preview_img.clone();
                 let feed = feed_for_drag;
                 d.on_drag(dragged, move |_, press_offset, _window, cx| {
+                    majik_telemetry::event!("Media Dragged", count);
                     // A drag that ends over the composer never reaches the feed's mouse-up, which
                     // would otherwise collapse the selection on the next click.
                     feed.update(cx, |feed, _| feed.deferred_click = None).ok();
@@ -1358,6 +1360,7 @@ impl Exportable {
 
 /// Copy media with both a file URL and raw bytes per item (native pasteboard), falling back to gpui.
 pub fn copy_items(items: &[Exportable], window: &mut Window, cx: &mut App) {
+    majik_telemetry::event!("Media Copied", count = items.len());
     let media: Vec<majik_platform::clipboard::ClipboardMedia> = items
         .iter()
         .map(|i| {
@@ -1471,6 +1474,7 @@ pub fn save_item(item: Exportable, window: &mut Window, cx: &mut App) -> Task<Sa
 }
 
 pub fn save_items(items: Vec<Exportable>, window: &mut Window, cx: &mut App) {
+    majik_telemetry::event!("Media Saved", count = items.len());
     if let [item] = items.as_slice() {
         let task = save_item(item.clone(), window, cx);
         window

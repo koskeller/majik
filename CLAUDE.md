@@ -76,6 +76,26 @@ gh workflow run platforms.yml                   # on-demand 3-OS matrix + full m
   process-wide `reqwest::Client` bound to whichever runtime first uses it, and a runtime per test
   poisons it for the next one. These suites detect provider changes rather than regressions: a
   failure may mean the provider changed. Neither is ever run in CI.
+- **Telemetry** (`docs/telemetry.md` is the public spec; keep it in step with the events). Zed's
+  design, ported: any crate fires `majik_telemetry::event!("Noun Verbed", key = value)`;
+  `majik-app/src/telemetry.rs` receives, drops what `Config.telemetry` (`metrics` / `diagnostics`,
+  both on by default, toggled at onboarding and on Settings → Telemetry) forbids, appends every
+  batch to `<logs>/telemetry.log` (Help → View Telemetry Log shows it) and posts it to
+  `config::telemetry_base_url()` — `https://trymajik.com/api/telemetry` for Stable, nothing for Dev
+  unless `MAJIK_TELEMETRY_URL=<base>` is set — signed with `x-majik-checksum` from
+  `MAJIK_TELEMETRY_SEED` (a build-time secret the release scripts read; a runtime env var for
+  local testing). **An event never carries a prompt, a path or file name, an asset or generation
+  id, a provider's error message, or a key**; a test seeds "secret" strings and greps the events.
+  Crashes: `majik-crashes` is Zed's `crashes` crate (`crash-handler` + `minidumper`); the app
+  spawns `majik --crash-handler <socket>`, the panic hook and signal handlers ask it for a
+  minidump, and it writes `<session>.dmp` + `<session>.json` (`CrashInfo`) to the logs folder;
+  `reliability.rs` uploads them on the next launch. Installed for Stable, or for any build with
+  `MAJIK_GENERATE_MINIDUMPS=1`; Settings → Debug has Panic / Crash buttons, and
+  `tests/crash.rs` runs `majik --crash-test <dir>` end to end. `MAJIK_COMMIT_SHA` is stamped by
+  `stamp_channel` beside the channel; a report without it is dropped (nothing could symbolicate
+  it), and the release attaches `dump_syms` output beside the installers. Logs: `majik.log` (rotated
+  at 8 MB) in `config::logs_dir()`, which like `credentials_dir` is `None` in tests so nothing
+  touches the real folder. `RUST_LOG=telemetry=trace` prints events as they are queued.
 - CI on push (`ci.yml`) only builds/tests/clippies the portable crates on Linux
   (`core storage providers generation audio`); `majik-app`, `majik-video`, `majik-platform`,
   `majik-dragout` are only checked by the manual `platforms.yml` run. Run the workspace clippy locally.

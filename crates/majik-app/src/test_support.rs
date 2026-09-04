@@ -19,6 +19,8 @@ use tempfile::TempDir;
 use crate::config::Config;
 use crate::credentials::{ApiKeys, KeyMap, SecretBackend};
 use crate::state::{AppState, LibraryModel};
+use crate::telemetry::test_transport::RecordingTransport;
+use crate::telemetry::{Route, Telemetry};
 use crate::windows::Windows;
 
 pub struct TestEnv {
@@ -26,6 +28,24 @@ pub struct TestEnv {
     #[allow(dead_code)]
     pub dir: TempDir,
     pub library: Entity<LibraryModel>,
+    /// This test's telemetry: events fired on the test thread land here, never on the wire.
+    pub telemetry: Arc<Telemetry>,
+    /// What the telemetry would have sent.
+    pub transport: Arc<RecordingTransport>,
+}
+
+impl TestEnv {
+    /// Every telemetry event fired so far, queued or already "sent".
+    pub fn events(&self) -> Vec<majik_telemetry::FlexibleEvent> {
+        let mut events = self.transport.sent_events();
+        events.extend(self.telemetry.queued_events());
+        events
+    }
+
+    /// The events called `name`, in order.
+    pub fn events_named(&self, name: &str) -> Vec<majik_telemetry::FlexibleEvent> {
+        self.events().into_iter().filter(|event| event.event_type == name).collect()
+    }
 }
 
 /// `n` completed generated images (the library only lists what the app generated; files dropped
@@ -78,10 +98,12 @@ fn setup_inner(cx: &mut App, images: usize, provider: &str, keys: ApiKeys, runne
 
     let config = Config { provider: provider.to_string(), onboarding_completed: false, ..Default::default() };
     cx.set_global(config);
-    cx.set_global(AppState { library: library.clone(), keys });
+    let transport = Arc::new(RecordingTransport::default());
+    let telemetry = Telemetry::new(transport.clone(), Some("test-install".into()), "test-session".into(), Route::Thread, cx);
+    cx.set_global(AppState { library: library.clone(), keys, telemetry: telemetry.clone() });
     cx.set_global(Windows::default());
 
-    TestEnv { dir, library }
+    TestEnv { dir, library, telemetry, transport }
 }
 
 /// A runner that only remembers what it was asked to do, for asserting on the jobs a relaunch
@@ -141,7 +163,8 @@ pub fn reopen_recording(env: &TestEnv, cx: &mut TestAppContext) -> (Entity<Libra
     let library = cx.new(|cx| LibraryModel::open_with_runner(root, Box::new(runner), cx).unwrap());
     cx.update(|cx| {
         let keys = cx.global::<AppState>().keys.clone();
-        cx.set_global(AppState { library: library.clone(), keys });
+        let telemetry = cx.global::<AppState>().telemetry.clone();
+        cx.set_global(AppState { library: library.clone(), keys, telemetry });
     });
     (library, jobs)
 }

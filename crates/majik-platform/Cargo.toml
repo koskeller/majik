@@ -23,3 +23,5 @@ objc2-app-kit = { version = "0.3", features = ["NSPasteboard", "NSPasteboardItem
 # CF_HDROP is a packed DROPFILES struct with a double-null-terminated wide path list; this crate
 # has a tested setter for it, which is worth more than hand-packing it blind from a Mac.
 clipboard-win = "5"
+# `RtlGetVersion` for `system::os_version`; the Wdk feature carries it.
+windows = { version = "0.61", features = ["Wdk_System_SystemServices", "Win32_System_SystemInformation"] }

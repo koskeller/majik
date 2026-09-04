@@ -19,11 +19,14 @@ use gpui_component::{h_flex, v_flex, ActiveTheme as _, Root, Side, Sizable as _,
 use majik_providers::{ProviderId, ProviderRegistry};
 
 use crate::actions::{CloseWindow, SelectDown, SelectUp, Shortcut};
-use crate::config::{update_config, Config};
+use crate::config::{update_config, Config, TelemetrySettings};
 use crate::state;
 use crate::ui::{button, icon, segmented};
+use crate::views::telemetry_log::TelemetryLogView;
 
 const SUPPORT_EMAIL: &str = "hello@trymajik.com";
+/// The page that spells out what telemetry carries (`docs/telemetry.md` in the repository).
+const TELEMETRY_DOCS_URL: &str = "https://github.com/koskeller/majik/blob/main/docs/telemetry.md";
 const NAV_WIDTH: f32 = 200.;
 
 /// `Config::appearance` values in the order the theme control lists them; the last is the default.
@@ -36,11 +39,12 @@ pub enum SettingsPage {
     Providers,
     Storage,
     Shortcuts,
+    Telemetry,
     About,
 }
 
 impl SettingsPage {
-    pub const ALL: [SettingsPage; 5] = [Self::General, Self::Providers, Self::Storage, Self::Shortcuts, Self::About];
+    pub const ALL: [SettingsPage; 6] = [Self::General, Self::Providers, Self::Storage, Self::Shortcuts, Self::Telemetry, Self::About];
 
     fn title(self) -> &'static str {
         match self {
@@ -48,6 +52,7 @@ impl SettingsPage {
             Self::Providers => "Providers",
             Self::Storage => "Storage",
             Self::Shortcuts => "Shortcuts",
+            Self::Telemetry => "Telemetry",
             Self::About => "About",
         }
     }
@@ -58,9 +63,62 @@ impl SettingsPage {
             Self::Providers => "globe",
             Self::Storage => "folder",
             Self::Shortcuts => "keyboard",
+            Self::Telemetry => "activity",
             Self::About => "info",
         }
     }
+}
+
+/// The two things telemetry can send, each behind its own switch (Zed's `telemetry.metrics` and
+/// `telemetry.diagnostics`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TelemetrySetting {
+    /// Usage events.
+    Metrics,
+    /// Crash reports.
+    Diagnostics,
+}
+
+impl TelemetrySetting {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Metrics => "metrics",
+            Self::Diagnostics => "diagnostics",
+        }
+    }
+}
+
+/// Flip one telemetry switch, from Settings or onboarding, and record that it was flipped. The
+/// event is queued *before* turning usage data off and *after* turning it on, so it is the last
+/// thing sent or the first: Zed fires the same event so a switch that leaks shows up in the data.
+pub fn set_telemetry_setting(setting: TelemetrySetting, enabled: bool, cx: &mut App) {
+    let telemetry = state::telemetry(cx);
+    let toggled = majik_telemetry::FlexibleEvent {
+        event_type: "Telemetry Toggled".into(),
+        event_properties: [("setting".to_string(), setting.name().into()), ("enabled".to_string(), enabled.into())].into(),
+    };
+    if !enabled {
+        telemetry.report_event(toggled.clone());
+    }
+    update_config(cx, |c| match setting {
+        TelemetrySetting::Metrics => c.telemetry.metrics = enabled,
+        TelemetrySetting::Diagnostics => c.telemetry.diagnostics = enabled,
+    });
+    telemetry.set_settings(cx.global::<Config>().telemetry);
+    if enabled {
+        telemetry.report_event(toggled);
+    }
+}
+
+/// The two switches, as a section: the Telemetry page and the onboarding Features step show the
+/// same rows with Zed's wording.
+pub fn telemetry_switches(settings: TelemetrySettings, cx: &App) -> Vec<gpui::Stateful<gpui::Div>> {
+    let diagnostics = Switch::new("telemetry-diagnostics").cursor_pointer().checked(settings.diagnostics).on_click(|on: &bool, _, cx| set_telemetry_setting(TelemetrySetting::Diagnostics, *on, cx));
+    let metrics = Switch::new("telemetry-metrics").cursor_pointer().checked(settings.metrics).on_click(|on: &bool, _, cx| set_telemetry_setting(TelemetrySetting::Metrics, *on, cx));
+    vec![
+        row("telemetry-diagnostics-row", "Crash reports", Some("Help fix Majik by sending crash reports so critical issues get fixed fast."), diagnostics, cx),
+        row("telemetry-metrics-row", "Usage data", Some("Help improve Majik by sending anonymous usage data, like which models you generate with. Never your prompts or images."), metrics, cx),
+    ]
 }
 
 /// What to show when the window comes forward.
@@ -97,6 +155,8 @@ pub struct SettingsWindow {
     /// The provider `show` was asked to focus, and what `target` reports back.
     focused_provider: Option<ProviderId>,
     shortcuts: Vec<Shortcut>,
+    /// The Telemetry page's log; kept for the window's life so it never re-reads the file.
+    telemetry_log: Entity<TelemetryLogView>,
 }
 
 impl SettingsWindow {
@@ -118,9 +178,15 @@ impl SettingsWindow {
             message: None,
             focused_provider: None,
             shortcuts: crate::actions::shortcuts(),
+            telemetry_log: cx.new(|cx| TelemetryLogView::new(window, cx)),
         };
         this.show(target, window, cx);
         this
+    }
+
+    #[cfg(test)]
+    pub fn telemetry_log(&self) -> Entity<TelemetryLogView> {
+        self.telemetry_log.clone()
     }
 
     /// Re-target the window: switch page, set or clear the recovery banner, and focus the key field
@@ -258,6 +324,7 @@ impl SettingsWindow {
             SettingsPage::Providers => self.render_providers(cx),
             SettingsPage::Storage => self.render_storage(cx),
             SettingsPage::Shortcuts => self.render_shortcuts(cx),
+            SettingsPage::Telemetry => self.render_telemetry(cx),
             SettingsPage::About => self.render_about(window, cx),
         };
         v_flex()
@@ -283,14 +350,51 @@ impl SettingsWindow {
             .child(section("Motion", cx))
             .child(row("reduce-motion", "Reduce motion", Some("Skip animations and transitions across the app."), motion, cx))
             .when(cfg!(debug_assertions), |this| {
-                this.child(section("Debug", cx)).child(row(
-                    "reset-onboarding",
-                    "Reset Onboarding",
-                    Some("Show the onboarding flow again in the Library window."),
-                    button("reset-onboarding").label("Reset Onboarding").danger().outline().small().on_click(cx.listener(|this, _, window, cx| this.reset_onboarding(window, cx))),
-                    cx,
-                ))
+                this.child(section("Debug", cx))
+                    .child(row(
+                        "reset-onboarding",
+                        "Reset Onboarding",
+                        Some("Show the onboarding flow again in the Library window."),
+                        button("reset-onboarding").label("Reset Onboarding").danger().outline().small().on_click(cx.listener(|this, _, window, cx| this.reset_onboarding(window, cx))),
+                        cx,
+                    ))
+                    .child(row(
+                        "debug-panic",
+                        "Panic",
+                        Some("Panic on the UI thread, to try the crash report path (run with MAJIK_GENERATE_MINIDUMPS=1)."),
+                        button("debug-panic").label("Panic").danger().outline().small().on_click(|_, _, _| debug_panic()),
+                        cx,
+                    ))
+                    .child(row(
+                        "debug-crash",
+                        "Crash",
+                        Some("Dereference a null pointer, the way a native library would take the app down."),
+                        button("debug-crash").label("Crash").danger().outline().small().on_click(|_, _, _| debug_crash()),
+                        cx,
+                    ))
             })
+    }
+
+    fn render_telemetry(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let settings = cx.global::<Config>().telemetry;
+        let muted = cx.theme().muted_foreground;
+        let destination = match crate::config::telemetry_base_url() {
+            Some(url) => format!("Sent to {url} every few minutes, signed so only Majik builds are accepted. Nothing identifies you: a random id per install and per launch, the app version and the OS."),
+            None => "This build sends nothing; events only go to the log below.".to_string(),
+        };
+        v_flex()
+            .child(section("Sharing", cx))
+            .children(telemetry_switches(settings, cx))
+            .child(row(
+                "telemetry-docs",
+                "What is collected",
+                Some(SharedString::from(destination)),
+                button("telemetry-docs").label("Learn More").icon(icon("external-link")).ghost().small().on_click(|_, _, cx| cx.open_url(TELEMETRY_DOCS_URL)),
+                cx,
+            ))
+            .child(section("Log", cx))
+            .child(gpui::div().px_8().pt_3().text_xs().text_color(muted).child("Every usage event this app has queued, newest first. This is exactly what is sent."))
+            .child(gpui::div().px_8().pt_3().child(self.telemetry_log.clone()))
     }
 
     fn render_providers(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -403,16 +507,28 @@ impl SettingsWindow {
 
     fn render_about(&self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
         let muted_fg = cx.theme().muted_foreground;
-        // The channel too, so a screenshot says which of the two installs it came from.
-        let version = match crate::config::channel() {
-            crate::config::Channel::Stable => SharedString::from(env!("CARGO_PKG_VERSION")),
-            crate::config::Channel::Dev => SharedString::from(concat!(env!("CARGO_PKG_VERSION"), " · dev")),
+        // The channel too, so a screenshot says which of the two installs it came from, and the
+        // commit, which is what a crash report is matched against.
+        let mut version = match crate::config::channel() {
+            crate::config::Channel::Stable => env!("CARGO_PKG_VERSION").to_string(),
+            crate::config::Channel::Dev => concat!(env!("CARGO_PKG_VERSION"), " · dev").to_string(),
         };
-        let version = gpui::div().text_sm().text_color(muted_fg).child(version);
+        if let Some(sha) = crate::config::commit_sha() {
+            version.push_str(" · ");
+            version.push_str(&sha[..sha.len().min(7)]);
+        }
+        let version = gpui::div().text_sm().text_color(muted_fg).child(SharedString::from(version));
         v_flex()
             .child(section(crate::config::app_name(), cx))
             .child(row("version", "Version", Some("Made with ❤️ in Warsaw"), version, cx))
             .child(section("Help", cx))
+            .child(row(
+                "show-logs",
+                "Show Logs",
+                Some("Open the folder with the app's log and any crash reports, to attach to a bug report."),
+                button("show-logs").label("Show Logs").icon(icon("folder")).ghost().small().on_click(|_, _, cx| reveal_logs(cx)),
+                cx,
+            ))
             .child(row(
                 "contact-support",
                 "Contact Support",
@@ -522,6 +638,7 @@ pub fn set_appearance(appearance: &'static str, window: &mut Window, cx: &mut Ap
         _ => Theme::sync_system_appearance(Some(window), cx),
     }
     update_config(cx, |c| c.appearance = appearance.into());
+    majik_telemetry::event!("Settings Changed", setting = "appearance", value = appearance);
     // The calling window is mid-dispatch (its update fails) and was refreshed above; every other
     // window takes its refresh here.
     for handle in cx.windows() {
@@ -532,6 +649,7 @@ pub fn set_appearance(appearance: &'static str, window: &mut Window, cx: &mut Ap
 /// Persist the preference and apply it app-wide; every animation reads `cx.reduce_motion()`.
 pub fn set_reduce_motion(on: bool, cx: &mut App) {
     update_config(cx, |c| c.reduce_motion = on);
+    majik_telemetry::event!("Settings Changed", setting = "reduce_motion", value = on);
     cx.set_reduce_motion(on);
 }
 
@@ -544,6 +662,7 @@ fn choose_library_folder(window: &mut Window, cx: &mut App) {
         let Some(path) = paths.into_iter().next() else { return };
         let root = path.display().to_string();
         cx.update(|cx| update_config(cx, |c| c.library_root = Some(root)));
+        majik_telemetry::event!("Settings Changed", setting = "library_root");
         handle.update(cx, |_, window, cx| crate::ui::toast(window, "Library folder saved. Majik will use it on the next launch.", cx)).ok();
     })
     .detach();
@@ -576,6 +695,35 @@ fn confirm_delete_all(window: &mut Window, cx: &mut App) {
 
 fn send_email(subject: &str, cx: &mut App) {
     cx.open_url(&format!("mailto:{SUPPORT_EMAIL}?subject={}", subject.replace(' ', "%20")));
+}
+
+/// Debug → Panic: a panic on the UI thread.
+#[cfg(debug_assertions)]
+fn debug_panic() {
+    panic!("a debug panic from Settings → Debug");
+}
+
+#[cfg(not(debug_assertions))]
+fn debug_panic() {}
+
+/// Debug → Crash: a null dereference, so the signal path (not the panic hook) is what fires.
+#[cfg(debug_assertions)]
+fn debug_crash() {
+    let null = std::ptr::null_mut::<u8>();
+    unsafe { null.write_volatile(1) };
+}
+
+#[cfg(not(debug_assertions))]
+fn debug_crash() {}
+
+/// Reveal the logs folder in the file manager, creating it first so there is something to show on
+/// a fresh install.
+pub fn reveal_logs(cx: &mut App) {
+    let Some(dir) = crate::config::logs_dir() else { return };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        tracing::warn!(target: "majik", "creating the logs folder: {e}");
+    }
+    cx.reveal_path(&dir);
 }
 
 #[cfg(test)]
@@ -901,5 +1049,130 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.windows().is_empty(), "settings closed so onboarding is seen");
         cx.update(|cx| assert!(!cx.global::<Config>().onboarding_completed));
+    }
+
+    // ----- telemetry ---------------------------------------------------------------
+
+    #[gpui::test]
+    fn the_metrics_switch_records_its_own_toggle_last_when_off_and_first_when_on(cx: &mut TestAppContext) {
+        let e = env(cx, 0, "Mock");
+        majik_telemetry::event!("Before");
+        cx.run_until_parked();
+        cx.update(|cx| set_telemetry_setting(TelemetrySetting::Metrics, false, cx));
+        cx.run_until_parked();
+        cx.update(|cx| assert!(!cx.global::<Config>().telemetry.metrics));
+        assert!(!e.telemetry.settings().metrics, "applied at once, not at the next effect flush");
+        let names: Vec<String> = e.events().into_iter().map(|event| event.event_type).collect();
+        assert_eq!(names, ["Before", "Telemetry Toggled"], "the opt-out is the last thing recorded");
+        let toggled = e.events_named("Telemetry Toggled");
+        assert_eq!(toggled[0].event_properties["setting"], "metrics");
+        assert_eq!(toggled[0].event_properties["enabled"], false);
+
+        majik_telemetry::event!("While Off");
+        cx.run_until_parked();
+        assert_eq!(e.events().len(), 2, "nothing is recorded while usage data is off");
+
+        cx.update(|cx| set_telemetry_setting(TelemetrySetting::Metrics, true, cx));
+        cx.run_until_parked();
+        let names: Vec<String> = e.events().into_iter().map(|event| event.event_type).collect();
+        assert_eq!(names, ["Before", "Telemetry Toggled", "Telemetry Toggled"], "the opt-in is the first thing recorded again");
+        assert_eq!(e.events_named("Telemetry Toggled")[1].event_properties["enabled"], true);
+    }
+
+    #[gpui::test]
+    fn the_diagnostics_switch_only_touches_crash_reports(cx: &mut TestAppContext) {
+        let e = env(cx, 0, "Mock");
+        cx.update(|cx| set_telemetry_setting(TelemetrySetting::Diagnostics, false, cx));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let settings = cx.global::<Config>().telemetry;
+            assert!(!settings.diagnostics);
+            assert!(settings.metrics, "usage data is still on");
+        });
+        assert!(!e.telemetry.settings().diagnostics);
+        let toggled = e.events_named("Telemetry Toggled");
+        assert_eq!(toggled.len(), 1, "recorded, since usage data is on");
+        assert_eq!(toggled[0].event_properties["setting"], "diagnostics");
+    }
+
+    #[gpui::test]
+    fn the_telemetry_page_shows_both_switches_and_the_log(cx: &mut TestAppContext) {
+        let _e = env(cx, 0, "Mock");
+        let (view, vcx) = open(cx, SettingsTarget { page: SettingsPage::Telemetry, ..Default::default() });
+        draw(vcx);
+        for id in ["telemetry-diagnostics-row", "telemetry-metrics-row", "telemetry-docs", "telemetry-log"] {
+            assert!(vcx.debug_bounds(id).is_some(), "{id} laid out");
+        }
+        view.update(vcx, |s, cx| s.select_page(SettingsPage::General, cx));
+        draw(vcx);
+        assert!(vcx.debug_bounds("telemetry-metrics-row").is_none(), "the switches live on the Telemetry page only");
+    }
+
+    #[gpui::test]
+    fn the_log_lists_events_newest_first_filters_and_clears(cx: &mut TestAppContext) {
+        let _e = env(cx, 0, "Mock");
+        majik_telemetry::event!("Alpha Fired", model = "flux");
+        cx.run_until_parked();
+        let (view, vcx) = open(cx, SettingsTarget { page: SettingsPage::Telemetry, ..Default::default() });
+        let log = view.read_with(vcx, |s, _| s.telemetry_log());
+        vcx.run_until_parked();
+        assert_eq!(log.read_with(vcx, |log, cx| log.shown(cx)), ["Alpha Fired"], "what was queued before the page opened");
+        majik_telemetry::event!("Beta Fired", model = "kling");
+        vcx.run_until_parked();
+        assert_eq!(log.read_with(vcx, |log, cx| log.shown(cx)), ["Beta Fired", "Alpha Fired"], "live events land on top");
+        log.update_in(vcx, |log, window, cx| log.set_query("KLING", window, cx));
+        vcx.run_until_parked();
+        assert_eq!(log.read_with(vcx, |log, cx| log.shown(cx)), ["Beta Fired"], "the filter matches names and properties, ignoring case");
+        log.update_in(vcx, |log, window, cx| log.set_query("", window, cx));
+        vcx.run_until_parked();
+        draw(vcx);
+        log.update(vcx, |log, cx| log.clear(cx));
+        assert!(log.read_with(vcx, |log, cx| log.shown(cx)).is_empty());
+        majik_telemetry::event!("Gamma Fired");
+        vcx.run_until_parked();
+        assert_eq!(log.read_with(vcx, |log, cx| log.shown(cx)), ["Gamma Fired"], "still live after a clear");
+    }
+
+    #[gpui::test]
+    fn view_telemetry_log_opens_settings_on_the_telemetry_page(cx: &mut TestAppContext) {
+        let _e = env(cx, 0, "Mock");
+        cx.update(|cx| cx.global_mut::<Config>().onboarding_completed = true);
+        let (_library, vcx) = cx.add_window_view(LibraryWindow::new);
+        draw(vcx);
+        vcx.dispatch_action(crate::actions::ViewTelemetryLog);
+        vcx.run_until_parked();
+        let handle = vcx.update(|_, cx| cx.global::<Windows>().settings.expect("settings window opened"));
+        let root_view = vcx.update(|_, cx| handle.update(cx, |root, _, _| root.view().clone()).unwrap());
+        let view = root_view.downcast::<SettingsWindow>().expect("a SettingsWindow");
+        assert_eq!(vcx.update(|_, cx| view.read(cx).page), SettingsPage::Telemetry);
+    }
+
+    #[gpui::test]
+    fn changing_settings_is_reported_by_name_not_value_where_the_value_is_private(cx: &mut TestAppContext) {
+        let e = env(cx, 0, "Mock");
+        let (_view, vcx) = open(cx, SettingsTarget::default());
+        vcx.update(|window, cx| set_appearance("dark", window, cx));
+        vcx.update(|_, cx| set_reduce_motion(true, cx));
+        vcx.run_until_parked();
+        let changed = e.events_named("Settings Changed");
+        assert_eq!(changed.len(), 2);
+        assert_eq!(changed[0].event_properties["setting"], "appearance");
+        assert_eq!(changed[0].event_properties["value"], "dark");
+        assert_eq!(changed[1].event_properties["setting"], "reduce_motion");
+        assert_eq!(changed[1].event_properties["value"], true);
+    }
+
+    #[gpui::test]
+    fn saving_and_removing_a_key_reports_the_provider_never_the_key(cx: &mut TestAppContext) {
+        let e = env(cx, 0, "Mock");
+        forget_mock_key(cx);
+        let (view, vcx) = open(cx, SettingsTarget::providers());
+        save_key(&view, vcx, ProviderId::mock(), "sk-very-secret");
+        view.update(vcx, |s, cx| s.remove_key(ProviderId::mock(), cx));
+        vcx.run_until_parked();
+        assert_eq!(e.events_named("Provider Key Added").last().unwrap().event_properties["provider"], "Mock");
+        assert_eq!(e.events_named("Provider Key Removed").last().unwrap().event_properties["provider"], "Mock");
+        let json: String = e.events().iter().map(|event| serde_json::to_string(event).unwrap()).collect();
+        assert!(!json.contains("very-secret"), "a key reached telemetry: {json}");
     }
 }

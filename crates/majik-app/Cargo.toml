@@ -21,13 +21,16 @@ majik-providers = { path = "../majik-providers" }
 majik-generation = { path = "../majik-generation" }
 majik-platform = { path = "../majik-platform" }
 majik-audio = { path = "../majik-audio" }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+majik-crashes = { path = "../majik-crashes" }
+majik-telemetry.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "multipart"] }
 directories.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+uuid.workspace = true
 image.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
@@ -35,7 +38,8 @@ gpui-component.workspace = true
 gpui-base.workspace = true
 # `gpui::ImageCacheItem::Loading` holds a `futures::future::Shared<Task<…>>`, so our image cache
 # needs `FutureExt::shared` to build one (gpui pulls the same crate in).
-futures = "0.3"
+futures.workspace = true
+sha2.workspace = true
 # `gpui::RenderImage::new` takes a `SmallVec` of frames; the image cache builds one.
 smallvec = "1"
 rust-embed = "8"
@@ -44,3 +48,5 @@ chrono = "0.4"
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 tempfile = "3"
+# `tests/crash.rs` checks the minidump the crash server wrote is what it says it is.
+zstd = "0.13"

@@ -26,6 +26,11 @@ on:
         required: false
       APPLE_NOTARIZATION_ISSUER_ID:
         required: false
+      # The telemetry checksum seed the bundle scripts bake in (`config::telemetry_seed`). Optional
+      # for the same reason: a pre-release check builds a bundle whose telemetry the server would
+      # drop, and nothing else differs.
+      MAJIK_TELEMETRY_SEED:
+        required: false
 
 # Deliberately no `concurrency` here: the group would be shared by a release and a manual check on
 # the same ref, and cancelling half a release's bundles is exactly what release.yml's own
@@ -61,6 +66,9 @@ jobs:
           # the fix starts cold again.
           cache-on-failure: true
           shared-key: release-${{ matrix.target }}
+      # Breakpad symbols for crash reports (`write_symbols` in script/lib/release.sh).
+      - name: Install dump_syms
+        run: cargo install dump_syms --locked
       - name: Bundle
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
@@ -69,11 +77,17 @@ jobs:
           APPLE_NOTARIZATION_KEY: ${{ secrets.APPLE_NOTARIZATION_KEY }}
           APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
           APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
+          MAJIK_TELEMETRY_SEED: ${{ secrets.MAJIK_TELEMETRY_SEED }}
         run: script/bundle-mac ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
           name: Majik-${{ matrix.arch }}.dmg
           path: target/${{ matrix.target }}/release/Majik-${{ matrix.arch }}.dmg
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: majik-${{ matrix.target }}.sym
+          path: target/${{ matrix.target }}/release/majik-${{ matrix.target }}.sym
           if-no-files-found: error
 
   linux:
@@ -105,12 +119,21 @@ jobs:
         with:
           cache-on-failure: true
           shared-key: release-linux
+      - name: Install dump_syms
+        run: cargo install dump_syms --locked
       - name: Bundle
+        env:
+          MAJIK_TELEMETRY_SEED: ${{ secrets.MAJIK_TELEMETRY_SEED }}
         run: script/bundle-linux
       - uses: actions/upload-artifact@v4
         with:
           name: majik-linux-x86_64.tar.gz
           path: target/majik-linux-x86_64.tar.gz
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: majik-x86_64-unknown-linux-gnu.sym
+          path: target/majik-x86_64-unknown-linux-gnu.sym
           if-no-files-found: error
 
   windows:
@@ -123,11 +146,20 @@ jobs:
         with:
           cache-on-failure: true
           shared-key: release-windows
+      - name: Install dump_syms
+        run: cargo install dump_syms --locked
       - name: Bundle
         shell: pwsh
+        env:
+          MAJIK_TELEMETRY_SEED: ${{ secrets.MAJIK_TELEMETRY_SEED }}
         run: script/bundle-windows.ps1
       - uses: actions/upload-artifact@v4
         with:
           name: MajikSetup-x86_64.exe
           path: target/MajikSetup-x86_64.exe
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: majik-x86_64-pc-windows-msvc.sym
+          path: target/majik-x86_64-pc-windows-msvc.sym
           if-no-files-found: error

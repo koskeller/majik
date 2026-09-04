@@ -1,0 +1,16 @@
+[package]
+name = "majik-telemetry"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "The telemetry event macro and wire types shared by every Majik crate"
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+futures.workspace = true

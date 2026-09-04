@@ -1,4 +1,5 @@
-//! First-launch onboarding: Welcome → Features → Provider + key.
+//! First-launch onboarding: Welcome → Features (with the two telemetry switches, as Zed's Basics
+//! page has them) → Provider + key.
 //! Rendered as the Library window's content while `Config.onboarding_completed == false`.
 
 use gpui::{prelude::*, px, Context, Entity, SharedString, Window};
@@ -10,6 +11,7 @@ use majik_providers::{ProviderDescriptor, ProviderId, ProviderRegistry};
 use crate::config::{update_config, Config};
 use crate::state;
 use crate::ui::{button, fade_to, icon, segmented, MOTION_NORMAL};
+use crate::views::settings::telemetry_switches;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Step {
@@ -81,6 +83,7 @@ impl OnboardingView {
         cx.notify();
         cx.spawn(async move |this, cx| match save.await {
             Ok(()) => cx.update(|cx| {
+                majik_telemetry::event!("Onboarding Completed", provider = provider.clone());
                 update_config(cx, |c| {
                     c.provider = provider;
                     c.onboarding_completed = true;
@@ -98,6 +101,7 @@ impl OnboardingView {
     }
 
     fn skip(&mut self, cx: &mut Context<Self>) {
+        majik_telemetry::event!("Onboarding Skipped", provider = self.provider.to_string());
         update_config(cx, |c| c.onboarding_completed = true);
     }
 
@@ -160,7 +164,10 @@ impl OnboardingView {
                             .child(row("circle-dollar-sign", "No subscription. No markup.", "Bring your own API key. You pay what it costs."))
                             .child(row("shield-check", "No middleman.", "The app calls the provider directly. Images stay on your device."))
                             .child(row("monitor", "Mac, Windows, Linux.", "One library across all your devices, stored as plain files on your disk.")),
-                    ),
+                    )
+                    // The telemetry switches, on by default and explained here rather than buried
+                    // in Settings, as Zed's onboarding does.
+                    .child(v_flex().w(px(450.)).max_w_full().children(telemetry_switches(cx.global::<Config>().telemetry, cx))),
             )
             .child(gpui::div().flex_1())
             .child(
@@ -399,5 +406,31 @@ mod tests {
         vcx.run_until_parked();
         view.update_in(vcx, |v, w, cx| v.go(Step::Provider, w, cx));
         view.read_with(vcx, |v, _| assert_eq!(v.provider, majik_providers::ProviderId::replicate()));
+    }
+
+    #[gpui::test]
+    fn the_features_step_shows_the_telemetry_switches(cx: &mut TestAppContext) {
+        let _e = env(cx, 0, "Mock");
+        let (view, vcx) = cx.add_window_view(OnboardingView::new);
+        vcx.run_until_parked();
+        let draw = |vcx: &mut gpui::VisualTestContext| vcx.update(|window, cx| window.draw(cx).clear(cx));
+        draw(vcx);
+        assert!(vcx.debug_bounds("telemetry-metrics-row").is_none(), "not on Welcome");
+        view.update_in(vcx, |v, w, cx| v.go(Step::Features, w, cx));
+        draw(vcx);
+        assert!(vcx.debug_bounds("telemetry-metrics-row").is_some(), "both switches on the Features step");
+        assert!(vcx.debug_bounds("telemetry-diagnostics-row").is_some());
+    }
+
+    #[gpui::test]
+    fn finishing_onboarding_is_reported_with_the_provider(cx: &mut TestAppContext) {
+        let e = env(cx, 0, "Mock");
+        let (view, vcx) = cx.add_window_view(OnboardingView::new);
+        vcx.run_until_parked();
+        view.update(vcx, |v, cx| v.skip(cx));
+        vcx.run_until_parked();
+        let skipped = e.events_named("Onboarding Skipped");
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].event_properties["provider"], "Mock");
     }
 }

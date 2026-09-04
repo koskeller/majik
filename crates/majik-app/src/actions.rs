@@ -56,6 +56,8 @@ actions!(
         ToggleComposer,
         ToggleSidebar,
         FocusFeed,
+        ViewTelemetryLog,
+        ShowLogs,
     ]
 );
 
@@ -217,6 +219,9 @@ pub fn init(cx: &mut App) {
     // App-level so it works from every window (and from the menu with none focused); the Settings
     // window itself just comes forward.
     cx.on_action(|_: &OpenSettings, cx| crate::windows::open_settings(Default::default(), cx));
+    // The Help menu: what telemetry sent (Zed's Help → View Telemetry Log) and where the logs are.
+    cx.on_action(|_: &ViewTelemetryLog, cx| crate::windows::open_settings(SettingsTarget { page: SettingsPage::Telemetry, ..Default::default() }, cx));
+    cx.on_action(|_: &ShowLogs, cx| crate::views::settings::reveal_logs(cx));
     cx.bind_keys(shortcuts().into_iter().flat_map(|shortcut| shortcut.bindings).collect::<Vec<_>>());
 
     // gpui only *stores* the menus off macOS; the Library window draws them from `GlobalState`.
@@ -351,6 +356,11 @@ pub fn menus(state: MenuState) -> Vec<Menu> {
             name: "Window".into(),
             disabled: false,
             items: vec![MenuItem::action("Minimize", Minimize), MenuItem::action("Zoom", Zoom)],
+        },
+        Menu {
+            name: "Help".into(),
+            disabled: false,
+            items: vec![MenuItem::action("View Telemetry Log", ViewTelemetryLog), MenuItem::action("Show Logs", ShowLogs)],
         },
     ]
 }

@@ -38,6 +38,7 @@ cargo build --locked --release -p majik-app --target "$target"
 # Prove the stamp landed before the binary goes anywhere near a bundle. Without this a packaging
 # path that lost `stamp_channel` would ship an app called Majik that writes to the dev folder.
 require_channel_marker "$binary" "$RELEASE_CHANNEL"
+write_symbols "$binary" "target/${target}/release/majik-${target}.sym"
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"

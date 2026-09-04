@@ -30,8 +30,13 @@ $Version = (cargo metadata --no-deps --format-version=1 | ConvertFrom-Json).pack
 
 Write-Host "Building Majik $Version ($ReleaseChannel) for $Target"
 
-# Everything below this line is a stable-channel build.
+# Everything below this line is a stable-channel build. The commit is stamped too, for crash
+# reports (see script/lib/release.sh); MAJIK_TELEMETRY_SEED comes from the workflow's environment.
 $env:MAJIK_CHANNEL = $ReleaseChannel
+$env:MAJIK_COMMIT_SHA = (git rev-parse HEAD).Trim()
+if (-not $env:MAJIK_TELEMETRY_SEED) {
+    Write-Warning "MAJIK_TELEMETRY_SEED is unset; this build's telemetry carries no checksum."
+}
 rustup target add $Target | Out-Null
 cargo build --locked --release -p majik-app --target $Target
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
@@ -45,6 +50,15 @@ $Bytes = [System.IO.File]::ReadAllBytes($Binary)
 $AsText = [System.Text.Encoding]::ASCII.GetString($Bytes)
 if (-not $AsText.Contains($Marker)) {
     throw "FATAL: $Binary was not built with MAJIK_CHANNEL=$ReleaseChannel."
+}
+
+# Breakpad symbols for crash reports, as script/lib/release.sh's write_symbols does; the .pdb is
+# what dump_syms reads, so this happens before anything is stripped or moved.
+if (Get-Command dump_syms -ErrorAction SilentlyContinue) {
+    dump_syms $Binary | Out-File -FilePath "target\majik-$Target.sym" -Encoding ascii
+    Write-Host "symbols: target\majik-$Target.sym"
+} else {
+    Write-Warning "dump_syms not installed; no symbols written for $Binary."
 }
 
 $StageDir = "target\inno\$Architecture"

@@ -24,6 +24,7 @@ cargo build --locked --release -p majik-app --target "$target"
 
 binary="target/${target}/release/majik"
 require_channel_marker "$binary" "$RELEASE_CHANNEL"
+write_symbols "$binary" "target/majik-${target}.sym"
 
 # The bundle id doubles as the icon and .desktop file name, so the desktop entry and the window's
 # Wayland app id agree.

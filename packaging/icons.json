@@ -1,6 +1,7 @@
 {
   "//": "Icon name (icons/<name>.svg) -> HugeIcons free export (without the Icon suffix). Regenerate with `node packaging/icons.mjs`. Both the app's icon(\"…\") names and the fixed names gpui-component's widgets resolve through IconName live here.",
 
+  "activity": "Activity01",
   "album": "Album02",
   "audio-ai": "AiAudio",
   "asterisk": "Asterisk",
