@@ -758,24 +758,25 @@ mod tests {
         assert!(!engine.is_active(&id));
     }
 
+    /// The row is active from submission until its terminal event is out, so the receiver of an
+    /// in-progress event can rely on it. Checked on a job the mock holds for 30 s: a trace sent
+    /// just before the outcome can be received after the row is already released (the engine
+    /// drops the row and then announces), which made the same check on an instant job flaky.
+    /// `a_row_is_no_longer_active_the_moment_its_outcome_is_announced` covers the far side.
     #[test]
     fn a_row_stays_active_until_its_terminal_event_is_out() {
         let (engine, rx) = engine();
         let id = GenerationId::new();
-        engine.submit(Job::Generate { id: id.clone(), job: JobId::new(), request: Box::new(image_request("quick")) });
-        // Every event before the terminal one is sent while the run is still in progress.
-        loop {
-            let event = rx.recv_blocking().unwrap();
-            if event.is_terminal() {
-                break;
-            }
-            assert!(engine.is_active(&id), "still running at {event:?}");
-        }
-        let gone_by = std::time::Instant::now() + Duration::from_secs(2);
-        while engine.is_active(&id) {
-            assert!(std::time::Instant::now() < gone_by, "the row is released once its outcome is out");
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        engine.submit(Job::Generate { id: id.clone(), job: JobId::new(), request: Box::new(image_request("slow #delay:30")) });
+        assert!(engine.is_active(&id), "active from submission");
+        // The mock accepts before its delay elapses, so this arrives while it still holds the job.
+        let event = rx.recv_blocking().unwrap();
+        assert!(!event.is_terminal(), "unexpected {event:?}");
+        assert!(engine.is_active(&id), "still running at {event:?}");
+        engine.cancel(&id);
+        let terminal = next_terminal(&rx);
+        assert!(matches!(terminal, Event::Cancelled { .. }), "unexpected {terminal:?}");
+        assert!(!engine.is_active(&id), "released once {terminal:?} is out");
     }
 
     #[test]
