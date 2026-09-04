@@ -2853,6 +2853,26 @@ mod tests {
         assert!(!first_drawn && last_drawn, "scrolled to the bottom, only the last cells are drawn ({drawn} cells)");
     }
 
+    /// A window tall enough for every cell draws every cell, whatever the shapes.
+    #[gpui::test]
+    fn masonry_draws_every_cell_that_fits_the_window(cx: &mut TestAppContext) {
+        let (view, vcx, _env) = feed_window!(cx, 19);
+        vcx.simulate_resize(gpui::size(px(1000.), px(1600.)));
+        vcx.dispatch_action(LayoutMasonry);
+        vcx.run_until_parked();
+        settle(&view, vcx);
+        view.update(vcx, |f, _| {
+            assert_eq!(f.columns, 6);
+            let viewport = f32::from(slot_size(&f.content_size).height);
+            assert!(f.layout.height() < viewport, "{} px of cells in a {viewport} px window", f.layout.height());
+            let missing: Vec<usize> = (0..19).filter(|ix| !f.last_rendered.contains_key(&f.ids[*ix])).collect();
+            assert!(missing.is_empty(), "cells not drawn: {missing:?} of {:?}", f.layout);
+            for ix in 0..19 {
+                assert!(f.cell_bounds(&f.ids[ix]).is_some(), "cell {ix} has no box");
+            }
+        });
+    }
+
     #[gpui::test]
     fn masonry_land_on_scrolls_the_slot_into_view(cx: &mut TestAppContext) {
         let (view, vcx, _env) = feed_window!(cx, 40);
