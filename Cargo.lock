@@ -3971,7 +3971,7 @@ checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 
 [[package]]
 name = "majik-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4006,7 +4006,7 @@ dependencies = [
 
 [[package]]
 name = "majik-audio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "hound",
@@ -4018,7 +4018,7 @@ dependencies = [
 
 [[package]]
 name = "majik-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -4042,7 +4042,7 @@ dependencies = [
 
 [[package]]
 name = "majik-crashes"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "crash-handler",
@@ -4058,7 +4058,7 @@ dependencies = [
 
 [[package]]
 name = "majik-dragout"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -4071,7 +4071,7 @@ dependencies = [
 
 [[package]]
 name = "majik-generation"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -4089,7 +4089,7 @@ dependencies = [
 
 [[package]]
 name = "majik-platform"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clipboard-win",
@@ -4102,7 +4102,7 @@ dependencies = [
 
 [[package]]
 name = "majik-providers"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4123,7 +4123,7 @@ dependencies = [
 
 [[package]]
 name = "majik-storage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "tempfile",
@@ -4132,7 +4132,7 @@ dependencies = [
 
 [[package]]
 name = "majik-telemetry"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "futures",
  "serde",
@@ -4141,7 +4141,7 @@ dependencies = [
 
 [[package]]
 name = "majik-video"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "majik-audio",
  "majik-core",
