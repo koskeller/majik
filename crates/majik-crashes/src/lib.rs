@@ -72,7 +72,7 @@ where
     if let Some(dir) = socket_path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let mut _crash_handler = spawn_crash_handler(&exe, &socket_path)?;
+    let _crash_handler = spawn_crash_handler(&exe, &socket_path)?;
     tracing::info!(target: "majik", "spawning the crash handler process");
     let mut elapsed = Duration::ZERO;
     let retry_frequency = Duration::from_millis(100);
@@ -287,8 +287,10 @@ fn spawn_crash_handler(exe: &Path, socket_name: &Path) -> io::Result<process::Ch
     process::Command::new(exe).arg("--crash-handler").arg(socket_name).spawn()
 }
 
+/// Returns the handler's process id: there is no `Child` to hold on Windows, and the handles are
+/// closed at once since nothing waits on the process.
 #[cfg(target_os = "windows")]
-fn spawn_crash_handler(exe: &Path, socket_name: &Path) -> io::Result<()> {
+fn spawn_crash_handler(exe: &Path, socket_name: &Path) -> io::Result<u32> {
     use std::ffi::OsStr;
     use std::iter::once;
     use std::os::windows::ffi::OsStrExt;
@@ -297,11 +299,9 @@ fn spawn_crash_handler(exe: &Path, socket_name: &Path) -> io::Result<()> {
 
     let mut command_line: Vec<u16> =
         OsStr::new(&format!("\"{}\" --crash-handler \"{}\"", exe.display(), socket_name.display())).encode_wide().chain(once(0)).collect();
-    let mut startup_info = STARTUPINFOW::default();
-    startup_info.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
     // Windows shows a "busy" cursor for a freshly launched GUI process until it pumps window
     // messages, which the crash handler never does, so turn the feedback off.
-    startup_info.dwFlags = STARTF_FORCEOFFFEEDBACK;
+    let startup_info = STARTUPINFOW { cb: std::mem::size_of::<STARTUPINFOW>() as u32, dwFlags: STARTF_FORCEOFFFEEDBACK, ..Default::default() };
     let mut process_info = PROCESS_INFORMATION::default();
     unsafe {
         CreateProcessW(None, Some(PWSTR(command_line.as_mut_ptr())), None, None, false, PROCESS_CREATION_FLAGS(0), None, None, &startup_info, &mut process_info)
@@ -309,7 +309,7 @@ fn spawn_crash_handler(exe: &Path, socket_name: &Path) -> io::Result<()> {
         windows::Win32::Foundation::CloseHandle(process_info.hProcess).ok();
         windows::Win32::Foundation::CloseHandle(process_info.hThread).ok();
     }
-    Ok(())
+    Ok(process_info.dwProcessId)
 }
 
 /// The server side, run by `majik --crash-handler <socket>`: serve one client, write its dump and
