@@ -4,6 +4,19 @@ Generate images, video and audio through hosted model providers (fal / Replicate
 
 ## Install
 
+The release also ships `majik-linux-<arch>.AppImage`: one file, nothing to install. Mark it
+executable and run it, from a file manager or a terminal:
+
+```sh
+chmod +x majik-linux-x86_64.AppImage
+./majik-linux-x86_64.AppImage
+```
+
+It updates itself in place. For a launcher entry and an icon, tools such as Gear Lever or
+AppImageLauncher register AppImages with the desktop.
+
+This tarball is the alternative for a conventional install under `~/.local`:
+
 ```sh
 ./install.sh          # installs into ~/.local (override with PREFIX=/usr/local)
 ```
@@ -32,8 +45,8 @@ Point the library elsewhere with `MAJIK_LIBRARY=/path/to/folder majik`, or in Se
 ## Updates
 
 Majik checks for a new version every hour (Settings → About turns this off) and installs it by
-replacing `bin/majik` in place, so the binary and its folder must be writable by you, as they are
-after `./install.sh`. A copy in `/usr/local` or a package manager's folder can't update itself;
+replacing the AppImage, or `bin/majik`, in place, so the file and its folder must be writable by
+you, as they are after `./install.sh`. A copy in `/usr/local` or a package manager's folder can't update itself;
 Settings → About says so and links to the download. Restart when it says the new version is ready.
 
 ## Known limitations on Linux

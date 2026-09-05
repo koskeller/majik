@@ -102,7 +102,8 @@ gh workflow run platforms.yml                   # on-demand 3-OS matrix + full m
   `config::update_base_url()` (`https://trymajik.com/api/releases/stable/latest?os=&arch=`,
   answered from the GitHub release by the trymajik.com server) every hour and on Check for
   Updates…, downloads a newer version, verifies the `sha256` the feed gives, installs it over the
-  running app (rsync from the mounted DMG on macOS; the binary renamed into place on Linux; on
+  running app (rsync from the mounted DMG on macOS; the AppImage or the binary renamed into
+  place on Linux, an AppImage asking the feed for one with `package=appimage`; on
   Windows the Inno installer is staged beside the exe and run with
   `WINDOWS_INSTALLER_SWITCHES` when the app restarts or quits — `packaging/majik.iss` reads them),
   and offers Restart to Update in the sidebar footer and on Settings → About, which also holds

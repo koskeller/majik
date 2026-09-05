@@ -16,7 +16,8 @@ GET https://trymajik.com/api/releases/stable/latest?os=macos&arch=aarch64
 ```
 
 `os` and `arch` are the operating system and CPU architecture of this build, so the server can name
-the right installer. There is nothing else in it: no id, no cookie, no version of the app beyond
+the right installer; a Linux build running as an AppImage adds `&package=appimage`. There is
+nothing else in it: no id, no cookie, no version of the app beyond
 the `majik/<version>` user agent every request carries. Turning usage data off does not change it,
 because there is nothing in it to withhold.
 
@@ -32,8 +33,11 @@ on Windows) and is checked against the SHA-256 the server gave before anything i
 - **macOS**: the DMG is mounted and the `Majik.app` inside it is copied over the running one with
   `rsync` (part of macOS). The next launch runs the new version; **Restart to Update** relaunches
   the app for you. Only an installed `Majik.app` can do this; a binary run from a terminal cannot.
-- **Linux**: the tarball is unpacked and `bin/majik` is renamed over the running binary, which
-  Linux allows. When the binary lives in `<prefix>/bin` beside a `<prefix>/share` that
+- **Linux, AppImage**: the new AppImage is written beside the running one and renamed over it,
+  so the file you downloaded is the one that stays current. The app knows it runs as an AppImage
+  from the `APPIMAGE` variable the AppImage runtime sets, and asks the server for an AppImage.
+- **Linux, tarball**: the tarball is unpacked and `bin/majik` is renamed over the running binary,
+  which Linux allows. When the binary lives in `<prefix>/bin` beside a `<prefix>/share` that
   `install.sh` filled, the icons there are refreshed too. The folder must be writable by you; a
   copy in `/usr/local` or from a package manager can't update itself, and About says so with a
   link to the download.
@@ -61,7 +65,8 @@ release goes out), or `404 {"error": "no build for windows/aarch64"}` for a plat
 no installer for. `channel` is `stable` for a shipped build. `os` is Rust's `std::env::consts::OS`
 (`macos`, `windows`, `linux`); `arch` is `ARCH` (`aarch64`, `x86_64`). The asset for each pair is
 the one `release.yml` publishes: `Majik-<arch>.dmg`, `MajikSetup-<arch>.exe`,
-`majik-linux-<arch>.tar.gz`. `sha256` is the file's line from the release's `SHA256SUMS`; the app
+`majik-linux-<arch>.tar.gz`, or `majik-linux-<arch>.AppImage` when the query carries
+`package=appimage`. `sha256` is the file's line from the release's `SHA256SUMS`; the app
 skips the check when the field is absent. The server reads GitHub with a token and caches the
 answer for a few minutes; the bytes come from GitHub.
 

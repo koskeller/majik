@@ -126,7 +126,8 @@ jobs:
           apt-get update
           # jq is not in the base image, and `release.sh`'s crate_version() pipes cargo metadata
           # through it — without it the bundle dies at exit 127 before building anything.
-          apt-get install -y curl git jq build-essential pkg-config gettext-base \
+          # `file` is for linuxdeploy, which sizes the icon and inspects the binary with it.
+          apt-get install -y curl git jq file build-essential pkg-config gettext-base \
             libasound2-dev libfontconfig-dev libwayland-dev libx11-xcb-dev \
             libxkbcommon-x11-dev libssl-dev libzstd-dev clang cmake
       - uses: actions/checkout@v4
@@ -151,6 +152,11 @@ jobs:
         with:
           name: majik-linux-${{ matrix.arch }}.tar.gz
           path: target/majik-linux-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: majik-linux-${{ matrix.arch }}.AppImage
+          path: target/majik-linux-${{ matrix.arch }}.AppImage
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:

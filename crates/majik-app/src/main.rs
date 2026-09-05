@@ -241,13 +241,19 @@ fn main() {
 /// word that the last launch's update took. `app_path` is the `.app` on macOS and the exe
 /// elsewhere; a binary gpui can't place (`cargo run` outside a bundle) can check but not install.
 fn start_auto_update(cx: &mut App) {
-    let feed = config::update_base_url().map(|base_url| Arc::new(auto_update::HttpFeed::new(base_url)) as Arc<dyn auto_update::ReleaseFeed>);
-    let running_app = match cx.app_path() {
-        Ok(path) => Some(path),
-        Err(e) => {
-            tracing::info!(target: "majik", "not an installed app, so no self-update: {e:#}");
-            None
-        }
+    // An AppImage runs from a mount of itself; `APPIMAGE` is the one file to replace, and the
+    // feed is asked for an AppImage rather than the tarball.
+    let appimage = std::env::var_os("APPIMAGE").map(PathBuf::from).filter(|path| path.is_file());
+    let feed = config::update_base_url().map(|base_url| Arc::new(auto_update::HttpFeed::new(base_url, appimage.is_some().then_some("appimage"))) as Arc<dyn auto_update::ReleaseFeed>);
+    let running_app = match appimage {
+        Some(appimage) => Some(appimage),
+        None => match cx.app_path() {
+            Ok(path) => Some(path),
+            Err(e) => {
+                tracing::info!(target: "majik", "not an installed app, so no self-update: {e:#}");
+                None
+            }
+        },
     };
     let version = match semver::Version::parse(env!("CARGO_PKG_VERSION")) {
         Ok(version) => version,

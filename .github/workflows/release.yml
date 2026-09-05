@@ -115,7 +115,8 @@ jobs:
         run: |
           # The .sym files are the crash reports' symbols (docs/telemetry.md): without them a
           # minidump from this release cannot be read.
-          expected='["Majik-aarch64.dmg", "Majik-x86_64.dmg", "majik-linux-x86_64.tar.gz", "majik-linux-aarch64.tar.gz", "MajikSetup-x86_64.exe", "SHA256SUMS",
+          expected='["Majik-aarch64.dmg", "Majik-x86_64.dmg", "majik-linux-x86_64.tar.gz", "majik-linux-aarch64.tar.gz",
+                     "majik-linux-x86_64.AppImage", "majik-linux-aarch64.AppImage", "MajikSetup-x86_64.exe", "SHA256SUMS",
                      "majik-aarch64-apple-darwin.sym", "majik-x86_64-apple-darwin.sym", "majik-x86_64-unknown-linux-gnu.sym", "majik-aarch64-unknown-linux-gnu.sym", "majik-x86_64-pc-windows-msvc.sym"]'
           actual="$(gh release view "$GITHUB_REF_NAME" --json assets -q '[.assets[].name]')"
           missing="$(echo "$expected" | jq -r --argjson actual "$actual" '. - $actual | .[]')"

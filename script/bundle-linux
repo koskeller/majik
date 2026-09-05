@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# Build a distributable Majik tarball for Linux.
+# Build the Linux packages: a tarball with an install script, and an AppImage.
 #
 #   script/bundle-linux
 #
-# Deliberately does not bundle shared libraries the way Zed's does: Majik links no third-party
-# dylibs (openh264 is vendored, SQLite is bundled, TLS is rustls), so the tarball only needs the
-# system packages listed in its README. Chasing `ldd` output would add the one genuinely fragile
-# part of that approach for no benefit here.
+# The tarball deliberately bundles no shared libraries the way Zed's does: Majik links no
+# third-party dylibs (openh264 is vendored, SQLite is bundled, TLS is rustls), so it only needs
+# the system packages listed in its README. The AppImage is the download-and-run experience:
+# one file, no install; linuxdeploy copies in the few system libraries the binary links
+# (xcb, xkbcommon, ALSA, libstdc++) and leaves glibc and the GPU driver to the machine.
 set -euo pipefail
+
+# linuxdeploy's own release, which carries the appimagetool it runs. Pinned: a "continuous" build
+# would change under the release.
+LINUXDEPLOY_VERSION="1-alpha-20251107-1"
 # shellcheck source=script/lib/release.sh
 source "$(dirname "$0")/lib/release.sh"
 cd "$(repo_root)"
@@ -55,5 +60,26 @@ archive="target/majik-linux-${arch}.tar.gz"
 rm -f "$archive"
 tar -czf "$archive" -C "$(dirname "$stage")" "$(basename "$stage")"
 
+appimage="target/majik-linux-${arch}.AppImage"
+appdir="target/linux/AppDir"
+linuxdeploy="target/linux/linuxdeploy-${arch}.AppImage"
+if [[ ! -x "$linuxdeploy" ]]; then
+    curl --silent --show-error --fail --location --retry 5 \
+        --output "$linuxdeploy" \
+        "https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_VERSION}/linuxdeploy-${arch}.AppImage"
+    chmod +x "$linuxdeploy"
+fi
+rm -rf "$appdir" "$appimage"
+# The CI container has no FUSE, so linuxdeploy (and the appimagetool it runs) unpack themselves
+# first. The desktop file is the tarball's, whose `Exec=majik` is what AppRun resolves; the icon
+# is named after the app id so the desktop entry's `Icon=` finds it.
+APPIMAGE_EXTRACT_AND_RUN=1 OUTPUT="$appimage" VERSION="$version" "$linuxdeploy" \
+    --appdir "$appdir" \
+    --executable "$stage/bin/majik" \
+    --desktop-file "$stage/share/applications/${APP_ID}.desktop" \
+    --icon-file "packaging/linux-icons/512.png" --icon-filename "$APP_ID" \
+    --output appimage
+chmod +x "$appimage"
+
 echo
-echo "Built ${archive} (Majik ${version}, ${RELEASE_CHANNEL}, ${arch})"
+echo "Built ${archive} and ${appimage} (Majik ${version}, ${RELEASE_CHANNEL}, ${arch})"

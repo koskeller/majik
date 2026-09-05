@@ -379,7 +379,7 @@ impl AutoUpdater {
         .await
         .context("preparing the download folder")
         .map_err(Failure::at(Stage::Download))?;
-        let package = package_dir.path().join(package_file_name());
+        let package = package_dir.path().join(package_file_name(running_app.as_deref()));
         let (progress_tx, mut progress_rx) = mpsc::unbounded::<f32>();
         let download = cx.background_spawn({
             let (feed, url, package) = (feed.clone(), latest.url.clone(), package.clone());
@@ -478,13 +478,20 @@ fn newer_version(current: &Version, staged: Option<&Version>, fetched: &Version)
     (fetched > baseline).then_some(fetched)
 }
 
-/// The downloaded package's name in its folder, by platform.
-pub fn package_file_name() -> &'static str {
+/// The downloaded package's name in its folder, by platform; on Linux an AppImage updates with an
+/// AppImage and a tarball install with a tarball.
+pub fn package_file_name(running_app: Option<&Path>) -> &'static str {
     match std::env::consts::OS {
         "macos" => "Majik.dmg",
         "windows" => "MajikSetup.exe",
+        _ if is_appimage(running_app) => "majik.AppImage",
         _ => "majik.tar.gz",
     }
+}
+
+/// Whether `path` is an AppImage file: what `APPIMAGE` names when the app runs as one.
+fn is_appimage(path: Option<&Path>) -> bool {
+    path.is_some_and(|path| path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("AppImage")))
 }
 
 pub fn sha256_file(path: &Path) -> Result<String> {
@@ -596,11 +603,14 @@ fn windows_updates_dir() -> Option<PathBuf> {
 /// asset it names, streamed to disk.
 pub struct HttpFeed {
     base_url: String,
+    /// `package=` on the check, when the app runs as an AppImage: the feed then names the
+    /// AppImage rather than the tarball.
+    package: Option<&'static str>,
 }
 
 impl HttpFeed {
-    pub fn new(base_url: String) -> Self {
-        Self { base_url }
+    pub fn new(base_url: String, package: Option<&'static str>) -> Self {
+        Self { base_url, package }
     }
 
     /// Its own client rather than telemetry's: that one caps a whole request at 30 s, and a DMG
@@ -624,7 +634,11 @@ impl HttpFeed {
 
 impl ReleaseFeed for HttpFeed {
     fn latest(&self, os: &str, arch: &str) -> Result<ReleaseAsset> {
-        let url = format!("{}/{}/latest?os={os}&arch={arch}", self.base_url, config::channel().name());
+        let mut url = format!("{}/{}/latest?os={os}&arch={arch}", self.base_url, config::channel().name());
+        if let Some(package) = self.package {
+            url.push_str("&package=");
+            url.push_str(package);
+        }
         let response = Self::client()?.get(&url).timeout(CHECK_TIMEOUT).send().context("asking for the latest release")?;
         let status = response.status();
         let body = response.text().context("reading the release")?;
@@ -721,32 +735,45 @@ pub fn install_macos(dmg: &Path, running_app: &Path) -> Result<Installed> {
     Ok(Installed::InPlace)
 }
 
-/// Unpack the tarball and rename its binary over the running one (legal on Linux: the old inode
-/// stays until the process exits), and refresh the icons when the binary lives in a
-/// `<prefix>/bin` beside a `<prefix>/share` the tarball's `install.sh` filled.
-pub fn install_linux(tarball: &Path, running_exe: &Path) -> Result<Installed> {
-    let extracted = tarball.parent().context("the download has no folder")?.join("extracted");
+/// Rename the new binary over the running one (legal on Linux: the old inode stays until the
+/// process exits). An AppImage is replaced as the one file it is, `running_app` being the path
+/// `APPIMAGE` named. A tarball is unpacked, its `bin/majik` put over the running binary, and the
+/// icons refreshed when that binary lives in a `<prefix>/bin` beside a `<prefix>/share` that
+/// the tarball's `install.sh` filled.
+pub fn install_linux(package: &Path, running_app: &Path) -> Result<Installed> {
+    if is_appimage(Some(package)) {
+        replace_binary(package, running_app)?;
+        return Ok(Installed::InPlace);
+    }
+    let extracted = package.parent().context("the download has no folder")?.join("extracted");
     std::fs::create_dir_all(&extracted)?;
-    run(Command::new("tar").arg("-xzf").arg(tarball).arg("-C").arg(&extracted), "unpacking the download")?;
+    run(Command::new("tar").arg("-xzf").arg(package).arg("-C").arg(&extracted), "unpacking the download")?;
     let root = std::fs::read_dir(&extracted)?.flatten().map(|entry| entry.path()).find(|path| path.is_dir()).context("the download unpacked to nothing")?;
     let new_binary = root.join("bin").join("majik");
     anyhow::ensure!(new_binary.is_file(), "no bin/majik in the download");
-    let target_dir = running_exe.parent().context("the running binary has no folder")?;
-    let staged = target_dir.join(format!("{}.new", running_exe.file_name().map(|name| name.to_string_lossy()).unwrap_or_default()));
-    let cannot_write = || format!("{} can't replace {}; download the new version by hand", config::app_name(), running_exe.display());
-    std::fs::copy(&new_binary, &staged).with_context(cannot_write)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
-    }
-    std::fs::rename(&staged, running_exe).with_context(cannot_write)?;
+    replace_binary(&new_binary, running_app)?;
+    let target_dir = running_app.parent().context("the running binary has no folder")?;
     if target_dir.file_name().is_some_and(|name| name == "bin") {
         if let Some(prefix) = target_dir.parent() {
             refresh_icons(&root.join("share").join("icons"), &prefix.join("share").join("icons"));
         }
     }
     Ok(Installed::InPlace)
+}
+
+/// Copy `new` beside `target` as `<name>.new`, make it executable, and rename it over `target`.
+fn replace_binary(new: &Path, target: &Path) -> Result<()> {
+    let target_dir = target.parent().context("the running binary has no folder")?;
+    let staged = target_dir.join(format!("{}.new", target.file_name().map(|name| name.to_string_lossy()).unwrap_or_default()));
+    let cannot_write = || format!("{} can't replace {}; download the new version by hand", config::app_name(), target.display());
+    std::fs::copy(new, &staged).with_context(cannot_write)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
+    }
+    std::fs::rename(&staged, target).with_context(cannot_write)?;
+    Ok(())
 }
 
 /// Overwrite the icons an earlier install put under `installed`, and only those: an icon the
@@ -1188,7 +1215,7 @@ mod tests {
         check(&updater, CheckType::Manual, cx);
         assert!(status(&updater, cx).is_updated());
         let (program, arguments) = updater.read_with(cx, |updater, _| updater.staged_installer()).expect("the installer is staged");
-        assert_eq!(program.file_name().unwrap(), package_file_name());
+        assert_eq!(program.file_name().unwrap(), package_file_name(None));
         assert!(program.exists(), "kept for the restart");
         assert_eq!(arguments, WINDOWS_INSTALLER_SWITCHES.map(OsString::from));
         assert!(installer.installed.lock().unwrap().is_empty(), "nothing replaced while the app runs");
@@ -1388,6 +1415,39 @@ mod tests {
         assert!(error.contains("not an app bundle"), "{error}");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn the_linux_installer_replaces_an_appimage_as_one_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let download = dir.path().join("majik.AppImage");
+        std::fs::write(&download, "new appimage").unwrap();
+        let running = dir.path().join("Downloads").join("majik-linux-aarch64.AppImage");
+        std::fs::create_dir_all(running.parent().unwrap()).unwrap();
+        std::fs::write(&running, "old appimage").unwrap();
+        assert_eq!(install_linux(&download, &running).unwrap(), Installed::InPlace);
+        assert_eq!(std::fs::read_to_string(&running).unwrap(), "new appimage");
+        assert_ne!(std::fs::metadata(&running).unwrap().permissions().mode() & 0o111, 0, "still executable");
+        assert!(!running.with_extension("AppImage.new").exists() && !dir.path().join("extracted").exists(), "nothing unpacked, nothing left");
+    }
+
+    #[test]
+    fn the_package_name_follows_how_the_app_is_packaged() {
+        let expected = match std::env::consts::OS {
+            "macos" => "Majik.dmg",
+            "windows" => "MajikSetup.exe",
+            _ => "majik.tar.gz",
+        };
+        assert_eq!(package_file_name(None), expected);
+        assert_eq!(package_file_name(Some(Path::new("/usr/local/bin/majik"))), expected);
+        let appimage = package_file_name(Some(Path::new("/home/kos/Downloads/majik-linux-aarch64.AppImage")));
+        if std::env::consts::OS == "linux" {
+            assert_eq!(appimage, "majik.AppImage");
+        } else {
+            assert_eq!(appimage, expected, "only Linux runs as an AppImage");
+        }
+    }
+
     #[test]
     fn the_windows_installer_is_staged_with_the_silent_update_switches() {
         let installer = Path::new("C:\\Users\\kos\\AppData\\Local\\Programs\\Majik\\updates\\MajikSetup.exe");
@@ -1414,22 +1474,27 @@ mod tests {
     #[test]
     fn the_http_feed_asks_for_this_channel_and_platform() {
         let (url, server) = serve_once("200 OK", "Content-Type: application/json\r\n", br#"{"version":"0.2.0","url":"https://example.test/Majik.dmg","sha256":"ab"}"#.to_vec());
-        let feed = HttpFeed::new(url);
+        let feed = HttpFeed::new(url, None);
         let asset = feed.latest("macos", "aarch64").unwrap();
         assert_eq!(asset.version, "0.2.0");
         let request = server.join().unwrap();
         assert!(request.starts_with("GET /dev/latest?os=macos&arch=aarch64 HTTP/1.1"), "{request}");
         assert!(request.contains(concat!("user-agent: majik/", env!("CARGO_PKG_VERSION"))), "{request}");
+        // An AppImage says so, and the feed names an AppImage back.
+        let (url, server) = serve_once("200 OK", "", br#"{"version":"0.2.0","url":"https://example.test/majik-linux-aarch64.AppImage"}"#.to_vec());
+        HttpFeed::new(url, Some("appimage")).latest("linux", "aarch64").unwrap();
+        let request = server.join().unwrap();
+        assert!(request.starts_with("GET /dev/latest?os=linux&arch=aarch64&package=appimage HTTP/1.1"), "{request}");
     }
 
     #[test]
     fn the_http_feed_reports_a_refusal_and_a_bad_answer() {
         let (url, server) = serve_once("404 Not Found", "", b"no build for linux/aarch64".to_vec());
-        let error = HttpFeed::new(url).latest("linux", "aarch64").unwrap_err().to_string();
+        let error = HttpFeed::new(url, None).latest("linux", "aarch64").unwrap_err().to_string();
         assert!(error.contains("404") && error.contains("no build"), "{error}");
         server.join().unwrap();
         let (url, server) = serve_once("200 OK", "", b"<html>".to_vec());
-        let error = HttpFeed::new(url).latest("linux", "x86_64").unwrap_err().to_string();
+        let error = HttpFeed::new(url, None).latest("linux", "x86_64").unwrap_err().to_string();
         assert!(error.contains("isn't what was expected"), "{error}");
         server.join().unwrap();
     }
@@ -1441,7 +1506,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let to = dir.path().join("Majik.dmg");
         let mut reported = Vec::new();
-        HttpFeed::new(String::new()).download(&format!("{url}/Majik.dmg"), &to, &mut |fraction| reported.push(fraction)).unwrap();
+        HttpFeed::new(String::new(), None).download(&format!("{url}/Majik.dmg"), &to, &mut |fraction| reported.push(fraction)).unwrap();
         server.join().unwrap();
         assert_eq!(std::fs::read(&to).unwrap(), body);
         assert!(!dir.path().join("Majik.dmg.part").exists());
