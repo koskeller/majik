@@ -1,10 +1,10 @@
-//! The Settings window, laid out the way Zed's `settings_ui` is: a nav pane of pages on the left,
+//! The Settings window: a nav pane of pages on the left,
 //! the current page's rows on the right, with the title and description first and the control at
 //! the end. One window (`windows::open_settings`), reached from ⌘, / the menu / the sidebar / the
 //! composer's provider menu. Error-recovery mode (a generation can't start without a key) opens
 //! Providers with the message as a banner and that provider's key field focused.
 //!
-//! Providers are laid out like Zed's agent settings: every provider is always listed with its own
+//! Every provider is always listed with its own
 //! API key field, link and status. Nothing here picks the active one; that is the composer's
 //! provider menu, which offers the providers that have a key (`state::available_providers`).
 
@@ -25,8 +25,6 @@ use crate::ui::{button, icon, segmented};
 use crate::views::telemetry_log::TelemetryLogView;
 
 const SUPPORT_EMAIL: &str = "hello@trymajik.com";
-/// The page that spells out what telemetry carries (`docs/telemetry.md` in the repository).
-const TELEMETRY_DOCS_URL: &str = "https://github.com/koskeller/majik/blob/main/docs/telemetry.md";
 const NAV_WIDTH: f32 = 200.;
 
 /// `Config::appearance` values in the order the theme control lists them; the last is the default.
@@ -69,8 +67,7 @@ impl SettingsPage {
     }
 }
 
-/// The two things telemetry can send, each behind its own switch (Zed's `telemetry.metrics` and
-/// `telemetry.diagnostics`).
+/// The two things telemetry can send, each behind its own switch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TelemetrySetting {
     /// Usage events.
@@ -90,7 +87,7 @@ impl TelemetrySetting {
 
 /// Flip one telemetry switch, from Settings or onboarding, and record that it was flipped. The
 /// event is queued *before* turning usage data off and *after* turning it on, so it is the last
-/// thing sent or the first: Zed fires the same event so a switch that leaks shows up in the data.
+/// thing sent or the first, so a switch that leaks shows up in the data.
 pub fn set_telemetry_setting(setting: TelemetrySetting, enabled: bool, cx: &mut App) {
     let telemetry = state::telemetry(cx);
     let toggled = majik_telemetry::FlexibleEvent {
@@ -111,7 +108,7 @@ pub fn set_telemetry_setting(setting: TelemetrySetting, enabled: bool, cx: &mut 
 }
 
 /// The two switches, as a section: the Telemetry page and the onboarding Features step show the
-/// same rows with Zed's wording.
+/// same rows.
 pub fn telemetry_switches(settings: TelemetrySettings, cx: &App) -> Vec<gpui::Stateful<gpui::Div>> {
     let diagnostics = Switch::new("telemetry-diagnostics").cursor_pointer().checked(settings.diagnostics).on_click(|on: &bool, _, cx| set_telemetry_setting(TelemetrySetting::Diagnostics, *on, cx));
     let metrics = Switch::new("telemetry-metrics").cursor_pointer().checked(settings.metrics).on_click(|on: &bool, _, cx| set_telemetry_setting(TelemetrySetting::Metrics, *on, cx));
@@ -290,7 +287,7 @@ impl SettingsWindow {
 
     fn render_nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
         // The title bar is transparent (see `windows::options`): on macOS leave room for the
-        // traffic lights, 40px from the top as in Zed (the sidebar's own list adds the first 12).
+        // traffic lights, 40px from the top (the sidebar's own list adds the first 12).
         let mut menu = SidebarMenu::new().gap_0p5();
         if cfg!(target_os = "macos") {
             menu = menu.pt_7();
@@ -381,20 +378,14 @@ impl SettingsWindow {
 
     fn render_telemetry(&self, cx: &mut Context<Self>) -> gpui::Div {
         let settings = cx.global::<Config>().telemetry;
-        let muted = cx.theme().muted_foreground;
         let destination = match crate::config::telemetry_base_url() {
-            Some(url) => format!("Nothing identifies you: a random id per install and per launch, the app version and the OS."),
+            Some(_) => "Nothing identifies you: a random id per install and per launch, the app version and the OS.".to_string(),
             None => "This build sends nothing; events only go to the log below.".to_string(),
         };
         v_flex()
             .child(section("Sharing", cx))
             .children(telemetry_switches(settings, cx))
-            .child(row(
-                "telemetry-docs",
-                "What is collected",
-                Some(SharedString::from(destination)),
-                cx,
-            ))
+            .child(row("telemetry-docs", "What is collected", Some(SharedString::from(destination)), gpui::div(), cx))
             .child(section("Log", cx))
             .child(gpui::div().px_8().pt_3().child(self.telemetry_log.clone()))
     }
@@ -522,7 +513,7 @@ impl SettingsWindow {
         let version = gpui::div().text_sm().text_color(muted_fg).child(SharedString::from(version));
         v_flex()
             .child(section(crate::config::app_name(), cx))
-            .child(row("version", "Version", version, cx))
+            .child(row("version", "Version", None::<SharedString>, version, cx))
             .child(section("Updates", cx))
             .children(self.render_updates(cx))
             .child(section("Help", cx))
@@ -632,7 +623,7 @@ impl Render for SettingsWindow {
                 v_flex()
                     .size_full()
                     // macOS shows only the traffic lights over the nav pane; elsewhere the window has
-                    // no system title bar, so draw one with the window controls (as Zed does).
+                    // no system title bar, so draw one with the window controls.
                     .when(!cfg!(target_os = "macos"), |this| this.child(TitleBar::new()))
                     .child(h_flex().flex_1().min_h_0().w_full().items_start().child(self.render_nav(cx)).child(self.render_page(window, cx))),
             )
@@ -642,7 +633,7 @@ impl Render for SettingsWindow {
     }
 }
 
-/// A page section: a muted heading over a rule, like Zed's `SettingsSectionHeader`.
+/// A page section: a muted heading over a rule.
 fn section(label: &'static str, cx: &App) -> gpui::Div {
     section_with(label, cx)
 }
@@ -653,8 +644,8 @@ fn section_with(heading: impl IntoElement, cx: &App) -> gpui::Div {
     v_flex().px_8().pt_6().pb_1().gap_1p5().child(gpui::div().text_xs().text_color(theme.muted_foreground).child(heading)).child(gpui::div().h(px(1.)).bg(theme.border))
 }
 
-/// One setting: title and description on the left, the control at the end (Zed's setting-item
-/// layout). The divider is inset like the section rule above it.
+/// One setting: title and description on the left, the control at the end. The divider is inset
+/// like the section rule above it.
 fn row(id: impl Into<SharedString>, title: impl IntoElement, description: Option<impl Into<SharedString>>, control: impl IntoElement, cx: &App) -> gpui::Stateful<gpui::Div> {
     row_inner(id, title, description.map(Into::into), control, false, cx)
 }
