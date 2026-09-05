@@ -17,14 +17,22 @@ Replicate and OpenRouter. Everything you make stays in one local library you own
 
 ## Install
 
-Download the latest build from the [Releases page](https://github.com/koskeller/majik/releases):
+macOS and Linux, one line:
+
+```sh
+curl -f https://trymajik.com/install.sh | sh
+```
+
+It puts `Majik.app` into /Applications, or Majik into `~/.local` on Linux, and the app keeps itself
+up to date from then on ([docs/updates.md](docs/updates.md)). Windows, and anyone who would rather
+download by hand, takes a file from the [Releases page](https://github.com/koskeller/majik/releases):
 
 | Platform | File |
 | --- | --- |
 | macOS (Apple silicon) | `Majik-aarch64.dmg` |
 | macOS (Intel) | `Majik-x86_64.dmg` |
 | Windows 10/11 (x64) | `MajikSetup-x86_64.exe` |
-| Linux (x86_64) | `majik-linux-x86_64.tar.gz` — unpack and run `./install.sh` |
+| Linux (x86_64, aarch64) | `majik-linux-<arch>.AppImage`, or `majik-linux-<arch>.tar.gz` with an `install.sh` inside |
 
 macOS 11 or later. On Linux you need a Vulkan-capable driver (`mesa-vulkan-drivers` covers most
 integrated graphics) and a Secret Service daemon — gnome-keyring or KWallet — for API keys to

@@ -688,6 +688,17 @@ mod tests {
     }
 
     #[test]
+    fn the_install_script_asks_the_same_feed_as_the_app() {
+        // `curl … | sh` and the app's own updater must agree on where releases are announced,
+        // or one of them silently installs from somewhere else.
+        let script = include_str!("../../../script/install.sh");
+        assert!(script.contains("https://trymajik.com/api/releases"), "script/install.sh asks another feed");
+        assert!(script.contains("MAJIK_UPDATE_URL"), "the script takes the same override as the app");
+        assert!(script.contains("/stable/latest?os=$os&arch=$arch"), "the same query the app sends");
+        assert!(script.trim_end().ends_with("main \"$@\""), "the script must be read whole before it runs");
+    }
+
+    #[test]
     fn auto_update_is_on_by_default_and_updated_from_is_empty() {
         let config: Config = serde_json::from_str("{}").unwrap();
         assert!(config.auto_update);

@@ -30,6 +30,7 @@ cargo test -p majik-providers --test e2e -- --ignored smoke   # live providers: 
 cargo clippy --workspace --all-targets -- -D warnings
 ./script/bundle-mac [target-triple]             # → a signed, notarized DMG (ad-hoc + unnotarized without the secrets)
 script/install-mac                              # bundle-mac, then install it as /Applications/Majik.app (Stable channel) and pin it to the Dock
+script/install.sh                               # what `curl -f https://trymajik.com/install.sh | sh` runs: the latest release into /Applications or ~/.local
 script/bump-version minor                       # bump, commit, tag; pushing the tag runs .github/workflows/release.yml
 cargo run --release -p majik-generation --example seed_library -- ~/majik-perf \
     --images 9000 --videos 800 --audio 200 --thumbnails   # a library to measure against (`--help`)

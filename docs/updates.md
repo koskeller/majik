@@ -73,6 +73,12 @@ answer for a few minutes; the bytes come from GitHub.
 A release is pulled by unpublishing it (or marking it a pre-release): the next check sees the one
 before it, and an app that already installed it is not downgraded.
 
+## The install script
+
+`curl -f https://trymajik.com/install.sh | sh` (`script/install.sh` in the repository) asks the
+same feed, downloads the build it names, checks the checksum and installs it, so an install made
+that way is exactly one the app would have made for itself.
+
 ## Trying it locally
 
 Any build honours `MAJIK_UPDATE_URL=<base>`, and a dev build checks nowhere without it. Serve a

@@ -4,6 +4,12 @@ Generate images, video and audio through hosted model providers (fal / Replicate
 
 ## Install
 
+The one-line way, which downloads this tarball and runs its `install.sh` for you:
+
+```sh
+curl -f https://trymajik.com/install.sh | sh
+```
+
 The release also ships `majik-linux-<arch>.AppImage`: one file, nothing to install. Mark it
 executable and run it, from a file manager or a terminal:
 
