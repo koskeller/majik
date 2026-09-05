@@ -3755,6 +3755,23 @@ mod tests {
         assert_eq!(favs, 1);
     }
 
+    /// "." favorites the selection as it does in Photos, and a second press takes it back.
+    #[gpui::test]
+    fn period_toggles_favorite_as_in_photos(cx: &mut TestAppContext) {
+        let (view, vcx, env) = feed_window!(cx, 2);
+        let first = view.update(vcx, |f, _| f.ids[0].clone());
+        view.update(vcx, |f, _cx| {
+            f.selection.click(&first, 0, Modifiers::default(), &f.ids.clone());
+        });
+        let is_favorite = |vcx: &mut VisualTestContext| env.library.read_with(vcx, |m, _| m.lib.get(first.media().unwrap()).unwrap().is_favorite);
+        vcx.simulate_keystrokes(".");
+        vcx.run_until_parked();
+        assert!(is_favorite(vcx));
+        vcx.simulate_keystrokes(".");
+        vcx.run_until_parked();
+        assert!(!is_favorite(vcx));
+    }
+
     /// An upscaled clip carries both badges, and they are two pills in one strip — before this,
     /// HD and the length were both pinned to the bottom-right corner and drew on top of each other.
     #[test]

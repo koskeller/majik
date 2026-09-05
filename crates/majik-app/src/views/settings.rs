@@ -934,7 +934,7 @@ mod tests {
         let (view, vcx) = open(cx, SettingsTarget { page: SettingsPage::Shortcuts, ..Default::default() });
         draw(vcx);
         view.read_with(vcx, |s, _| {
-            for (label, key) in [("Improve Prompt", "shift-i"), ("Generate", "enter"), ("Paste Image", "shift-v")] {
+            for (label, key) in [("Improve Prompt", "shift-p"), ("Generate", "enter"), ("Paste Image", "shift-v")] {
                 let row = s.shortcuts.iter().find(|shortcut| shortcut.label == label).unwrap_or_else(|| panic!("{label} is listed"));
                 assert_eq!(row.group, "Composer", "{label} sits with the composer's shortcuts");
                 let keys: Vec<String> =

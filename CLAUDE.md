@@ -197,7 +197,7 @@ Dependency direction (never reversed): `app → {generation, video, audio, platf
   General, Providers, Storage, Shortcuts, About — beside the page's `title + description | control`
   rows; `windows::open_settings(SettingsTarget)` opens or re-targets it from ⌘, / the menu / the
   sidebar / the composer, and `SettingsTarget::missing_key` is the error-recovery mode). The sidebar
-  (left, ⌘⌥S) and the composer (right) are collapsible panels around the feed — one `Side` /
+  (left, ⌘B) and the composer (right, ⌘L) are collapsible panels around the feed — one `Side` /
   `SidePanel` mechanism in `LibraryWindow`, open state + width in `Config` — present on every library
   screen (Library, Favorites, Assets, albums) and hidden only while a detail covers the window. The
   grid and the detail are keyed by `EntryId` (a generation or an asset): the Library / Favorites /
@@ -214,9 +214,13 @@ Dependency direction (never reversed): `app → {generation, video, audio, platf
   stored or restored.
   Feed/detail reach the composer by emitting
   `FeedEvent::Compose` / `DetailEvent::Compose` (a `WindowHandle` can't re-enter the window that is
-  dispatching the action). ⌘N cycles closed → open + prompt focused → closed again once you're already
-  typing (`ToggleComposer` is the plain toggle behind the toolbar button / View menu); Escape in the
-  prompt returns focus to the feed. **Actions** are declared once in `actions.rs` (`actions!(majik, […])`);
+  dispatching the action). ⌘N only ever opens the composer and focuses the prompt, as New Message
+  does in Mail — it never closes it; `ToggleComposer` (⌘L, the toolbar button, View menu) is the
+  toggle; Escape in the prompt returns focus to the feed. Keys follow the apps people already use
+  (⌘B sidebar as in VS Code / Zed, ⌘L prompt pane as in Cursor, ⇧⌘I Import and "." Favorite as in
+  Photos) and are checked against all three platforms: no `secondary-alt-` letter (Windows reports
+  AltGr as Ctrl+Alt, so it types a character on many European layouts) and nothing gpui-component's
+  text input already binds (`ctrl-e`, `cmd-.`, `cmd-f`, …). **Actions** are declared once in `actions.rs` (`actions!(majik, […])`);
   `actions::shortcuts()` is the single keymap table (bound at init and listed on Settings → Shortcuts)
   with the key contexts `"Library"` (window root), `"Feed"`, `"Detail"`, `"Compose"` (the panel),
   `"Settings"` / `"SettingsNav"`, and the actions are mirrored in the native menu bar. Views set `key_context` and handle actions with

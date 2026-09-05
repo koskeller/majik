@@ -121,7 +121,6 @@ pub fn shortcuts() -> Vec<Shortcut> {
     vec![
         app("Quit", &["secondary-q"], Quit),
         app("Close Window", &["secondary-w"], CloseWindow),
-        app("Minimize", &["secondary-m"], Minimize),
         app("New Generation", &[NEW_GENERATION_KEYS], NewGeneration),
         // Opens the Library window when it is closed, so unlike Favorites and Assets below it is
         // bound everywhere rather than inside the window.
@@ -130,8 +129,14 @@ pub fn shortcuts() -> Vec<Shortcut> {
         library_window("New Album", &["secondary-shift-n"], NewAlbum),
         library_window("Favorites", &["secondary-2"], ShowFavorites),
         library_window("Assets", &["secondary-3"], ShowAssets),
-        // ⌘⌥S is what Finder / Photos / Mail use for their sidebar.
-        library_window("Show / Hide Sidebar", &["secondary-alt-s"], ToggleSidebar),
+        // ⇧⌘I is Import in Photos and Lightroom.
+        library_window("Import…", &["secondary-shift-i"], ImportFiles),
+        // ⌘B is the sidebar in VS Code, Cursor and Zed. Not Finder's ⌘⌥S: Windows reports AltGr as
+        // Ctrl+Alt, so on a Polish or Czech layout Ctrl+Alt+S is the key that types "ś".
+        library_window("Show / Hide Sidebar", &["secondary-b"], ToggleSidebar),
+        // ⌘L is the prompt pane in Cursor and Windsurf, and the browsers' "put me in the text
+        // field". ⌘N only ever opens the composer; this is the key that closes it.
+        library_window("Show / Hide Composer", &["secondary-l"], ToggleComposer),
         feed("Open", &["secondary-o", "enter"], OpenSelection),
         feed("Select All", &["secondary-a"], SelectAll),
         feed("Clear Selection", &["escape"], ClearSelection),
@@ -141,7 +146,8 @@ pub fn shortcuts() -> Vec<Shortcut> {
         feed("Select Below", &["down"], SelectDown),
         media("Save…", &["secondary-s"], SaveMedia),
         media("Copy", &["secondary-c"], CopyMedia),
-        media("Favorite", &["secondary-shift-f"], ToggleFavorite),
+        // "." is Photos' favorite key; neither context holds a text input, so the bare key is safe.
+        media("Favorite", &["secondary-shift-f", "."], ToggleFavorite),
         media("Recreate", &["secondary-r"], Recreate),
         media("Zoom In", &["secondary-="], ZoomIn),
         media("Zoom Out", &["secondary--"], ZoomOut),
@@ -156,7 +162,9 @@ pub fn shortcuts() -> Vec<Shortcut> {
         // the feed and the detail too (`LibraryWindow` hands them to the panel), so ⌘⏎ generates
         // without clicking back into the prompt.
         shortcut("Composer", "Generate", &["secondary-enter"], Generate, &[Some("Compose"), Some("Library")]),
-        shortcut("Composer", "Improve Prompt", &["secondary-shift-i"], ImprovePrompt, &[Some("Compose"), Some("Library")]),
+        // P for prompt: no peer app has a convention for this. Not ⌘E, which gpui-component's
+        // text input binds as Ctrl+E off macOS and would swallow while typing.
+        shortcut("Composer", "Improve Prompt", &["secondary-shift-p"], ImprovePrompt, &[Some("Compose"), Some("Library")]),
         shortcut("Composer", "Paste Image", &["secondary-shift-v"], PasteImage, &[Some("Compose"), Some("Library")]),
         // The prompt's own Escape handler propagates, so `FocusFeed` fires right after it.
         composer("Focus Feed", &["escape"], FocusFeed),
@@ -167,7 +175,14 @@ pub fn shortcuts() -> Vec<Shortcut> {
     .into_iter()
     // Hiding an app is a macOS idea: gpui's Linux backend logs and ignores it, and Windows has no
     // equivalent, so the keys — and the menu items below — only exist where they do something.
-    .chain(cfg!(target_os = "macos").then(|| [app("Hide", &["secondary-h"], Hide), app("Hide Others", &["secondary-alt-h"], HideOthers)]).into_iter().flatten())
+    // ⌘M is a macOS convention too; Ctrl+M means nothing on Windows or Linux, where the window
+    // manager already offers minimize, so the Window menu item keeps working without a key there.
+    .chain(
+        cfg!(target_os = "macos")
+            .then(|| [app("Hide", &["secondary-h"], Hide), app("Hide Others", &["secondary-alt-h"], HideOthers), app("Minimize", &["secondary-m"], Minimize)])
+            .into_iter()
+            .flatten(),
+    )
     .collect()
 }
 
@@ -632,6 +647,8 @@ mod tests {
             assert!(Kbd::binding_for_action(&FocusFeed, Some("Compose"), window).is_some());
             assert!(Kbd::binding_for_action(&ImprovePrompt, Some("Compose"), window).is_some());
             assert!(Kbd::binding_for_action(&ToggleSidebar, Some("Library"), window).is_some());
+            assert!(Kbd::binding_for_action(&ToggleComposer, Some("Library"), window).is_some());
+            assert!(Kbd::binding_for_action(&ImportFiles, Some("Library"), window).is_some());
             assert!(Kbd::binding_for_action(&SaveMedia, Some("Compose"), window).is_none(), "context-scoped");
             assert!(Kbd::binding_for_action(&FocusFeed, Some("Feed"), window).is_none(), "context-scoped");
         });

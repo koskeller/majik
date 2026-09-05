@@ -372,14 +372,10 @@ impl LibraryWindow {
         cx.notify();
     }
 
-    /// ⌘N cycles like a dock toggle: closed → open + focus the prompt; open but elsewhere → focus
-    /// the prompt; already typing → put the panel away.
+    /// ⌘N is "new" as Mail's New Message means it: open the composer and focus the prompt, and
+    /// nothing else. Like ⌘N everywhere, it never closes anything; `ToggleComposer` (⌘L) does.
     fn new_generation(&mut self, _: &NewGeneration, window: &mut Window, cx: &mut Context<Self>) {
-        if self.panel(Side::Composer).open && self.compose.read(cx).contains_focus(window, cx) {
-            self.hide_composer(window, cx);
-        } else {
-            self.show_composer(None, window, cx);
-        }
+        self.show_composer(None, window, cx);
     }
 
     fn hide_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -513,7 +509,7 @@ impl LibraryWindow {
             let button = button(id).icon(icon(icon_name)).ghost().small().selected(self.panel(side).open);
             let button = match side {
                 Side::Sidebar => button.tooltip_with_action("Show or hide the sidebar", &ToggleSidebar, Some("Library")).on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleSidebar), cx)),
-                Side::Composer => button.tooltip_with_action("Show or hide the composer", &NewGeneration, None).on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleComposer), cx)),
+                Side::Composer => button.tooltip_with_action("Show or hide the composer", &ToggleComposer, Some("Library")).on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleComposer), cx)),
             };
             gpui::div().debug_selector(move || id.into()).child(button)
         };
@@ -1225,9 +1221,9 @@ mod tests {
         vcx.dispatch_action(ToggleSidebar);
         assert!(!is_open(Side::Sidebar, &window, vcx));
         assert!(is_open(Side::Composer, &window, vcx), "independent of the composer");
-        vcx.simulate_keystrokes("secondary-alt-s");
+        vcx.simulate_keystrokes("secondary-b");
         assert!(is_open(Side::Sidebar, &window, vcx));
-        vcx.simulate_keystrokes("secondary-alt-s");
+        vcx.simulate_keystrokes("secondary-b");
         assert!(!is_open(Side::Sidebar, &window, vcx));
         // With the sidebar away, Settings is still one keystroke off.
         vcx.simulate_keystrokes("secondary-,");
@@ -1258,19 +1254,27 @@ mod tests {
         vcx.dispatch_action(ToggleComposer);
         assert!(!panel_open(&window, vcx));
         assert!(feed_focused(&window, vcx), "focus leaves the hidden panel");
+        // ⌘L is the same toggle from the keyboard, typing or not.
+        vcx.simulate_keystrokes("secondary-l");
+        assert!(panel_open(&window, vcx));
+        assert!(prompt_focused(&window, vcx));
+        vcx.simulate_keystrokes("secondary-l");
+        assert!(!panel_open(&window, vcx));
+        assert!(feed_focused(&window, vcx));
     }
 
+    /// ⌘N never closes anything anywhere else, so pressing it twice must not put the composer
+    /// away: a second press while typing changes nothing.
     #[gpui::test]
-    fn new_generation_puts_the_panel_away_when_already_typing(cx: &mut TestAppContext) {
+    fn new_generation_never_puts_the_panel_away(cx: &mut TestAppContext) {
         let (_e, window, vcx) = library(cx, 1);
         vcx.simulate_keystrokes("secondary-n");
         assert!(prompt_focused(&window, vcx));
-        vcx.simulate_keystrokes("secondary-n");
-        assert!(!panel_open(&window, vcx));
-        assert!(feed_focused(&window, vcx));
+        vcx.simulate_input("a cat");
         vcx.simulate_keystrokes("secondary-n");
         assert!(panel_open(&window, vcx));
         assert!(prompt_focused(&window, vcx));
+        window.read_with(vcx, |w, cx| assert_eq!(w.compose.read(cx).prompt_text(cx), "a cat", "the draft is untouched"));
     }
 
     /// A saved closed state with an out-of-range width comes back closed, and clamped when shown.
