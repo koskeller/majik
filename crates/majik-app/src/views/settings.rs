@@ -117,7 +117,7 @@ pub fn telemetry_switches(settings: TelemetrySettings, cx: &App) -> Vec<gpui::St
     let metrics = Switch::new("telemetry-metrics").cursor_pointer().checked(settings.metrics).on_click(|on: &bool, _, cx| set_telemetry_setting(TelemetrySetting::Metrics, *on, cx));
     vec![
         row("telemetry-diagnostics-row", "Crash reports", Some("Help fix Majik by sending crash reports so critical issues get fixed fast."), diagnostics, cx),
-        row("telemetry-metrics-row", "Usage data", Some("Help improve Majik by sending anonymous usage data, like which models you generate with. Never your prompts or images."), metrics, cx),
+        row("telemetry-metrics-row", "Usage data", Some("Help improve Majik by sending anonymous usage data, like which models you use. Never your prompts or images."), metrics, cx),
     ]
 }
 
@@ -383,7 +383,7 @@ impl SettingsWindow {
         let settings = cx.global::<Config>().telemetry;
         let muted = cx.theme().muted_foreground;
         let destination = match crate::config::telemetry_base_url() {
-            Some(url) => format!("Sent to {url} every few minutes, signed so only Majik builds are accepted. Nothing identifies you: a random id per install and per launch, the app version and the OS."),
+            Some(url) => format!("Nothing identifies you: a random id per install and per launch, the app version and the OS."),
             None => "This build sends nothing; events only go to the log below.".to_string(),
         };
         v_flex()
@@ -393,11 +393,9 @@ impl SettingsWindow {
                 "telemetry-docs",
                 "What is collected",
                 Some(SharedString::from(destination)),
-                button("telemetry-docs").label("Learn More").icon(icon("external-link")).ghost().small().on_click(|_, _, cx| cx.open_url(TELEMETRY_DOCS_URL)),
                 cx,
             ))
             .child(section("Log", cx))
-            .child(gpui::div().px_8().pt_3().text_xs().text_color(muted).child("Every usage event this app has queued, newest first. This is exactly what is sent."))
             .child(gpui::div().px_8().pt_3().child(self.telemetry_log.clone()))
     }
 
@@ -524,7 +522,7 @@ impl SettingsWindow {
         let version = gpui::div().text_sm().text_color(muted_fg).child(SharedString::from(version));
         v_flex()
             .child(section(crate::config::app_name(), cx))
-            .child(row("version", "Version", Some("Made with ❤️ in Warsaw"), version, cx))
+            .child(row("version", "Version", version, cx))
             .child(section("Updates", cx))
             .children(self.render_updates(cx))
             .child(section("Help", cx))
