@@ -57,7 +57,7 @@ launch.
 
 for the latest *published* GitHub release of [koskeller/majik](https://github.com/koskeller/majik)
 (drafts and pre-releases don't count, which is what makes publishing the draft the moment a
-release goes out), or `404 {"error": "no build for linux/aarch64"}` for a platform the release has
+release goes out), or `404 {"error": "no build for windows/aarch64"}` for a platform the release has
 no installer for. `channel` is `stable` for a shipped build. `os` is Rust's `std::env::consts::OS`
 (`macos`, `windows`, `linux`); `arch` is `ARCH` (`aarch64`, `x86_64`). The asset for each pair is
 the one `release.yml` publishes: `Majik-<arch>.dmg`, `MajikSetup-<arch>.exe`,

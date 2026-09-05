@@ -9,7 +9,19 @@ name: Bundles
 # jobs would drift apart precisely where the difference matters. This is the same reason `tests` is
 # `platforms.yml` called from `release.yml` rather than a second copy of the matrix.
 on:
+  # By hand, for one platform: `gh workflow run bundles.yml -f only=linux` builds a tarball for
+  # someone to try without a release, and without billing the macOS jobs for it.
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Run only this job (macos / linux / windows); empty runs all three"
+        type: string
+        default: ""
   workflow_call:
+    inputs:
+      only:
+        type: string
+        default: ""
     secrets:
       # Signing is all-or-nothing and optional (see `have_macos_signing`): without these the macOS
       # bundle comes out ad-hoc signed and unnotarized and everything else is identical, which is
@@ -47,6 +59,7 @@ env:
 jobs:
   macos:
     name: macOS (${{ matrix.arch }})
+    if: ${{ inputs.only == '' || inputs.only == 'macos' }}
     # macOS 26 for its Xcode 26: `bundle-mac` compiles the Icon Composer package
     # (`packaging/Majik.icon`) with actool, and older Xcodes produce no Assets.car from it.
     runs-on: macos-26
@@ -91,8 +104,17 @@ jobs:
           if-no-files-found: error
 
   linux:
-    name: Linux (x86_64)
-    runs-on: ubuntu-latest
+    name: Linux (${{ matrix.arch }})
+    if: ${{ inputs.only == '' || inputs.only == 'linux' }}
+    # The arm64 runner is GitHub's own and free for a public repository; `bundle-linux` names
+    # the archive and the target from the machine it runs on, so the two need no other difference.
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest, arch: x86_64, target: x86_64-unknown-linux-gnu }
+          - { runner: ubuntu-24.04-arm, arch: aarch64, target: aarch64-unknown-linux-gnu }
     # Built against Ubuntu 22.04's glibc (2.35) rather than the runner's, since that is the
     # tarball's compatibility floor. The container is also why this cannot be a step bolted onto
     # `platforms.yml`'s linux-app job, which runs on the runner itself: the two environments differ
@@ -118,7 +140,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-          shared-key: release-linux
+          shared-key: release-linux-${{ matrix.arch }}
       - name: Install dump_syms
         run: cargo install dump_syms --locked
       - name: Bundle
@@ -127,17 +149,18 @@ jobs:
         run: script/bundle-linux
       - uses: actions/upload-artifact@v4
         with:
-          name: majik-linux-x86_64.tar.gz
-          path: target/majik-linux-x86_64.tar.gz
+          name: majik-linux-${{ matrix.arch }}.tar.gz
+          path: target/majik-linux-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
-          name: majik-x86_64-unknown-linux-gnu.sym
-          path: target/majik-x86_64-unknown-linux-gnu.sym
+          name: majik-${{ matrix.target }}.sym
+          path: target/majik-${{ matrix.target }}.sym
           if-no-files-found: error
 
   windows:
     name: Windows (x86_64)
+    if: ${{ inputs.only == '' || inputs.only == 'windows' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
